@@ -69,7 +69,8 @@ If macOS asks whether to allow controlling iTerm2, allow it. That's how the rail
 - The rail opens by itself when you start `claude`.
 - `/rail` hides or shows it.
 - It closes when you quit Claude.
-- Keys: `↑` `↓` to move, `Enter` to open, `Esc` to go back, `q` to close the rail.
+- Keys: `↑` `↓` to move, `Enter` to open, `Esc` to go back, `c` to change creature, `q` to close the rail.
+- A little pixel creature wanders along the bottom: Claudey the snail, a turtle, frog, cat or crab, or any of the twelve Chinese zodiac animals. It hurries while Claude is busy and falls asleep when things go quiet. Your pick is remembered.
 
 ## How it works
 

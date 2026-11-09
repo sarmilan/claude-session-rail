@@ -5,8 +5,11 @@
 //   node rail.mjs --frame [W H]   print one rendered frame (for testing, no TTY needed)
 //   --cwd DIR                     use DIR instead of the current folder
 import { execFile, spawn } from 'node:child_process';
-import { openSync, readSync, fstatSync, closeSync } from 'node:fs';
+import { openSync, readSync, fstatSync, closeSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join, dirname } from 'node:path';
 import * as src from './sources.mjs';
+import { createMascot, creatureNames } from './mascot.mjs';
 
 const args = process.argv.slice(2);
 const flag = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
@@ -109,6 +112,20 @@ const bar = (pct, n = 8) => {
 // ── Actions ────────────────────────────────────────────────────────────────────
 const ui = { sel: null, open: { context: false, connectors: false, more: false }, scroll: 0, tick: 0,
   overlay: null, toast: null };
+// Inline images only in a live iTerm2 pane; --frame output (and other terminals) get text octants.
+const iterm = process.env.TERM_PROGRAM === 'iTerm.app' || process.env.LC_TERMINAL === 'iTerm2';
+// The chosen creature is remembered across rails; `c` cycles through them.
+const MASCOT_FILE = join(homedir(), '.claude', 'session-rail', 'mascot.json');
+const savedCreature = (() => {
+  try { return Math.max(0, creatureNames.indexOf(JSON.parse(readFileSync(MASCOT_FILE, 'utf8')).creature)); } catch { return 0; }
+})();
+const mascot = createMascot({ images: iterm && !args.includes('--frame') && Boolean(process.stdout.isTTY), creature: savedCreature });
+const showMascot = (W, H) => H >= 24 && W >= mascot.width + 4;
+const nextCreature = () => {
+  const name = mascot.next();
+  try { mkdirSync(dirname(MASCOT_FILE), { recursive: true }); writeFileSync(MASCOT_FILE, JSON.stringify({ creature: name })); } catch {}
+};
+const claudeBusy = () => data.tasks.running.length > 0 || data.current?.status === 'busy';
 
 const toast = (text) => { ui.toast = { text, until: Date.now() + 2500 }; };
 const launch = (cmd, argv, ok, fail = `Couldn't run ${cmd}`) =>
@@ -334,7 +351,8 @@ function buildOverlay(W, bodyH) {
 }
 
 function frame(W, H) {
-  const bodyH = H - 1;
+  const withMascot = showMascot(W, H);
+  const bodyH = H - 1 - (withMascot ? mascot.rows : 0);
   const { rows, items } = ui.overlay ? buildOverlay(W, bodyH) : buildMain(W);
   if (!items.some((i) => i.id === ui.sel)) ui.sel = items[ui.overlay?.kind === 'menu' && items.length > 1 ? 1 : 0]?.id ?? null;
   const scroll = ui.overlay ? 0 : (() => {
@@ -354,10 +372,20 @@ function frame(W, H) {
   while (lines.length < bodyH) lines.push('');
   const hints = ui.overlay?.kind === 'log' ? '↑↓ scroll · esc back'
     : ui.overlay ? '↑↓ move · ⏎ select · esc back'
-    : `${rows.length > scroll + bodyH ? '↓ more · ' : ''}↑↓ move · ⏎ open · q quit`;
+    : `${rows.length > scroll + bodyH ? '↓ more · ' : ''}↑↓ move · ⏎ open · c pet · q quit`;
   const footer = ui.toast && ui.toast.until > Date.now() ? fg(C.green, ` ${ui.toast.text}`) : dim(` ${hints}`);
+  // The mascot sits between the list and the legend, which stays on the bottom line.
+  let image = null;
+  if (withMascot) {
+    const m = mascot.render(W);
+    if (m.image) {
+      const at = lines.length + m.image.row;
+      image = { at, rows: m.image.rows, seq: `${ESC}${at + 1};${m.image.col + 1}H${m.image.data}` };
+    }
+    lines.push(...m.lines);
+  }
   lines.push(trunc(footer, W + 20));
-  return { lines, items, viewIds: view.map((r) => r.id) };
+  return { lines, items, viewIds: view.map((r) => r.id), image };
 }
 
 // ── Modes ──────────────────────────────────────────────────────────────────────
@@ -387,9 +415,16 @@ if (!process.stdin.isTTY || !process.stdout.isTTY) {
 // Interactive panel
 const out = process.stdout;
 let current = { lines: [], items: [], viewIds: [] };
+let shownImage = ''; // the mascot image on screen; while it's unchanged its rows aren't touched
 draw = () => {
   current = frame(out.columns || 40, out.rows || 40);
-  out.write(`${ESC}H` + current.lines.map((l) => l + `${ESC}K`).join('\r\n') + `${ESC}J`);
+  const img = current.image;
+  const key = img ? `${img.at}|${img.seq}` : '';
+  const keep = key !== '' && key === shownImage;
+  const body = current.lines.map((l, i) => (keep && i >= img.at && i < img.at + img.rows ? '' : l + `${ESC}K`));
+  // Synchronized update: iTerm2 shows the finished frame, never the moment the image's rows are blank.
+  out.write(`${ESC}?2026h${ESC}H${body.join('\r\n')}${ESC}J${img && !keep ? img.seq : ''}${ESC}?2026l`);
+  shownImage = key;
 };
 const MOUSE_ON = `${ESC}?1000h${ESC}?1006h`, MOUSE_OFF = `${ESC}?1000l${ESC}?1006l`;
 const restore = () => { out.write(`${MOUSE_OFF}${ESC}?25h${ESC}?1049l`); try { process.stdin.setRawMode(false); } catch {} };
@@ -398,8 +433,8 @@ process.on('SIGINT', () => quit());
 process.on('SIGTERM', () => quit());
 process.on('uncaughtException', (e) => { restore(); console.error(e); process.exit(1); });
 
-out.write(`${ESC}?1049h${ESC}?25l${MOUSE_ON}`);
-out.on('resize', draw);
+out.write(`${ESC}?1049h${ESC}?25l${MOUSE_ON}${ESC}16t`); // 16t: ask for the cell size (for the mascot strip)
+out.on('resize', () => { shownImage = ''; draw(); });
 
 const refresh = (name) => {
   let busy = false;
@@ -409,6 +444,7 @@ const schedule = { fast: 1000, env: 5000, prs: 60_000, connectors: 300_000 };
 const runners = Object.fromEntries(Object.keys(schedule).map((k) => [k, refresh(k)]));
 for (const [k, ms] of Object.entries(schedule)) { runners[k](); setInterval(runners[k], ms); }
 setInterval(() => { ui.tick++; draw(); }, 1000);
+setInterval(() => { mascot.step(out.columns || 40, claudeBusy()); draw(); }, 200);
 draw();
 
 // A rail pinned to a Claude process quits (closing its pane) once that process is gone for 3s.
@@ -445,6 +481,7 @@ const handleKey = (k) => {
   } else {
     if (k === 'q') return quit();
     if (k === 'r') { Object.values(runners).forEach((f) => f()); return toast('Refreshing…'); }
+    if (k === 'c') return nextCreature();
     const p = selectedPr();
     if (p && k === 'o') return launch('open', [p.url], `Opened #${p.number}`);
     if (p && k === 'y') return copy(p.url, `link to #${p.number}`);
@@ -466,7 +503,11 @@ const handleMouse = (b, x, y) => {
 
 process.stdin.setRawMode(true);
 process.stdin.on('data', (buf) => {
-  const s = buf.toString();
+  // The terminal's reply to 16t: ESC [ 6 ; height ; width t (in pixels).
+  const cell = /\x1b\[6;(\d+);(\d+)t/.exec(buf.toString());
+  if (cell) mascot.setCellAspect(+cell[2] / +cell[1]);
+  const s = buf.toString().replace(/\x1b\[6;\d+;\d+t/g, '');
+  if (!s) return draw();
   const mouse = [...s.matchAll(/\x1b\[<(\d+);(\d+);(\d+)([Mm])/g)];
   if (mouse.length) { for (const m of mouse) if (m[4] === 'M') handleMouse(+m[1], +m[2], +m[3]); }
   else handleKey(s);
