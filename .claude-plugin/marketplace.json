@@ -1,0 +1,13 @@
+{
+  "name": "claude-session-rail",
+  "owner": {
+    "name": "Milan Somasundaram"
+  },
+  "plugins": [
+    {
+      "name": "session-rail",
+      "source": "./"
+    }
+  ],
+  "description": "A Claude-desktop-style session rail for Claude Code in iTerm2."
+}

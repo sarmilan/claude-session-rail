@@ -1,0 +1,11 @@
+{
+  "name": "session-rail",
+  "version": "0.1.0",
+  "description": "A Claude-desktop-style session rail beside Claude Code in iTerm2: environment, context, connectors, PRs, background tasks and every active Claude session. Opens on start; /rail toggles it.",
+  "license": "MIT",
+  "repository": "https://github.com/sarmilan/claude-session-rail",
+  "author": {
+    "name": "Milan Somasundaram",
+    "url": "https://github.com/sarmilan"
+  }
+}
