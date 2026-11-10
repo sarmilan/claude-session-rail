@@ -254,8 +254,14 @@ function buildMain(W) {
     if (data.account?.email) pair(`@  ${data.account.email}`, '', undefined, { leftStyle: (s) => s.slice(0, 3) + dim(s.slice(3)) });
     pair(`▢  ${env ? `${env.repo} · ${env.parent}` : '…'}`, '', env && item('repo', () => repoMenu(env)),
       { leftStyle: (s) => s.replace(/ · (.*)$/, (m, p) => ' · ' + dim(p)) });
-    if (env?.isGit) pair(`⎇  ${env.branch ?? '(detached)'}`, env.dirty ? `${env.dirty} changed` : '',
-      env.branch && item('branch', () => branchMenu(env)), { rightStyle: dim });
+    if (env?.isGit) {
+      // +added −removed since the branch forked, then how many files are uncommitted.
+      const diff = env.added || env.removed ? `+${env.added} −${env.removed}` : '';
+      pair(`⎇  ${env.branch ?? '(detached)'}`, [diff, env.dirty && `${env.dirty} changed`].filter(Boolean).join(' · '),
+        env.branch && item('branch', () => branchMenu(env)),
+        { rightStyle: (s) => s.replace(/^\+(\d+) −(\d+)/, (m, a, r) => fg(C.green, `+${a}`) + ' ' + fg(C.red, `−${r}`))
+          .replace(/( · )?(\d+ changed)$/, (m, sep = '', t) => dim(sep + t)) });
+    }
     pair('◌  Remote Control', '/remote-control', item('remote', () => toast('Type /remote-control in your Claude session')),
       { leftStyle: dim, rightStyle: dim });
   }

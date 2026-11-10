@@ -9,7 +9,7 @@ When you start `claude`, a narrow pane opens on the right. It shows what Claude 
 │                                   │ Environment                      │
 │  > fix the login redirect         │ ▭  my-macbook                    │
 │                                   │ ▢  my-app · ~/code               │
-│  ● Reading src/auth/login.ts      │ ⎇  feature/login       3 changed │
+│  ● Reading src/auth/login.ts      │ ⎇  feature/l… +42 −7 · 3 changed │
 │  ● Editing src/auth/redirect.ts   │ ◌  Remote Control  /remote-cont… │
 │                                   │ ──────────────────────────────── │
 │                                   │ Context ▸          33% ▰▰▰▱▱▱▱▱  │
@@ -36,7 +36,7 @@ When you start `claude`, a narrow pane opens on the right. It shows what Claude 
 
 ## What it shows
 
-- **Environment:** your computer, repo, and branch
+- **Environment:** your computer, repo, and branch, with the lines added and removed since the branch forked from the default branch (committed plus uncommitted; untracked files are not counted)
 - **Context:** how full Claude's context window is
 - **Connectors:** your MCP servers and whether they're connected
 - **Changes:** your open pull requests in this repo
