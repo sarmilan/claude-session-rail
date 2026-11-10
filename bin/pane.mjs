@@ -1,23 +1,23 @@
 #!/usr/bin/env node
 // Opens/closes the session rail and the desk as iTerm splits beside the Claude pane that runs this.
+//   node pane.mjs layout                                            (fill the screen, open both panels)
 //   node pane.mjs open | close | toggle | status [rail | desk]      (rail if not given)
 // The layout is Claude │ desk │ rail: the desk splits off Claude (landing left of an open rail), and the
-// rail splits off the desk when the desk is already open.
+// rail splits off the desk when the desk is already open. Panels take a fixed share of the window's
+// columns, always from Claude's pane; the window itself never grows.
 // Prints one JSON line: { state, ... }. Always exits 0 so callers never break.
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, writeFileSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PANES = join(homedir(), '.claude', 'session-rail', 'panes');
-// Each panel: its script, its width, the narrowest Claude's pane may get when the window can't grow and the
-// panel takes Claude's width (Claude keeps room to work beside the wide desk), the narrowest the panel may
-// get when another panel takes its width, and its fields in the per-Claude record.
+// Each panel: its script, its share of the window's columns (per mille), and its field in the per-Claude record.
 const PANELS = {
-  rail: { script: 'rail.mjs', columns: 44, keep: 20, floor: 30, pane: 'railPane', grew: 'grew' },
-  desk: { script: 'desk.mjs', columns: 80, keep: 60, floor: 50, pane: 'deskPane', grew: 'deskGrew' },
+  rail: { script: 'rail.mjs', share: 185, pane: 'railPane' },
+  desk: { script: 'desk.mjs', share: 280, pane: 'deskPane' },
 };
 const done = (state, extra = {}) => { console.log(JSON.stringify({ state, ...extra })); process.exit(0); };
 
@@ -39,7 +39,7 @@ function findClaude() {
   return null;
 }
 
-// Returns "<session id>,<window left edge>".
+// Returns "<session id>,<window id>,<window left edge>".
 const FIND_BY_TTY = `on run argv
   tell application "iTerm2"
     repeat with w in windows
@@ -47,7 +47,7 @@ const FIND_BY_TTY = `on run argv
         repeat with s in sessions of t
           if tty of s is (item 1 of argv) then
             set b to bounds of w
-            return (id of s) & "," & (item 1 of b)
+            return (id of s) & "," & (id of w) & "," & (item 1 of b)
           end if
         end repeat
       end repeat
@@ -69,52 +69,41 @@ const EXISTS = `on run argv
   return "no"
 end run`;
 
-// Split the Claude pane and give focus back to Claude. Setting a pane's columns makes iTerm resize the
-// window to fit, so: keep Claude at its old width and let the window grow by the rail's width; if that
-// pushes it past the screen's right edge, put the window back and take the rail's width from Claude.
-// Returns "<rail session id>,<window id>,<points the window grew>".
-const OPEN = `on run argv
-  set target to item 1 of argv
-  set cmd to item 2 of argv
-  set cols to (item 3 of argv) as integer
-  set screenRight to (item 4 of argv) as integer
-  set keep to (item 5 of argv) as integer
+// The visible area (no menu bar or Dock) of the screen holding x, as AppleScript bounds "left,top,right,bottom".
+// AppKit measures from the bottom of the main screen; AppleScript bounds measure from its top.
+const SCREEN_BOUNDS = `ObjC.import('AppKit');
+function run(argv) {
+  const x = Number(argv[0]), screens = $.NSScreen.screens, mainH = screens.objectAtIndex(0).frame.size.height;
+  let f = $.NSScreen.mainScreen.visibleFrame;
+  for (let i = 0; i < screens.count; i++) {
+    const s = screens.objectAtIndex(i), r = s.frame;
+    if (x >= r.origin.x && x < r.origin.x + r.size.width) { f = s.visibleFrame; break; }
+  }
+  return [f.origin.x, mainH - f.origin.y - f.size.height, f.origin.x + f.size.width, mainH - f.origin.y].map(Math.round).join(',');
+}`;
+
+// Make a window fill the given bounds.
+const FILL = `on run argv
+  tell application "iTerm2"
+    repeat with w in windows
+      if (id of w as text) is (item 1 of argv) then
+        set bounds of w to {(item 2 of argv) as integer, (item 3 of argv) as integer, (item 4 of argv) as integer, (item 5 of argv) as integer}
+        return "ok"
+      end if
+    end repeat
+  end tell
+  return ""
+end run`;
+
+// Split a pane vertically, running a command in the new pane. Returns the new pane's id.
+const SPLIT = `on run argv
   tell application "iTerm2"
     repeat with w in windows
       repeat with t in tabs of w
         repeat with s in sessions of t
-          if id of s is target then
-            set b0 to bounds of w
-            set c0 to columns of s
-            tell s to set r to (split vertically with same profile command cmd)
-            set grew to 0
-            try
-              set columns of r to cols
-              set columns of s to c0
-              set b1 to bounds of w
-              set grew to (item 3 of b1) - (item 3 of b0)
-              if grew is less than or equal to 0 or (item 3 of b1) > screenRight then
-                set grew to 0
-                set bounds of w to b0
-                set narrower to c0 - cols - 1
-                set newCols to cols
-                if narrower < keep then
-                  set narrower to keep
-                  set newCols to c0 - keep - 1
-                end if
-                -- Not enough room for both: still give the new pane something usable.
-                if newCols < 20 then
-                  set newCols to 20
-                  set narrower to c0 - 21
-                  if narrower < 10 then set narrower to 10
-                end if
-                set columns of s to narrower
-                set columns of r to newCols
-                set bounds of w to b0
-              end if
-            end try
-            tell s to select
-            return (id of r) & "," & (id of w) & "," & grew
+          if id of s is (item 1 of argv) then
+            tell s to set r to (split vertically with same profile command (item 2 of argv))
+            return id of r
           end if
         end repeat
       end repeat
@@ -123,32 +112,66 @@ const OPEN = `on run argv
   return ""
 end run`;
 
-// Shrink a window back by the width the rail added.
-const SHRINK = `on run argv
+// Give each open panel its share of the tab's columns and Claude the rest, then hand focus back to Claude.
+// Setting a pane's columns makes iTerm resize the window, so shrink panes before growing them (the total
+// never overshoots) and put the window back at its bounds afterwards.
+// argv: claude id, desk id, rail id ("" when closed), desk share, rail share (per mille).
+// Returns the final columns "claude,desk,rail" (0 for a closed panel).
+const SIZE = `on run argv
+  set ids to {item 1 of argv, item 2 of argv, item 3 of argv}
+  set shares to {0, (item 4 of argv) as integer, (item 5 of argv) as integer}
   tell application "iTerm2"
     repeat with w in windows
-      if (id of w as text) is (item 1 of argv) then
-        set b to bounds of w
-        set item 3 of b to (item 3 of b) - ((item 2 of argv) as integer)
-        set bounds of w to b
-        return "ok"
-      end if
+      repeat with t in tabs of w
+        set found to {missing value, missing value, missing value}
+        repeat with n from 1 to (count of sessions of t)
+          repeat with i from 1 to 3
+            if (item i of ids) is not "" and id of (session n of t) is (item i of ids) then set item i of found to (session n of t)
+          end repeat
+        end repeat
+        if item 1 of found is not missing value then
+          set b0 to bounds of w
+          set total to -1
+          repeat with i from 1 to 3
+            if item i of found is not missing value then set total to total + (columns of (item i of found)) + 1
+          end repeat
+          set targets to {0, 0, 0}
+          set claudeCols to total
+          repeat with i from 2 to 3
+            if item i of found is not missing value then
+              set c to (total * (item i of shares) + 500) div 1000
+              set item i of targets to c
+              set claudeCols to claudeCols - c - 1
+            end if
+          end repeat
+          set item 1 of targets to claudeCols
+          repeat with k from 1 to 2
+            repeat with i from 1 to 3
+              set p to item i of found
+              if p is not missing value then
+                set cur to columns of p
+                if (k = 1 and cur > (item i of targets)) or (k = 2 and cur < (item i of targets)) then set columns of p to (item i of targets)
+              end if
+            end repeat
+          end repeat
+          set bounds of w to b0
+          tell (item 1 of found) to select
+          set out to {}
+          repeat with i from 1 to 3
+            if item i of found is missing value then
+              set end of out to "0"
+            else
+              set end of out to (columns of (item i of found)) as text
+            end if
+          end repeat
+          set AppleScript's text item delimiters to ","
+          return out as text
+        end if
+      end repeat
     end repeat
   end tell
   return ""
 end run`;
-
-// The right edge (in points) of the visible area of the screen holding x, for the window-grow check.
-const SCREEN_RIGHT = `ObjC.import('AppKit');
-function run(argv) {
-  const x = Number(argv[0]), screens = $.NSScreen.screens;
-  for (let i = 0; i < screens.count; i++) {
-    const f = screens.objectAtIndex(i).visibleFrame;
-    if (x >= f.origin.x && x < f.origin.x + f.size.width) return String(f.origin.x + f.size.width);
-  }
-  const f = $.NSScreen.mainScreen.visibleFrame;
-  return String(f.origin.x + f.size.width);
-}`;
 
 // Ask the panel to quit (it reads "q"); its pane then closes by itself, with no "close session?" prompt.
 const QUIT = `on run argv
@@ -169,7 +192,7 @@ end run`;
 
 const action = process.argv[2] || 'status';
 const which = process.argv[3] || 'rail';
-if (!['open', 'close', 'toggle', 'status'].includes(action)) done('error', { message: `unknown action ${action}` });
+if (!['layout', 'open', 'close', 'toggle', 'status'].includes(action)) done('error', { message: `unknown action ${action}` });
 if (!PANELS[which]) done('error', { message: `unknown panel ${which}` });
 const panel = PANELS[which];
 
@@ -178,53 +201,70 @@ if (!claude) done('no-claude');
 // Never launch iTerm by accident: only talk to it if it's already running. (pgrep can't see it from
 // inside Claude's sandboxed shells, so read the process list instead.)
 if (!(sh('ps', ['-axo', 'comm=']) || '').split('\n').some((c) => c.endsWith('/MacOS/iTerm2'))) done('not-iterm');
-const [claudePane, windowLeft] = (osa(FIND_BY_TTY, claude.tty) || '').split(',');
+const [claudePane, windowId, windowLeft] = (osa(FIND_BY_TTY, claude.tty) || '').split(',');
 if (!claudePane) done('not-iterm');
+
+// Records of Claudes that have exited are left behind when a session isn't closed cleanly; drop them. When ps
+// fails, keep everything: an empty list would read as every Claude gone. This Claude's own record always stays.
+const alive = new Set((sh('ps', ['-axo', 'pid=']) || '').split('\n').map((p) => p.trim()).filter(Boolean));
+alive.add(String(claude.pid));
+if (alive.size > 1) try { for (const f of readdirSync(PANES)) if (f.endsWith('.json') && !alive.has(f.slice(0, -5))) rmSync(join(PANES, f), { force: true }); } catch {}
 
 // One record per Claude holds both panels. A panel whose pane is gone (quit, or closed by hand) is dropped.
 const recordPath = join(PANES, `${claude.pid}.json`);
 let record = {};
 try { record = JSON.parse(readFileSync(recordPath, 'utf8')); } catch {}
-const live = (p) => Boolean(record[p.pane]) && osa(EXISTS, record[p.pane]) === 'yes';
-for (const p of Object.values(PANELS)) if (record[p.pane] && !live(p)) { delete record[p.pane]; delete record[p.grew]; }
+for (const p of Object.values(PANELS)) if (record[p.pane] && osa(EXISTS, record[p.pane]) !== 'yes') delete record[p.pane];
 const save = () => {
   if (!Object.values(PANELS).some((p) => record[p.pane])) return rmSync(recordPath, { force: true });
   mkdirSync(PANES, { recursive: true });
-  writeFileSync(recordPath, JSON.stringify(record));
+  writeFileSync(recordPath, JSON.stringify({ claudePane, claudePid: claude.pid, deskPane: record.deskPane, railPane: record.railPane }));
 };
 save();
-const isOpen = Boolean(record[panel.pane]);
 
+const q = (s) => `"${s.replace(/(["\\])/g, '\\$1')}"`;
+// Split a panel off its neighbour (the rail off an open desk, so it stays on the far right; the desk off Claude).
+const split = (p) => {
+  // iTerm starts the command with a bare system PATH; pass on Claude's so the panel finds gh, git and claude.
+  const cmd = ['/usr/bin/env', `PATH=${process.env.PATH ?? ''}`, process.execPath, join(HERE, p.script),
+    '--pid', String(claude.pid), '--cwd', process.cwd()].map(q).join(' ');
+  const from = p === PANELS.rail && record.deskPane ? record.deskPane : claudePane;
+  const id = osa(SPLIT, from, cmd);
+  if (id) { record[p.pane] = id; save(); }
+  return id;
+};
+const size = () => {
+  const [c, d, r] = (osa(SIZE, claudePane, record.deskPane || '', record.railPane || '', String(PANELS.desk.share), String(PANELS.rail.share)) || '').split(',').map(Number);
+  return { claude: c || 0, desk: d || 0, rail: r || 0 };
+};
+
+// Session start: fill the screen first, then open whatever isn't open and size everything once.
+// With both panels already open (session.start again after /clear) it leaves the window as the person has it.
+const layout = () => {
+  if (record.deskPane && record.railPane) done('already-open', { deskPane: record.deskPane, railPane: record.railPane });
+  const bounds = sh('osascript', ['-l', 'JavaScript', '-e', SCREEN_BOUNDS, String(windowLeft ?? 0)]);
+  if (bounds) osa(FILL, windowId, ...bounds.split(','));
+  if (!record.deskPane) split(PANELS.desk);
+  if (!record.railPane) split(PANELS.rail);
+  if (!record.deskPane && !record.railPane) done('error', { message: 'iTerm did not create the split' });
+  done('opened', { deskPane: record.deskPane, railPane: record.railPane, columns: size() });
+};
 const open = () => {
-  if (isOpen) done('already-open', { [panel.pane]: record[panel.pane] });
-  const q = (s) => `"${s.replace(/(["\\])/g, '\\$1')}"`;
-  const cmd = [process.execPath, join(HERE, panel.script), '--pid', String(claude.pid), '--cwd', process.cwd()].map(q).join(' ');
-  const screenRight = sh('osascript', ['-l', 'JavaScript', '-e', SCREEN_RIGHT, String(windowLeft ?? 0)]) || '100000';
-  // The rail splits off the desk (so it stays on the far right); everything else splits off Claude.
-  const from = which === 'rail' && record.deskPane ? record.deskPane : claudePane;
-  const keep = from === claudePane ? panel.keep : PANELS.desk.floor;
-  const [paneId, windowId, grew] = (osa(OPEN, from, cmd, String(panel.columns), String(Math.floor(+screenRight)), String(keep)) || '').split(',');
-  if (!paneId) done('error', { message: 'iTerm did not create the split' });
-  Object.assign(record, { claudePane, claudePid: claude.pid, windowId, [panel.pane]: paneId, [panel.grew]: +grew || 0 });
-  save();
-  done('opened', { [panel.pane]: paneId, grew: +grew || 0 });
+  if (record[panel.pane]) done('already-open', { [panel.pane]: record[panel.pane] });
+  if (!split(panel)) done('error', { message: 'iTerm did not create the split' });
+  done('opened', { [panel.pane]: record[panel.pane], columns: size() });
 };
 const close = () => {
-  if (!isOpen) done('already-closed');
-  const paneId = record[panel.pane], grew = record[panel.grew];
-  osa(QUIT, paneId);
-  delete record[panel.pane]; delete record[panel.grew];
+  if (!record[panel.pane]) done('already-closed');
+  osa(QUIT, record[panel.pane]);
+  delete record[panel.pane];
   save();
-  // If opening widened the window, narrow it again once the panel's pane has gone (so Claude gets its
-  // width back instead of the window creeping wider with every toggle).
-  if (grew > 0 && record.windowId) {
-    for (let i = 0; i < 30 && osa(EXISTS, paneId) === 'yes'; i++) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
-    osa(SHRINK, record.windowId, String(grew));
-  }
   done('closed');
 };
 
+const isOpen = Boolean(record[panel.pane]);
 if (action === 'status') done(isOpen ? 'open' : 'closed', { panel: which, claudePid: claude.pid, claudePane, [panel.pane]: isOpen ? record[panel.pane] : null });
+if (action === 'layout') layout();
 if (action === 'open') open();
 if (action === 'close') close();
 if (action === 'toggle') isOpen ? close() : open();

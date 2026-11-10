@@ -23,7 +23,7 @@ const pinnedPid = Number(flag('--pid')) || null;
 const taskIndex = new src.TaskIndex();
 
 // ── Data ───────────────────────────────────────────────────────────────────────
-const data = { plan: null, root: null, files: [], diff: null, claude: null, // diff: { path, lines } of the open file
+const data = { plan: null, recent: null, root: null, files: [], diff: null, claude: null, // diff: { path, lines } of the open file
   review: { running: null, result: null, sig: null } };                       // result: what reviewBranch resolved
 const TABS = ['plan', 'diff', 'review'];
 const ui = { tab: 'plan', auto: true, scroll: { plan: 0, diff: 0, review: 0 }, sel: 0, open: null, toast: null,
@@ -58,6 +58,8 @@ const loaders = {
       if (ui.auto) ui.tab = 'plan';
     }
   },
+  // What landed lately, for the Plan tab before there's a plan. gh is slow, so this refreshes rarely.
+  async recent() { if (!data.plan || !data.recent) data.recent = await src.recentWork(cwd); },
   async diff() {
     ({ root: data.root, files: data.files } = await src.branchFiles(cwd));
     if (changed('diff', JSON.stringify(data.files)) && ui.auto && Date.now() - planChangedAt > 3000) ui.tab = 'diff';
@@ -127,8 +129,9 @@ async function loadFile(path) {
   data.diff = { path, lines: data.root ? await src.fileDiff(data.root, path) : [] };
 }
 
-async function collect() {
-  await Promise.all(Object.values(loaders).map((f) => f()));
+// `skip` leaves out slow loaders the interactive panel fills in after its first draw.
+async function collect(skip = []) {
+  await Promise.all(Object.entries(loaders).filter(([k]) => !skip.includes(k)).map(([, f]) => f()));
   return { cwd, ...data };
 }
 
@@ -166,8 +169,30 @@ function wrapRuns(rs, w, first = '', rest = first) {
   lines.push(cur);
   return lines;
 }
+// With no plan yet, Plan shows what landed lately: merged PRs (title, first line of the body), then commits.
+function recentLines(w) {
+  const out = [dim('No plan yet: plan mode output shows up here.')];
+  const { base, prs = [], commits = [] } = data.recent ?? {};
+  // A tag (PR number, commit hash) and a title, cut to fit before styling, with the age on the right.
+  const row = (tag, style, text, right) => {
+    const l = trunc(`${tag} ${clean(text)}`, w - width(right) - 2);
+    return style(l.slice(0, tag.length)) + l.slice(tag.length) + ' '.repeat(Math.max(2, w - width(l) - width(right))) + dim(right);
+  };
+  if (prs.length) {
+    out.push('', bold(fg(C.accent, 'Recent work')), '');
+    for (const p of prs) {
+      out.push(row(`#${p.number}`, dim, p.title, ago(p.mergedAt)));
+      if (p.summary) out.push(dim('    ' + trunc(clean(p.summary), w - 4)));
+    }
+  }
+  if (commits.length) {
+    out.push('', bold(fg(C.accent, `Commits on ${clean(base)}`)), '');
+    for (const c of commits) out.push(row(c.hash, (t) => fg(C.yellow, t), c.subject, ago(c.at)));
+  }
+  return out;
+}
 function planLines(w) {
-  if (!data.plan) return [dim('No plan yet: plan mode output shows up here.')];
+  if (!data.plan) return recentLines(w);
   const out = [dim(src.tildify(data.plan.path))], src_ = data.plan.text.split('\n');
   out.push('');
   let fence = false;
@@ -240,7 +265,11 @@ function fileLines(w) {
 
 // ── Review: the findings, each a selectable block ──────────────────────────────
 const SEV = { high: C.red, medium: C.yellow, low: C.gray };
-const ago = (ms) => { const m = Math.round((Date.now() - ms) / 60000); return m < 1 ? 'just now' : m < 60 ? `${m}m ago` : `${Math.round(m / 60)}h ago`; };
+const ago = (ms) => {
+  if (!Number.isFinite(ms)) return '';
+  const m = Math.round((Date.now() - ms) / 60000);
+  return m < 1 ? 'just now' : m < 60 ? `${m}m ago` : m < 1410 ? `${Math.round(m / 60)}h ago` : `${Math.round(m / 1440)}d ago`;
+};
 function reviewLines(w) {
   const { running, result } = data.review;
   const lines = [], ids = [];
@@ -265,10 +294,10 @@ function reviewLines(w) {
 }
 
 // ── Frame ──────────────────────────────────────────────────────────────────────
-let layout = { tabs: [], body: 2, ids: [], scroll: 0 };
+let layout = { tabs: [], tabRow: 2, body: 3, ids: [], scroll: 0 };
 function frame(W, H) {
-  const w = W - 2, bodyH = H - 3;
-  // Tab bar: each tab's span is remembered for mouse clicks.
+  const w = W - 2, bodyH = H - 4;
+  // Tab bar, between two rules: each tab's span is remembered for mouse clicks.
   const { a, r } = totals();
   const nf = data.review.result?.findings?.length;
   const labels = { plan: 'Plan', diff: `Diff ${data.files.length ? `+${a} −${r}` : ''}`.trim(),
@@ -317,8 +346,9 @@ function frame(W, H) {
     : `↑↓ move · ⏎ open · tab switch · a auto · q quit`;
   // Cut the plain text before styling: a line past the last column would scroll the screen.
   const footer = ui.toast && ui.toast.until > Date.now() ? fg(C.green, trunc(` ${ui.toast.text}`, W - 1)) : dim(trunc(` ${hints}`, W - 1));
-  layout = { tabs, body: 2, ids: ids.slice(scroll, scroll + bodyH), scroll, bodyH };
-  return [' ' + bar, ' ' + dim('─'.repeat(w)), ...view, footer];
+  layout = { tabs, tabRow: 2, body: 3, ids: ids.slice(scroll, scroll + bodyH), scroll, bodyH };
+  const rule = ' ' + dim('─'.repeat(w));
+  return [rule, ' ' + bar, rule, ...view, footer];
 }
 
 // ── Modes ──────────────────────────────────────────────────────────────────────
@@ -350,7 +380,7 @@ if (args.includes('--frame')) {
   const i = args.indexOf('--frame');
   const W = +args[i + 1] || 80, H = +args[i + 2] || 40;
   await collect();
-  pick(flag('--tab') ?? (data.plan ? 'plan' : 'diff'));
+  pick(flag('--tab') ?? 'plan');
   if (flag('--file') != null) { ui.tab = 'diff'; await openFile(+flag('--file')); }
   // A saved review result (reviewBranch's JSON), for testing the Review tab without running a review.
   if (flag('--review-json')) { data.review = { running: null, result: JSON.parse(readFileSync(flag('--review-json'), 'utf8')), sig: diffSig() }; ui.tab = 'review'; }
@@ -385,11 +415,12 @@ const refresh = (name) => {
   let busy = false;
   return async () => { if (busy) return; busy = true; try { await loaders[name](); } catch {} busy = false; draw(); };
 };
-const schedule = { plan: 1000, diff: 3000 };
+const schedule = { plan: 1000, diff: 3000, recent: 60_000 };
 const runners = Object.fromEntries(Object.keys(schedule).map((k) => [k, refresh(k)]));
-// The first load picks the starting tab (the plan if there is one), then changes take over.
-await collect();
-pick(data.plan ? 'plan' : 'diff');
+// The desk opens on Plan (recent work until there's a plan); after the first load, changes take over.
+// Recent work asks gh, which can take seconds, so it arrives after the first draw.
+await collect(['recent']);
+void runners.recent();
 for (const [k, ms] of Object.entries(schedule)) setInterval(runners[k], ms);
 setInterval(draw, 1000);
 draw();
@@ -448,7 +479,7 @@ const handleMouse = async (b, x, y) => {
   if (b === 64) return move(-3);
   if (b === 65) return move(3);
   if (b !== 0) return;
-  if (y === 1) { const t = layout.tabs.find((s) => x - 1 >= s.from && x - 1 < s.to); if (t) manual(t.tab); return; }
+  if (y === layout.tabRow) { const t = layout.tabs.find((s) => x - 1 >= s.from && x - 1 < s.to); if (t) manual(t.tab); return; }
   const i = layout.ids[y - 1 - layout.body];
   if (ui.tab === 'diff' && !ui.open && i != null) return openFile(i);
   if (ui.tab === 'review' && i != null) { if (ui.rsel === i) return jumpTo(i); ui.rsel = i; }

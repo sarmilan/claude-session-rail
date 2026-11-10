@@ -5,7 +5,9 @@ Side panels for Claude Code in iTerm2, like the ones in the Claude desktop app.
 When you start `claude`, two panes open on the right:
 
 - **The rail**, a narrow pane that shows what Claude is working with and what's running. `/rail` hides it or brings it back.
-- **The desk**, a wider pane between Claude and the rail, with tabs for the plan, the diff, and a code review. `/desk` hides it or brings it back.
+- **The desk**, a wider pane between Claude and the rail, with tabs for the plan, the diff, and a code review. It opens on Plan, which shows the latest merged PRs and commits until there's a plan. `/desk` hides it or brings it back.
+
+If you have a `/start` command of your own, it runs as soon as the session starts.
 
 ```
 ┌─ claude ──────────────────────────┬─ rail ───────────────────────────┐
@@ -124,13 +126,13 @@ It has these parts:
 
 1. **The rail** (`bin/rail.mjs`) draws the narrow panel in the terminal. It's plain Node with no dependencies.
 2. **The desk** (`bin/desk.mjs`) draws the wider panel. It finds the plan file in the session's conversation log and asks `git` for the diff. Its reviewer (`bin/reviewer.mjs`) runs `claude -p` with read-only tools, no MCP servers, and no saved session. It notices Claude finishing a turn from Claude's own session file.
-3. **The pane opener** (`bin/pane.mjs`) uses iTerm2's AppleScript support to split Claude's pane, run each panel (desk next to Claude, rail on the far right), and hand focus back to Claude.
+3. **The pane opener** (`bin/pane.mjs`) uses iTerm2's AppleScript support to fill the screen, split Claude's pane, run each panel (desk next to Claude, rail on the far right), size them in one pass, and hand focus back to Claude.
 4. **The plugin** (`hooks/register.ts`) opens both panels when a session starts, adds `/rail` and `/desk`, and closes them when the session ends.
 
 ## Good to know
 
 - It only works in iTerm2 on a Mac. Elsewhere it stays out of the way.
-- The desk is 80 columns wide. If the window can't grow to fit it, Claude's pane gives up width but keeps at least 60 columns.
+- When a session starts, the iTerm window fills the screen (without switching to macOS full screen). The desk takes 28% of the width, the rail 18.5%, and Claude keeps the rest. `/rail` and `/desk` take their share from Claude's pane, and the window never grows.
 - Context shows tokens and the model, but not cost.
 - It reads Claude Code's own files, which can change between Claude Code versions.
 

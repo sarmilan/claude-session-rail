@@ -47,15 +47,19 @@ export async function environment(cwd) {
   };
 }
 
-// The commit this branch forked from the default branch (origin/HEAD, else main/master). On the default
-// branch itself that's HEAD, so diffs against it show just the uncommitted changes.
-async function forkPoint(cwd) {
+// The default branch: origin/HEAD, else the first of main/master that exists (remote, then local).
+async function defaultBranch(cwd) {
   const head = (await run('git', ['rev-parse', '--abbrev-ref', 'origin/HEAD'], { cwd }))?.trim();
-  for (const base of new Set([head, 'origin/main', 'origin/master', 'main', 'master'].filter(Boolean))) {
-    const fork = (await run('git', ['merge-base', 'HEAD', base], { cwd }))?.trim();
-    if (fork) return fork;
-  }
+  for (const base of new Set([head, 'origin/main', 'origin/master', 'main', 'master'].filter(Boolean)))
+    if (await run('git', ['rev-parse', '--verify', '--quiet', base], { cwd })) return base;
   return null;
+}
+
+// The commit this branch forked from the default branch. On the default branch itself that's HEAD, so
+// diffs against it show just the uncommitted changes.
+async function forkPoint(cwd) {
+  const base = await defaultBranch(cwd);
+  return base ? (await run('git', ['merge-base', 'HEAD', base], { cwd }))?.trim() || null : null;
 }
 
 // Lines added/removed on this branch: the working tree against the fork point, so committed and
@@ -216,6 +220,30 @@ export async function prs(cwd, limit = 15) {
     '--json', 'number,title,state,isDraft,url,headRefName,updatedAt'], { cwd, timeout: 15_000 });
   if (out == null) return { ok: false, items: [] };
   try { return { ok: true, items: JSON.parse(out) }; } catch { return { ok: false, items: [] }; }
+}
+
+// ── Recent work: the last merged PRs, and the default branch's latest commits ─
+// Merge commits are left out of the commits: the PRs already stand for them.
+export async function recentWork(cwd, { prs = 5, commits = 8 } = {}) {
+  const base = (await defaultBranch(cwd)) ?? 'HEAD';
+  const [pr, log] = await Promise.all([
+    run('gh', ['pr', 'list', '--state', 'merged', '--limit', String(prs), '--json', 'number,title,mergedAt,body'], { cwd, timeout: 15_000 }),
+    run('git', ['log', '-n', String(commits), '--no-merges', '--format=%h%x1f%s%x1f%ct', base], { cwd }),
+  ]);
+  let items = [];
+  try {
+    items = JSON.parse(pr ?? '[]').map((p) => ({
+      number: p.number, title: p.title, mergedAt: Date.parse(p.mergedAt),
+      // The body's first line of prose: no headings, no blank lines.
+      summary: ((p.body ?? '').split('\n').map((l) => l.trim()).find((l) => l && !l.startsWith('#')) ?? '')
+        .replace(/^([-*+]|\d+[.)])\s+/, '').replace(/\*\*|__|`/g, ''),
+    }));
+  } catch {}
+  const list = (log ?? '').split('\n').filter(Boolean).map((l) => {
+    const [hash, subject, at] = l.split('\x1f');
+    return { hash, subject, at: +at * 1000 };
+  });
+  return { base: base.replace(/^origin\//, ''), prs: items, commits: list };
 }
 
 // ── Background tasks: indexed incrementally from the session transcript ───────
