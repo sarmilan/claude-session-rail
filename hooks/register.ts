@@ -37,6 +37,21 @@ export const register: Register = on => {
     text: MESSAGES[await pane($, 'toggle')] ?? MESSAGES.error,
   }))
 
+  // Rate limits are per account, so one file serves every rail; the newest reading wins.
+  // sh resolves $HOME (no Node APIs here) and the mv keeps a rail from reading half a file.
+  on('session.measure', async ($, e, next) => {
+    if (e.changed.includes('rateLimits'))
+      void $.process
+        .run([
+          '/bin/sh',
+          '-c',
+          'd="$HOME/.claude/session-rail"; mkdir -p "$d" && printf %s "$0" > "$d/usage.json.tmp" && mv "$d/usage.json.tmp" "$d/usage.json"',
+          JSON.stringify({ rateLimits: e.rateLimits }),
+        ])
+        .catch(() => {})
+    return next(e)
+  })
+
   // /clear keeps the same process (the rail follows it by pid), so only close on a real end.
   on('session.end', async ($, e, next) => {
     if (e.reason !== 'clear') await pane($, 'close')

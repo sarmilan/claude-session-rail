@@ -18,7 +18,7 @@ const pinnedPid = Number(flag('--pid')) || null; // the Claude process this rail
 const taskIndex = new src.TaskIndex();
 
 // ── Data ───────────────────────────────────────────────────────────────────────
-const data = { env: null, agents: [], current: null, stats: null, connectors: null, prs: null,
+const data = { env: null, account: null, usage: [], agents: [], current: null, stats: null, connectors: null, prs: null,
   tasks: { running: [], finished: 0, done: [] } };
 
 const loaders = {
@@ -31,6 +31,7 @@ const loaders = {
     data.tasks = files.tasksDir ? await taskIndex.list(files.tasksDir) : { running: [], finished: 0, done: [] };
   },
   async env() { data.env = await src.environment(cwd); },
+  async account() { [data.account, data.usage] = await Promise.all([src.account(), src.usage()]); },
   async prs() { data.prs = await src.prs(cwd); },
   async connectors() { data.connectors = await src.connectors(); },
 };
@@ -110,7 +111,7 @@ const bar = (pct, n = 8) => {
 };
 
 // ── Actions ────────────────────────────────────────────────────────────────────
-const ui = { sel: null, open: { context: false, connectors: false, more: false }, scroll: 0, tick: 0,
+const ui = { sel: null, open: { environment: true, context: false, connectors: false, more: false }, scroll: 0, tick: 0,
   overlay: null, toast: null };
 // Inline images only in a live iTerm2 pane; --frame output (and other terminals) get text octants.
 const iterm = process.env.TERM_PROGRAM === 'iTerm.app' || process.env.LC_TERMINAL === 'iTerm2';
@@ -224,14 +225,20 @@ function buildMain(W) {
 
   // Environment
   const env = data.env;
-  heading('Environment');
-  pair(`▭  ${env?.computer ?? '…'}`);
-  pair(`▢  ${env ? `${env.repo} · ${env.parent}` : '…'}`, '', env && item('repo', () => repoMenu(env)),
-    { leftStyle: (s) => s.replace(/ · (.*)$/, (m, p) => ' · ' + dim(p)) });
-  if (env?.isGit) pair(`⎇  ${env.branch ?? '(detached)'}`, env.dirty ? `${env.dirty} changed` : '',
-    env.branch && item('branch', () => branchMenu(env)), { rightStyle: dim });
-  pair('◌  Remote Control', '/remote-control', item('remote', () => toast('Type /remote-control in your Claude session')),
-    { leftStyle: dim, rightStyle: dim });
+  rule();
+  pair(`Environment ${caret(ui.open.environment)}`, '', item('environment', () => { ui.open.environment = !ui.open.environment; }),
+    { leftStyle: bold });
+  if (ui.open.environment) {
+    pair(`▭  ${env?.computer ?? '…'}`);
+    // Which login this Claude uses.
+    if (data.account?.email) pair(`@  ${data.account.email}`, '', undefined, { leftStyle: (s) => s.slice(0, 3) + dim(s.slice(3)) });
+    pair(`▢  ${env ? `${env.repo} · ${env.parent}` : '…'}`, '', env && item('repo', () => repoMenu(env)),
+      { leftStyle: (s) => s.replace(/ · (.*)$/, (m, p) => ' · ' + dim(p)) });
+    if (env?.isGit) pair(`⎇  ${env.branch ?? '(detached)'}`, env.dirty ? `${env.dirty} changed` : '',
+      env.branch && item('branch', () => branchMenu(env)), { rightStyle: dim });
+    pair('◌  Remote Control', '/remote-control', item('remote', () => toast('Type /remote-control in your Claude session')),
+      { leftStyle: dim, rightStyle: dim });
+  }
   rule();
 
   // Context
@@ -241,16 +248,23 @@ function buildMain(W) {
     item('context', () => { ui.open.context = !ui.open.context; }),
     { leftStyle: bold, rightStyle: (s) => (pct != null ? dim(`${pct}% `) + bar(pct) : dim(s)) });
   if (ui.open.context) {
+    const kv = (k, v) => line(`  ${dim(k.padEnd(9))}${trunc(v, inner - 11)}`);
     if (!st) line(dim('  No session data yet'));
     else {
-      const kv = (k, v) => line(`  ${dim(k.padEnd(9))}${trunc(v, inner - 11)}`);
       if (st.model) kv('Model', [st.model, st.effort].filter(Boolean).join(' · '));
       kv('Tokens', `${tokens(st.contextTokens)} / ${tokens(st.contextSize)}`);
       if (st.costUsd != null) kv('Cost', `$${st.costUsd.toFixed(2)}${st.apiMs ? ` · API ${Math.round(st.apiMs / 60000)}m` : ''}`);
       if (st.linesAdded != null) kv('Lines', `+${st.linesAdded} −${st.linesRemoved ?? 0}`);
       if (st.cacheWarm != null) kv('Cache', `${st.cacheWarm ? 'warm' : 'cold'}${st.cacheHit != null ? ` · ${Math.round(st.cacheHit * 100)}% hits` : ''}`);
-      if (st.limit5h) kv('5h limit', `${st.limit5h.used_percentage}% · resets ${resetAt(st.limit5h.resets_at)}`);
-      if (st.limit7d) kv('7d limit', `${st.limit7d.used_percentage}% · resets ${resetAt(st.limit7d.resets_at)}`);
+    }
+    // Account-wide, so shown even before this session has a transcript.
+    for (const l of data.usage) {
+      const label = { five_hour: '5h left', seven_day: '7d left' }[l.kind];
+      if (!label) continue;
+      const reset = l.resetsAt ? Date.parse(l.resetsAt) / 1000 : 0;
+      // A window whose reset has passed is fresh again, even before the next reading arrives.
+      const left = reset && reset * 1000 < Date.now() ? 100 : Math.max(0, Math.round(100 - l.percentUsed));
+      kv(label, `${left}%${reset * 1000 > Date.now() ? ` · resets ${resetAt(reset)}` : ''}`);
     }
   }
   rule();
@@ -440,7 +454,7 @@ const refresh = (name) => {
   let busy = false;
   return async () => { if (busy) return; busy = true; try { await loaders[name](); } catch {} busy = false; draw(); };
 };
-const schedule = { fast: 1000, env: 5000, prs: 60_000, connectors: 300_000 };
+const schedule = { fast: 1000, env: 5000, account: 5000, prs: 60_000, connectors: 300_000 };
 const runners = Object.fromEntries(Object.keys(schedule).map((k) => [k, refresh(k)]));
 for (const [k, ms] of Object.entries(schedule)) { runners[k](); setInterval(runners[k], ms); }
 setInterval(() => { ui.tick++; draw(); }, 1000);

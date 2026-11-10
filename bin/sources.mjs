@@ -44,6 +44,18 @@ export async function environment(cwd) {
   };
 }
 
+// ── Account: who Claude is signed in as (the login record /status reads) ───────
+export async function account() {
+  const a = (await readJson(join(HOME, '.claude.json')))?.oauthAccount;
+  return a?.emailAddress ? { email: a.emailAddress } : null;
+}
+
+// ── Usage: rate-limit windows, written by the plugin's session.measure hook ────
+export async function usage() {
+  const u = await readJson(join(CLAUDE, 'session-rail', 'usage.json'));
+  return Array.isArray(u?.rateLimits) ? u.rateLimits : [];
+}
+
 // ── Active agents: every live Claude session on this Mac ───────────────────────
 export async function sessions() {
   const dir = join(CLAUDE, 'sessions');
