@@ -69,8 +69,9 @@ If macOS asks whether to allow controlling iTerm2, allow it. That's how the rail
 - The rail opens by itself when you start `claude`.
 - `/rail` hides or shows it.
 - It closes when you quit Claude.
-- Keys: `↑` `↓` to move, `Enter` to open, `Esc` to go back, `c` to change creature, `q` to close the rail.
-- A little pixel creature wanders along the bottom: Claudey the snail, a turtle or a crab. It hurries while Claude is busy and falls asleep when things go quiet. Your pick is remembered.
+- Keys: `↑` `↓` to move, `Enter` to open, `Esc` to go back, `c` to change creature, `[` `]` to preview its growth stages (for 10 seconds), `q` to close the rail.
+- A little pixel creature wanders along the bottom: Claudey the snail, a turtle or a crab. It walks through its own habitat (woodland for the snail, a pond for the turtle, a beach for the crab) with plants swaying gently behind it in iTerm2. It hurries while Claude is busy and falls asleep when things go quiet. Your pick is remembered.
+- The creature grows as the session's context window fills: hatchling until the session's first reply, then juvenile, adult from 40% (faster, hopping), and heavy from 60% (bigger, shaking, fuming). Each creature has a drawing for each stage, from a pale little hatchling to a spiked, scowling heavy.
 
 ## How it works
 

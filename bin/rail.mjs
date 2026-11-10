@@ -9,7 +9,7 @@ import { openSync, readSync, fstatSync, closeSync, readFileSync, writeFileSync, 
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import * as src from './sources.mjs';
-import { createMascot, creatureNames } from './mascot.mjs';
+import { createMascot, creatureNames, stageFor } from './mascot.mjs';
 
 const args = process.argv.slice(2);
 const flag = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
@@ -125,6 +125,26 @@ const showMascot = (W, H) => H >= 24 && W >= mascot.width + 4;
 const nextCreature = () => {
   const name = mascot.next();
   try { mkdirSync(dirname(MASCOT_FILE), { recursive: true }); writeFileSync(MASCOT_FILE, JSON.stringify({ creature: name })); } catch {}
+};
+// The pet grows with the context window. [ ] preview the other stages for PREVIEW_MS, then it goes
+// back to following the context (--pet-stage N pins one for --frame).
+const STAGE_NAMES = ['Hatchling', 'Juvenile', 'Adult', 'Heavy'];
+const PREVIEW_MS = 10_000;
+const stageFlag = flag('--pet-stage');
+const pinned = stageFlag != null && /^[0-3]$/.test(stageFlag) ? +stageFlag : null;
+const preview = { stage: pinned, until: pinned != null ? Infinity : 0 };
+const contextStage = () => stageFor(data.stats?.contextPct);
+const petStage = () => {
+  if (preview.stage != null && Date.now() >= preview.until) {
+    preview.stage = null;
+    toast(`Back to context: ${STAGE_NAMES[contextStage()]}`);
+  }
+  return preview.stage ?? contextStage();
+};
+const previewStage = (delta) => {
+  const n = Math.max(0, Math.min(STAGE_NAMES.length - 1, (preview.stage ?? contextStage()) + delta)); // from the stage on screen
+  Object.assign(preview, { stage: n, until: Date.now() + PREVIEW_MS });
+  toast(`${STAGE_NAMES[n]} (preview)`);
 };
 const claudeBusy = () => data.tasks.running.length > 0 || data.current?.status === 'busy';
 
@@ -415,6 +435,7 @@ if (args.includes('--frame')) {
   const W = +args[i + 1] || 42, H = +args[i + 2] || 60;
   for (const k of ['context', 'connectors']) if (args.includes(`--open-${k}`)) ui.open[k] = true;
   await collect();
+  mascot.setStage(petStage());
   // e.g. --activate pr:8  or  --activate finished,opt:0  (a chain of clicks)
   for (const id of (flag('--activate') || '').split(',').filter(Boolean)) frame(W, H).items.find((it) => it.id === id)?.activate();
   console.log(frame(W, H).lines.join('\n'));
@@ -458,7 +479,7 @@ const schedule = { fast: 1000, env: 5000, account: 5000, prs: 60_000, connectors
 const runners = Object.fromEntries(Object.keys(schedule).map((k) => [k, refresh(k)]));
 for (const [k, ms] of Object.entries(schedule)) { runners[k](); setInterval(runners[k], ms); }
 setInterval(() => { ui.tick++; draw(); }, 1000);
-setInterval(() => { mascot.step(out.columns || 40, claudeBusy()); draw(); }, 200);
+setInterval(() => { mascot.setStage(petStage()); mascot.step(out.columns || 40, claudeBusy()); draw(); }, 200);
 draw();
 
 // A rail pinned to a Claude process quits (closing its pane) once that process is gone for 3s.
@@ -496,6 +517,8 @@ const handleKey = (k) => {
     if (k === 'q') return quit();
     if (k === 'r') { Object.values(runners).forEach((f) => f()); return toast('Refreshing…'); }
     if (k === 'c') return nextCreature();
+    if (k === '[') return previewStage(-1);
+    if (k === ']') return previewStage(1);
     const p = selectedPr();
     if (p && k === 'o') return launch('open', [p.url], `Opened #${p.number}`);
     if (p && k === 'y') return copy(p.url, `link to #${p.number}`);
