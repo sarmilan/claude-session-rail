@@ -1,7 +1,7 @@
 {
   "name": "session-rail",
   "version": "0.1.0",
-  "description": "A Claude-desktop-style session rail beside Claude Code in iTerm2: environment, context, connectors, PRs, background tasks and every active Claude session. Opens on start; /rail toggles it.",
+  "description": "A Claude-desktop-style session rail beside Claude Code in iTerm2: environment, context, connectors, PRs, background tasks and every active Claude session. Plus a desk with tabs for the plan, the diff and a code review. Both open on start; /rail and /desk toggle them.",
   "license": "MIT",
   "repository": "https://github.com/sarmilan/claude-session-rail",
   "author": {

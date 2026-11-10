@@ -6,8 +6,8 @@ const harness = (on: Parameters<Parameters<typeof test>[1]>[1], reply = 'opened'
   on('command.register', () => ({ value: { command: 'rail' } }))
   on('process.run', (_, e) => {
     const argv = e.argv ?? []
-    // argv: sh -c 'exec node "$0" "$1"' <plugin root>/bin/pane.mjs <action>
-    calls.push(`${String(argv[3] ?? '').endsWith('/bin/pane.mjs') ? 'pane.mjs' : '?'} ${String(argv[4] ?? '')}`)
+    // argv: sh -c 'exec node "$0" "$1" "$2"' <plugin root>/bin/pane.mjs <action> <panel>
+    calls.push(`${String(argv[3] ?? '').endsWith('/bin/pane.mjs') ? 'pane.mjs' : '?'} ${String(argv[4] ?? '')} ${String(argv[5] ?? '')}`)
     return { value: { exitCode: 0, stdout: `{"state":"${reply}"}\n`, stderr: '' } }
   })
   on('session.start', (_, e) => ({ cwd: e.cwd }))
@@ -16,32 +16,45 @@ const harness = (on: Parameters<Parameters<typeof test>[1]>[1], reply = 'opened'
   return calls
 }
 
-test('a terminal session opens the rail on start', async ($, on) => {
+test('a terminal session opens the rail, then the desk, on start', async ($, on) => {
   const calls = harness(on)
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
-  await new Promise(r => setTimeout(r, 0))
-  expect(calls).toEqual(['pane.mjs open'])
+  await new Promise(r => setTimeout(r, 10))
+  expect(calls).toEqual(['pane.mjs open rail', 'pane.mjs open desk'])
 })
 
 test('a non-interactive or desktop session does not open it', async ($, on) => {
   const calls = harness(on)
   await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
   await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true })
-  await new Promise(r => setTimeout(r, 0))
+  await new Promise(r => setTimeout(r, 10))
   expect(calls.length).toBe(0)
 })
 
 test('/rail toggles and reports the result', async ($, on) => {
   const calls = harness(on, 'closed')
   const result = await $.command.run({ command: 'rail', args: '' })
-  expect(calls).toEqual(['pane.mjs toggle'])
+  expect(calls).toEqual(['pane.mjs toggle rail'])
   expect(result.text).toBe('Rail closed.')
 })
 
-test('session end closes the rail, but /clear keeps it', async ($, on) => {
+test('/desk toggles the desk and reports the result', async ($, on) => {
+  const calls = harness(on, 'opened')
+  const result = await $.command.run({ command: 'desk', args: '' })
+  expect(calls).toEqual(['pane.mjs toggle desk'])
+  expect(result.text).toBe('Desk opened.')
+})
+
+test('outside iTerm2 the message names the panel', async ($, on) => {
+  harness(on, 'not-iterm')
+  const result = await $.command.run({ command: 'desk', args: '' })
+  expect(result.text).toBe('The desk only opens when Claude runs in iTerm2.')
+})
+
+test('session end closes both panels, but /clear keeps them', async ($, on) => {
   const calls = harness(on, 'closed')
   await $.session.end({ reason: 'clear', sessionId: 'a' })
   expect(calls.length).toBe(0)
   await $.session.end({ reason: 'prompt_input_exit', sessionId: 'a' })
-  expect(calls).toEqual(['pane.mjs close'])
+  expect(calls).toEqual(['pane.mjs close rail', 'pane.mjs close desk'])
 })

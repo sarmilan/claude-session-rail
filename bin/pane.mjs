@@ -1,6 +1,8 @@
 #!/usr/bin/env node
-// Opens/closes the session rail as an iTerm split beside the Claude pane that runs this.
-//   node pane.mjs open | close | toggle | status
+// Opens/closes the session rail and the desk as iTerm splits beside the Claude pane that runs this.
+//   node pane.mjs open | close | toggle | status [rail | desk]      (rail if not given)
+// The layout is Claude │ desk │ rail: the desk splits off Claude (landing left of an open rail), and the
+// rail splits off the desk when the desk is already open.
 // Prints one JSON line: { state, ... }. Always exits 0 so callers never break.
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
@@ -10,7 +12,13 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PANES = join(homedir(), '.claude', 'session-rail', 'panes');
-const RAIL_COLUMNS = 44;
+// Each panel: its script, its width, the narrowest Claude's pane may get when the window can't grow and the
+// panel takes Claude's width (Claude keeps room to work beside the wide desk), the narrowest the panel may
+// get when another panel takes its width, and its fields in the per-Claude record.
+const PANELS = {
+  rail: { script: 'rail.mjs', columns: 44, keep: 20, floor: 30, pane: 'railPane', grew: 'grew' },
+  desk: { script: 'desk.mjs', columns: 80, keep: 60, floor: 50, pane: 'deskPane', grew: 'deskGrew' },
+};
 const done = (state, extra = {}) => { console.log(JSON.stringify({ state, ...extra })); process.exit(0); };
 
 const sh = (cmd, args) => { try { return execFileSync(cmd, args, { encoding: 'utf8', timeout: 10_000 }).trim(); } catch { return null; } };
@@ -70,6 +78,7 @@ const OPEN = `on run argv
   set cmd to item 2 of argv
   set cols to (item 3 of argv) as integer
   set screenRight to (item 4 of argv) as integer
+  set keep to (item 5 of argv) as integer
   tell application "iTerm2"
     repeat with w in windows
       repeat with t in tabs of w
@@ -88,9 +97,19 @@ const OPEN = `on run argv
                 set grew to 0
                 set bounds of w to b0
                 set narrower to c0 - cols - 1
-                if narrower < 20 then set narrower to 20
+                set newCols to cols
+                if narrower < keep then
+                  set narrower to keep
+                  set newCols to c0 - keep - 1
+                end if
+                -- Not enough room for both: still give the new pane something usable.
+                if newCols < 20 then
+                  set newCols to 20
+                  set narrower to c0 - 21
+                  if narrower < 10 then set narrower to 10
+                end if
                 set columns of s to narrower
-                set columns of r to cols
+                set columns of r to newCols
                 set bounds of w to b0
               end if
             end try
@@ -131,7 +150,7 @@ function run(argv) {
   return String(f.origin.x + f.size.width);
 }`;
 
-// Ask the rail to quit (it reads "q"); its pane then closes by itself, with no "close session?" prompt.
+// Ask the panel to quit (it reads "q"); its pane then closes by itself, with no "close session?" prompt.
 const QUIT = `on run argv
   tell application "iTerm2"
     repeat with w in windows
@@ -149,7 +168,10 @@ const QUIT = `on run argv
 end run`;
 
 const action = process.argv[2] || 'status';
+const which = process.argv[3] || 'rail';
 if (!['open', 'close', 'toggle', 'status'].includes(action)) done('error', { message: `unknown action ${action}` });
+if (!PANELS[which]) done('error', { message: `unknown panel ${which}` });
+const panel = PANELS[which];
 
 const claude = findClaude();
 if (!claude) done('no-claude');
@@ -159,37 +181,50 @@ if (!(sh('ps', ['-axo', 'comm=']) || '').split('\n').some((c) => c.endsWith('/Ma
 const [claudePane, windowLeft] = (osa(FIND_BY_TTY, claude.tty) || '').split(',');
 if (!claudePane) done('not-iterm');
 
+// One record per Claude holds both panels. A panel whose pane is gone (quit, or closed by hand) is dropped.
 const recordPath = join(PANES, `${claude.pid}.json`);
-let record = null;
+let record = {};
 try { record = JSON.parse(readFileSync(recordPath, 'utf8')); } catch {}
-const isOpen = Boolean(record?.railPane) && osa(EXISTS, record.railPane) === 'yes';
-if (record && !isOpen) rmSync(recordPath, { force: true }); // stale: the rail was quit or its pane closed
+const live = (p) => Boolean(record[p.pane]) && osa(EXISTS, record[p.pane]) === 'yes';
+for (const p of Object.values(PANELS)) if (record[p.pane] && !live(p)) { delete record[p.pane]; delete record[p.grew]; }
+const save = () => {
+  if (!Object.values(PANELS).some((p) => record[p.pane])) return rmSync(recordPath, { force: true });
+  mkdirSync(PANES, { recursive: true });
+  writeFileSync(recordPath, JSON.stringify(record));
+};
+save();
+const isOpen = Boolean(record[panel.pane]);
 
 const open = () => {
-  if (isOpen) done('already-open', { railPane: record.railPane });
+  if (isOpen) done('already-open', { [panel.pane]: record[panel.pane] });
   const q = (s) => `"${s.replace(/(["\\])/g, '\\$1')}"`;
-  const cmd = [process.execPath, join(HERE, 'rail.mjs'), '--pid', String(claude.pid), '--cwd', process.cwd()].map(q).join(' ');
+  const cmd = [process.execPath, join(HERE, panel.script), '--pid', String(claude.pid), '--cwd', process.cwd()].map(q).join(' ');
   const screenRight = sh('osascript', ['-l', 'JavaScript', '-e', SCREEN_RIGHT, String(windowLeft ?? 0)]) || '100000';
-  const [railPane, windowId, grew] = (osa(OPEN, claudePane, cmd, String(RAIL_COLUMNS), String(Math.floor(+screenRight))) || '').split(',');
-  if (!railPane) done('error', { message: 'iTerm did not create the split' });
-  mkdirSync(PANES, { recursive: true });
-  writeFileSync(recordPath, JSON.stringify({ railPane, claudePane, claudePid: claude.pid, windowId, grew: +grew || 0, openedAt: Date.now() }));
-  done('opened', { railPane, grew: +grew || 0 });
+  // The rail splits off the desk (so it stays on the far right); everything else splits off Claude.
+  const from = which === 'rail' && record.deskPane ? record.deskPane : claudePane;
+  const keep = from === claudePane ? panel.keep : PANELS.desk.floor;
+  const [paneId, windowId, grew] = (osa(OPEN, from, cmd, String(panel.columns), String(Math.floor(+screenRight)), String(keep)) || '').split(',');
+  if (!paneId) done('error', { message: 'iTerm did not create the split' });
+  Object.assign(record, { claudePane, claudePid: claude.pid, windowId, [panel.pane]: paneId, [panel.grew]: +grew || 0 });
+  save();
+  done('opened', { [panel.pane]: paneId, grew: +grew || 0 });
 };
 const close = () => {
   if (!isOpen) done('already-closed');
-  osa(QUIT, record.railPane);
-  rmSync(recordPath, { force: true });
-  // If opening widened the window, narrow it again once the rail's pane has gone (so Claude gets its
+  const paneId = record[panel.pane], grew = record[panel.grew];
+  osa(QUIT, paneId);
+  delete record[panel.pane]; delete record[panel.grew];
+  save();
+  // If opening widened the window, narrow it again once the panel's pane has gone (so Claude gets its
   // width back instead of the window creeping wider with every toggle).
-  if (record.grew > 0 && record.windowId) {
-    for (let i = 0; i < 30 && osa(EXISTS, record.railPane) === 'yes'; i++) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
-    osa(SHRINK, record.windowId, String(record.grew));
+  if (grew > 0 && record.windowId) {
+    for (let i = 0; i < 30 && osa(EXISTS, paneId) === 'yes'; i++) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+    osa(SHRINK, record.windowId, String(grew));
   }
   done('closed');
 };
 
-if (action === 'status') done(isOpen ? 'open' : 'closed', { claudePid: claude.pid, claudePane, railPane: isOpen ? record.railPane : null });
+if (action === 'status') done(isOpen ? 'open' : 'closed', { panel: which, claudePid: claude.pid, claudePane, [panel.pane]: isOpen ? record[panel.pane] : null });
 if (action === 'open') open();
 if (action === 'close') close();
 if (action === 'toggle') isOpen ? close() : open();
