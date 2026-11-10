@@ -1,26 +1,37 @@
 import { expect, test } from 'claude-code/testing'
 
 // Each hook below stands for the engine. process.run records the controller action asked for.
-const harness = (on: Parameters<Parameters<typeof test>[1]>[1], reply = 'opened') => {
+const harness = (on: Parameters<Parameters<typeof test>[1]>[1], reply = 'opened', commands = ['help']) => {
   const calls: string[] = []
   on('command.register', () => ({ value: { command: 'rail' } }))
+  on('command.list', () => ({ value: commands.map(name => ({ name, description: '', source: 'user' as const })) }))
   on('process.run', (_, e) => {
     const argv = e.argv ?? []
     // argv: sh -c 'exec node "$0" "$1" "$2"' <plugin root>/bin/pane.mjs <action> <panel>
-    calls.push(`${String(argv[3] ?? '').endsWith('/bin/pane.mjs') ? 'pane.mjs' : '?'} ${String(argv[4] ?? '')} ${String(argv[5] ?? '')}`)
+    calls.push(`${String(argv[3] ?? '').endsWith('/bin/pane.mjs') ? 'pane.mjs' : '?'} ${String(argv[4] ?? '')} ${String(argv[5] ?? '')}`.trim())
     return { value: { exitCode: 0, stdout: `{"state":"${reply}"}\n`, stderr: '' } }
   })
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.end', (_, e) => ({ sessionId: e.sessionId }))
-  on('command.run', () => ({}))
+  on('command.run', (_, e) => {
+    calls.push(`/${e.command}`)
+    return {}
+  })
   return calls
 }
 
-test('a terminal session opens the rail, then the desk, on start', async ($, on) => {
+test('a terminal session lays out both panels in one call on start', async ($, on) => {
   const calls = harness(on)
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
   await new Promise(r => setTimeout(r, 10))
-  expect(calls).toEqual(['pane.mjs open rail', 'pane.mjs open desk'])
+  expect(calls).toEqual(['pane.mjs layout'])
+})
+
+test('a terminal session runs /start on start when there is one', async ($, on) => {
+  const calls = harness(on, 'opened', ['help', 'start'])
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await new Promise(r => setTimeout(r, 10))
+  expect(calls).toContain('/start')
 })
 
 test('a non-interactive or desktop session does not open it', async ($, on) => {

@@ -4,9 +4,9 @@ import type { EngineInterface, Register } from 'claude-code'
 // It runs through sh so the user's PATH finds `node`; the script path is passed as an argument,
 // never spliced into the command string.
 type Panel = 'rail' | 'desk'
-const pane = ($: EngineInterface, action: 'open' | 'close' | 'toggle', panel: Panel = 'rail') =>
+const pane = ($: EngineInterface, action: 'layout' | 'open' | 'close' | 'toggle', panel: Panel | '' = '') =>
   $.process
-    .run(['/bin/sh', '-c', 'exec node "$0" "$1" "$2"', `${$.plugin.root}/bin/pane.mjs`, action, panel], { timeoutMs: 15_000 })
+    .run(['/bin/sh', '-c', 'exec node "$0" "$1" "$2"', `${$.plugin.root}/bin/pane.mjs`, action, panel], { timeoutMs: 20_000 })
     .then(({ stdout }) => {
       try {
         return (JSON.parse(stdout.trim()) as { state?: string }).state ?? 'error'
@@ -15,6 +15,19 @@ const pane = ($: EngineInterface, action: 'open' | 'close' | 'toggle', panel: Pa
       }
     })
     .catch(() => 'error')
+
+// The person's own /start (a skill or command of theirs, not a plugin's or an MCP server's), run as if typed
+// once the session is idle. The plugin is shared, so it runs only where such a command exists, and once per
+// process: session.start fires again after /clear. A refusal (a host's limit, say) is ignored.
+let startRan = false
+const runStart = async ($: EngineInterface) => {
+  if (startRan) return
+  startRan = true
+  try {
+    if ((await $.command.list()).some(c => c.name === 'start' && c.source === 'user'))
+      await $.command.run({ command: 'start', args: '' })
+  } catch {}
+}
 
 const message = (state: string, panel: Panel) => {
   const name = panel === 'rail' ? 'Rail' : 'Desk'
@@ -33,10 +46,12 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'rail', description: 'Open or close the session rail beside this pane' })
     await $.command.register({ name: 'desk', description: 'Open or close the desk (plan, diff and code review) beside this pane' })
-    // Interactive terminal sessions only, and never block startup on iTerm. One after the other, since both
-    // panels share a record per Claude: the rail first, then the desk splits off Claude to its left, so
-    // each takes its width from Claude when the window can't grow.
-    if (e.isInteractive && e.surface === 'terminal') void pane($, 'open', 'rail').then(() => pane($, 'open', 'desk'))
+    // Interactive terminal sessions only, and never block startup on iTerm. One call fills the screen, opens
+    // both panels and sizes them once, so the window doesn't jump between steps. Then /start, if there is one.
+    if (e.isInteractive && e.surface === 'terminal') {
+      void pane($, 'layout')
+      void runStart($)
+    }
     return next(e)
   })
 
