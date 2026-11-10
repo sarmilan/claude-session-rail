@@ -33,6 +33,7 @@ export async function environment(cwd) {
       ])
     : [null, null];
   const root = top || cwd;
+  const diff = top ? await branchDiff(cwd) : null;
   return {
     computer: hostname().replace(/\.local$/, ''),
     root,
@@ -41,7 +42,23 @@ export async function environment(cwd) {
     branch: branch?.trim() || null,
     dirty: porcelain ? porcelain.split('\n').filter(Boolean).length : 0,
     isGit: Boolean(top),
+    added: diff?.added ?? 0,
+    removed: diff?.removed ?? 0,
   };
+}
+
+// Lines added/removed on this branch: the working tree against the point it forked from the default branch,
+// so committed and uncommitted work both count (untracked files don't). On the default branch itself that
+// fork point is HEAD, leaving just the uncommitted changes.
+async function branchDiff(cwd) {
+  const head = (await run('git', ['rev-parse', '--abbrev-ref', 'origin/HEAD'], { cwd }))?.trim();
+  for (const base of new Set([head, 'origin/main', 'origin/master', 'main', 'master'].filter(Boolean))) {
+    const fork = (await run('git', ['merge-base', 'HEAD', base], { cwd }))?.trim();
+    if (!fork) continue;
+    const stat = (await run('git', ['diff', '--shortstat', fork], { cwd })) ?? '';
+    return { added: +(stat.match(/(\d+) insertion/)?.[1] ?? 0), removed: +(stat.match(/(\d+) deletion/)?.[1] ?? 0) };
+  }
+  return null;
 }
 
 // ── Account: who Claude is signed in as (the login record /status reads) ───────
