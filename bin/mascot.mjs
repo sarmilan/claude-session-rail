@@ -1,13 +1,15 @@
 // The rail's mascot: a little pixel creature (see creatures.mjs) wandering along a floor line under the
 // legend. It walks, turns at the edges, blinks, hurries when Claude is busy, and falls asleep after a
-// minute of nothing happening.
+// minute of nothing happening. It grows through four stages as the context window fills (`setStage`),
+// moving faster and angrier at each: hopping from the adult on, shaking and fuming when heavy.
 //
-// Sprites are 34×16 pixel maps. In iTerm2 the creature and its floor are one inline PNG strip, two rows
-// tall and as wide as the rail, so each sprite pixel is a ~2pt square and the floor is a ~1pt line along
-// the very bottom. Elsewhere (and in --frame output) it falls back to Unicode octants: 2×4 pixels per
+// Sprites are 34×16 pixel maps. In iTerm2 the creature and its floor are one inline PNG strip, three rows
+// tall (four for a stage drawn bigger) and as wide as the rail, so each sprite pixel is a ~2pt square and
+// the floor is a ~1pt line through the middle of the last row. Elsewhere (and in --frame output) it falls back to Unicode octants: 2×4 pixels per
 // character, 17×4 characters, over a text floor.
 import { deflateSync } from 'node:zlib';
 import { CREATURES, SPR_W, SPR_H } from './creatures.mjs';
+import { foliage } from './habitats.mjs';
 
 const ESC = '\x1b[';
 const IDLE_MS = 60_000;  // nothing busy for this long → sleep
@@ -31,7 +33,22 @@ function pixels(c, { frame, blink, sleep, dir, z }) {
   }
   return rows;
 }
-const colorOf = (c, key) => (key === 'Z' ? ZED_COLOR : c.palette[key]);
+const RAGE_COLOR = 196;
+const colorOf = (c, key) => (key === 'Z' ? ZED_COLOR : key === 'A' ? RAGE_COLOR : c.palette[key]);
+
+// How each growth stage behaves: `dSpeed` adjusts ticks per frame for creatures without their own stage
+// drawings; from the adult on it hops every `hopEvery` ticks (`hop`: lift in sprite pixels per tick),
+// and the heavy one shakes now and then and flashes an anger mark.
+const MOOD = [
+  { dSpeed: 1 },
+  { dSpeed: 0 },
+  { dSpeed: -1, hopEvery: 16, hop: [1, 2, 2, 1] },
+  { dSpeed: -9, hopEvery: 8, hop: [1, 2, 3, 3, 2, 1], shake: 0.12, rage: true },
+];
+// Stage from how full the context window is (percent): a hatchling until the session's first reply
+// reports a reading (null), a juvenile from then on, then adult and heavy as the window fills.
+export const stageFor = (pct) => (pct == null ? 0 : pct < 40 ? 1 : pct < 60 ? 2 : 3);
+const ANGER = ['.A.A.', 'AA.AA', '.....', 'AA.AA', '.A.A.']; // a popping vein, drawn up by a claw
 
 const xtermRgb = (n) => {
   if (n >= 232) { const v = 8 + 10 * (n - 232); return [v, v, v]; }
@@ -60,19 +77,38 @@ const pngEncode = (w, h, raw) => {
   return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
     pngChunk('IHDR', ihdr), pngChunk('IDAT', deflateSync(raw)), pngChunk('IEND', Buffer.alloc(0))]);
 };
-// The strip is drawn at 4 image pixels per sprite pixel (crisp on Retina): 64 rows of creature, then a
-// 2-pixel floor line. `colPx` is image pixels per terminal column; `x` is the creature's left edge.
-const SCALE = 4, STRIP_H = SPR_H * SCALE + 2, FLOOR_RGB = xtermRgb(240);
-function stripImage(c, rows, cols, colPx, x) {
+// The strip is `stripRows` terminal rows of ROW_PX image pixels, drawn at `scale` image pixels per sprite
+// pixel (4, or 5 for a stage drawn bigger; crisp on Retina). The 2-pixel floor runs through the middle of
+// the last row, where a `─` sits, so it lines up with Claude's own input-bar rule in the pane beside it;
+// the creature stands on it (`lift` sprite pixels above it mid-hop), with transparent space above.
+// Behind it grows `ground`, the habitat's foliage ([x, up, colour] sprite pixels, always at SCALE so the
+// scenery holds still when the pet is drawn bigger).
+// `colPx` is image pixels per terminal column; `x` is the creature's left edge.
+const SCALE = 4, STRIP_ROWS = 3, ROW_PX = 34, FLOOR_RGB = xtermRgb(240);
+const SWAY = [0, 1, 0, -1]; // the foliage's lean, a step a second (5 ticks)
+function stripImage(c, rows, cols, colPx, x, { scale = SCALE, stripRows = STRIP_ROWS, lift = 0, rage = false, flip = false, ground = [] } = {}) {
+  const h = stripRows * ROW_PX, floorY = h - ROW_PX / 2 - 1, top = floorY - (SPR_H + lift) * scale;
   const w = Math.max(1, Math.round(cols * colPx)), stride = w * 4 + 1;
-  const raw = Buffer.alloc(STRIP_H * stride);
-  for (let y = 0; y < SPR_H * SCALE; y++) for (let px = 0; px < SPR_W * SCALE; px++) {
-    const key = rows[Math.floor(y / SCALE)][Math.floor(px / SCALE)];
-    if (key !== '.' && x + px < w) raw.set([...xtermRgb(colorOf(c, key)), 255], y * stride + 1 + (x + px) * 4);
+  const raw = Buffer.alloc(h * stride);
+  const putRgb = (px, py, rgb) => { if (px >= 0 && px < w && py >= 0 && py < h) raw.set([...rgb, 255], py * stride + 1 + px * 4); };
+  const put = (px, py, key) => putRgb(px, py, xtermRgb(colorOf(c, key)));
+  for (const [gx, up, colour] of ground) { // a sprite pixel each; below the floor they start under its line
+    const rgb = xtermRgb(colour), gy = up > 0 ? floorY - up * SCALE : floorY + 2 + (-up - 1) * SCALE;
+    for (let dy = 0; dy < SCALE; dy++) for (let dx = 0; dx < SCALE; dx++) putRgb(gx * SCALE + dx, gy + dy, rgb);
   }
-  for (let y = SPR_H * SCALE; y < STRIP_H; y++) for (let px = 0; px < w; px++) raw.set([...FLOOR_RGB, 255], y * stride + 1 + px * 4);
-  // Stretched to exactly `cols` × 2 cells; with the right cell aspect the pixels come out square.
-  return `\x1b]1337;File=inline=1;width=${cols};height=2;preserveAspectRatio=0:${pngEncode(w, STRIP_H, raw).toString('base64')}\x07`;
+  for (let y = 0; y < SPR_H * scale; y++) for (let px = 0; px < SPR_W * scale; px++) {
+    const key = rows[Math.floor(y / scale)][Math.floor(px / scale)];
+    if (key !== '.') put(x + px, top + y, key);
+  }
+  if (rage) { // the anger mark, a sprite pixel a dot, above the front (the right claw, or the head when turned left)
+    const ax = x + Math.round(SPR_W * scale * (flip ? 0.2 : 0.8)) - (flip ? ANGER[0].length * scale : 0), ay = Math.max(0, top - ANGER.length * scale - 2);
+    ANGER.forEach((row, ry) => [...row].forEach((k, rx) => {
+      if (k !== '.') for (let dy = 0; dy < scale; dy++) for (let dx = 0; dx < scale; dx++) put(ax + rx * scale + dx, ay + ry * scale + dy, k);
+    }));
+  }
+  for (let y = floorY; y < floorY + 2; y++) for (let px = 0; px < w; px++) raw.set([...FLOOR_RGB, 255], y * stride + 1 + px * 4);
+  // Stretched to exactly `cols` × `stripRows` cells; with the right cell aspect the pixels come out square.
+  return `\x1b]1337;File=inline=1;width=${cols};height=${stripRows};preserveAspectRatio=0:${pngEncode(w, h, raw).toString('base64')}\x07`;
 }
 
 // ── Octant fallback ────────────────────────────────────────────────────────────
@@ -103,10 +139,13 @@ function octantRows(c, rows) {
 // ── The mascot ─────────────────────────────────────────────────────────────────
 export function createMascot({ images = false, creature = 0, now = Date.now() } = {}) {
   let aspect = 0.5; // terminal cell width ÷ height, until the terminal tells us (setCellAspect)
-  const colPx = () => (aspect * STRIP_H) / 2;
-  const width = () => (images ? Math.ceil((SPR_W * SCALE) / colPx()) : SPR_W / 2); // columns it occupies
+  const colPx = () => aspect * ROW_PX;
   let index = ((creature % CREATURES.length) + CREATURES.length) % CREATURES.length;
-  const s = { x: 2, dir: 1, phase: 0, tick: 0, mode: 'walk', lastActive: now, blinkUntil: 0 };
+  let stage = 0;
+  // The drawing for this stage: the creature's own stage form, or the creature itself.
+  const form = () => CREATURES[index].stages?.[stage] ?? CREATURES[index];
+  const width = () => (images ? Math.ceil((SPR_W * (form().scale ?? SCALE)) / colPx()) : SPR_W / 2); // columns it occupies
+  const s = { x: 2, dir: 1, phase: 0, tick: 0, mode: 'walk', lastActive: now, blinkUntil: 0, hopI: -1, lift: 0, shake: 0 };
   const cache = new Map();
   const cached = (key, make) => {
     if (!cache.has(key)) { if (cache.size > 200) cache.clear(); cache.set(key, make()); }
@@ -116,8 +155,11 @@ export function createMascot({ images = false, creature = 0, now = Date.now() } 
 
   return {
     get width() { return width(); },
-    // a blank spacer, then the strip (image) or the sprite and a floor row (text)
-    rows: images ? 3 : SPR_H / 4 + 2,
+    // the strip (image, its own space above built in) or a blank spacer, the sprite and a floor row (text)
+    get rows() { return images ? form().rows ?? STRIP_ROWS : SPR_H / 4 + 2; },
+    get stage() { return stage; },
+    // Grow or shrink to a stage (0 hatchling … 3 heavy); a hop in progress lands.
+    setStage(n) { if (n !== stage && n >= 0 && n < MOOD.length) { stage = n; s.hopI = -1; s.lift = 0; s.shake = 0; } },
     get index() { return index; },
     get name() { return CREATURES[index].name; },
 
@@ -129,15 +171,23 @@ export function createMascot({ images = false, creature = 0, now = Date.now() } 
 
     // Advance one animation tick (the rail calls this ~5×/s).
     step(W, busy, t = Date.now()) {
-      const c = CREATURES[index];
+      const c = form(), mood = MOOD[stage];
       s.tick++;
       if (busy) s.lastActive = t;
       s.mode = busy ? 'busy' : t - s.lastActive > IDLE_MS ? 'sleep' : 'walk';
       const [lo, hi] = bounds(W);
       s.x = Math.max(lo, Math.min(s.x, hi));
-      if (s.mode === 'sleep') { s.phase = 0; return; }
+      if (s.mode === 'sleep') { s.phase = 0; s.hopI = -1; s.lift = 0; s.shake = 0; return; }
       if (s.blinkUntil < t && Math.random() < 0.04) s.blinkUntil = t + 250;
-      if (s.tick % (busy ? 1 : c.speed)) return;
+      // hops and shakes, as the stage's mood has them
+      if (mood.hop) {
+        if (s.hopI < 0 && s.tick % mood.hopEvery === 0) s.hopI = 0;
+        if (s.hopI >= 0) { s.lift = mood.hop[s.hopI++] ?? 0; if (s.hopI > mood.hop.length) s.hopI = -1; }
+      }
+      if (s.shake > 0) s.shake--;
+      else if (mood.shake && s.hopI < 0 && Math.random() < mood.shake) s.shake = 4;
+      const speed = Math.max(1, CREATURES[index].stages ? c.speed : c.speed + mood.dSpeed);
+      if (s.tick % (busy ? 1 : speed)) return;
       const next = 1 - s.phase;
       if (c.advance[next]) {
         if (s.x + s.dir < lo || s.x + s.dir > hi) { s.dir = -s.dir; return; } // turn at the edge
@@ -153,15 +203,22 @@ export function createMascot({ images = false, creature = 0, now = Date.now() } 
       const rowsOut = this.rows, blankLine = ' '.repeat(W);
       const [lo, hi] = bounds(W);
       if (hi < lo) return { lines: Array(rowsOut).fill(blankLine), image: null };
-      const c = CREATURES[index];
+      const c = form(), mood = MOOD[stage];
       const sleep = s.mode === 'sleep';
       const pose = { frame: sleep ? 0 : s.phase, blink: !sleep && s.blinkUntil > t, sleep, dir: s.dir,
         z: sleep ? Math.floor(s.tick / 5) % 3 : 0 };
-      const poseKey = `${index}:${JSON.stringify(pose)}`;
+      const poseKey = `${index}:${stage}:${JSON.stringify(pose)}`;
       if (images) {
-        const cols = W - 2, x = Math.round((s.x - 1) * colPx());
-        const data = cached(`${poseKey}|${cols}|${x}|${aspect}`, () => stripImage(c, pixels(c, pose), cols, colPx(), x));
-        return { lines: Array(rowsOut).fill(blankLine), image: { row: 1, rows: 2, col: 1, data } };
+        const scale = c.scale ?? SCALE, stripRows = c.rows ?? STRIP_ROWS;
+        const jitter = s.shake ? (s.tick % 2 ? scale : -scale) : 0;
+        const rage = Boolean(mood.rage && !sleep && s.lift === 0 && Math.floor(s.tick / 3) % 2);
+        const cols = W - 2, x = Math.round((s.x - 1) * colPx()) + jitter;
+        const sway = SWAY[Math.floor(s.tick / 5) % SWAY.length];
+        const data = cached(`${poseKey}|${cols}|${x}|${aspect}|${s.lift}|${rage}|${sway}`, () => {
+          const ground = foliage(CREATURES[index].habitat, Math.ceil((cols * colPx()) / SCALE), sway);
+          return stripImage(c, pixels(c, pose), cols, colPx(), x, { scale, stripRows, lift: s.lift, rage, flip: s.dir < 0 && !c.sideways, ground });
+        });
+        return { lines: Array(rowsOut).fill(blankLine), image: { row: 0, rows: stripRows, col: 1, data } };
       }
       const grid = Array.from({ length: SPR_H / 4 + 1 }, () => Array.from({ length: W }, () => ' '));
       for (let col = 1; col < W - 1; col++) grid[SPR_H / 4][col] = `${ESC}2m▔${ESC}22m`;
@@ -173,6 +230,6 @@ export function createMascot({ images = false, creature = 0, now = Date.now() } 
       return { lines: [blankLine, ...grid.map((row) => row.join(''))], image: null };
     },
 
-    get state() { return { ...s, creature: CREATURES[index].name }; },
+    get state() { return { ...s, stage, creature: CREATURES[index].name }; },
   };
 }

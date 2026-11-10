@@ -7,6 +7,7 @@ A Claude Code plugin (repo root = plugin = marketplace) that opens a Claude-desk
 - `bin/sources.mjs`: data sources. Every export resolves to plain JSON and never throws.
 - `bin/mascot.mjs`: the mascot under the legend: movement, inline PNG in iTerm2, Unicode octants in `--frame`/elsewhere
 - `bin/creatures.mjs`: the mascot sprites (34×16 pixel drawings, palette, gait). Add a creature by appending to `CREATURES`.
+- `bin/habitats.mjs`: the foliage behind the mascot (woodland, pond, beach), picked by each creature's `habitat`
 - `bin/pane.mjs`: iTerm2 split controller (`open|close|toggle|status`, prints one JSON line, always exits 0)
 - `hooks/register.ts`: plugin hooks (session.start auto-open, `/rail`, session.end close)
 - `tests/register.test.ts`: plugin tests
