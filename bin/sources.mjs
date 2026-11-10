@@ -47,18 +47,84 @@ export async function environment(cwd) {
   };
 }
 
-// Lines added/removed on this branch: the working tree against the point it forked from the default branch,
-// so committed and uncommitted work both count (untracked files don't). On the default branch itself that
-// fork point is HEAD, leaving just the uncommitted changes.
-async function branchDiff(cwd) {
+// The commit this branch forked from the default branch (origin/HEAD, else main/master). On the default
+// branch itself that's HEAD, so diffs against it show just the uncommitted changes.
+async function forkPoint(cwd) {
   const head = (await run('git', ['rev-parse', '--abbrev-ref', 'origin/HEAD'], { cwd }))?.trim();
   for (const base of new Set([head, 'origin/main', 'origin/master', 'main', 'master'].filter(Boolean))) {
     const fork = (await run('git', ['merge-base', 'HEAD', base], { cwd }))?.trim();
-    if (!fork) continue;
-    const stat = (await run('git', ['diff', '--shortstat', fork], { cwd })) ?? '';
-    return { added: +(stat.match(/(\d+) insertion/)?.[1] ?? 0), removed: +(stat.match(/(\d+) deletion/)?.[1] ?? 0) };
+    if (fork) return fork;
   }
   return null;
+}
+
+// Lines added/removed on this branch: the working tree against the fork point, so committed and
+// uncommitted work both count (untracked files don't).
+async function branchDiff(cwd) {
+  const fork = await forkPoint(cwd);
+  if (!fork) return null;
+  const stat = (await run('git', ['diff', '--shortstat', fork], { cwd })) ?? '';
+  return { added: +(stat.match(/(\d+) insertion/)?.[1] ?? 0), removed: +(stat.match(/(\d+) deletion/)?.[1] ?? 0) };
+}
+
+// ── Branch changes, file by file (the review panel's Diff tab) ─────────────────
+// Every file changed since the fork point, plus untracked files (a file Claude just created isn't tracked
+// yet, and would otherwise be missing). Paths are relative to the repo root.
+export async function branchFiles(cwd) {
+  const top = (await run('git', ['rev-parse', '--show-toplevel'], { cwd }))?.trim();
+  const fork = top && (await forkPoint(top));
+  if (!fork) return { root: top || null, files: [] };
+  const [numstat, untracked] = await Promise.all([
+    run('git', ['diff', '--numstat', '-z', fork], { cwd: top }),
+    run('git', ['ls-files', '--others', '--exclude-standard', '-z'], { cwd: top }),
+  ]);
+  const files = [];
+  // -z rows are "added\tremoved\tpath\0"; a rename is "added\tremoved\t\0old\0new\0".
+  const parts = (numstat ?? '').split('\0');
+  for (let i = 0; i < parts.length; i++) {
+    const m = /^(-|\d+)\t(-|\d+)\t(.*)$/s.exec(parts[i]);
+    if (!m) continue;
+    const path = m[3] || (i += 2, parts[i]);
+    files.push({ path, added: m[1] === '-' ? 0 : +m[1], removed: m[2] === '-' ? 0 : +m[2], status: m[1] === '-' ? 'binary' : 'modified' });
+  }
+  const fresh = (untracked ?? '').split('\0').filter(Boolean);
+  const counts = await Promise.all(fresh.map(async (f) => {
+    try {
+      const buf = await readFile(join(top, f));
+      if (buf.includes(0)) return { added: 0, binary: true };
+      const t = buf.toString('utf8');
+      return { added: t ? t.split('\n').length - (t.endsWith('\n') ? 1 : 0) : 0 };
+    } catch { return { added: 0 }; }
+  }));
+  fresh.forEach((path, i) => files.push({ path, added: counts[i].added, removed: 0, status: counts[i].binary ? 'binary' : 'new' }));
+  files.sort((a, b) => a.path.localeCompare(b.path));
+  return { root: top, files };
+}
+
+// One file's unified diff against the fork point (an untracked file shows as all added), capped in length.
+export async function fileDiff(cwd, path, maxLines = 2000) {
+  const top = (await run('git', ['rev-parse', '--show-toplevel'], { cwd }))?.trim();
+  const fork = top && (await forkPoint(top));
+  if (!fork) return [];
+  let out = await run('git', ['diff', '--no-color', fork, '--', path], { cwd: top });
+  // An untracked file has no diff against the fork; show it as all added. (Only untracked: a tracked file
+  // with an empty diff has simply gone back to how it was.) --no-index exits 1 when the files differ,
+  // which run() reads as failure, so it's run directly; it still printed the diff.
+  const untracked = !out && (await run('git', ['ls-files', '--error-unmatch', '--', path], { cwd: top })) === null;
+  if (untracked) out = await new Promise((resolve) => execFile('git', ['diff', '--no-color', '--no-index', '--', '/dev/null', path],
+    { cwd: top, timeout: 10_000, maxBuffer: 4 << 20 }, (err, stdout) => resolve(stdout?.toString() ?? '')));
+  const lines = (out ?? '').split('\n');
+  if (lines.at(-1) === '') lines.pop();
+  return lines.length > maxLines ? [...lines.slice(0, maxLines), `… ${lines.length - maxLines} more lines`] : lines;
+}
+
+// ── Plan: the plan file plan mode writes (found in the transcript by TaskIndex) ─
+export async function readPlan(path) {
+  if (!path) return null;
+  try {
+    const [text, st] = await Promise.all([readFile(path, 'utf8'), stat(path)]);
+    return { path, text, mtime: st.mtimeMs };
+  } catch { return null; }
 }
 
 // ── Account: who Claude is signed in as (the login record /status reads) ───────
@@ -153,11 +219,12 @@ export async function prs(cwd, limit = 15) {
 }
 
 // ── Background tasks: indexed incrementally from the session transcript ───────
-const KEYWORDS = ['run_in_background', 'backgroundTaskId', 'agentId', 'task-notification', '"name":"Agent"', '"name":"Task"', '"usage"'];
+const KEYWORDS = ['run_in_background', 'backgroundTaskId', 'agentId', 'task-notification', '"name":"Agent"', '"name":"Task"', '"usage"', '/.claude/plans/'];
+const PLANS = join(CLAUDE, 'plans') + '/';
 
 export class TaskIndex {
   constructor() { this.path = null; this.offset = 0; this.partial = ''; this.reset(); }
-  reset() { this.calls = new Map(); this.tasks = new Map(); this.done = new Map(); this.usage = null; this.model = null; }
+  reset() { this.calls = new Map(); this.tasks = new Map(); this.done = new Map(); this.usage = null; this.model = null; this.planPath = null; }
 
   // Context from the latest main-thread reply: tokens in the prompt = input + cache read + cache write.
   context() {
@@ -198,8 +265,12 @@ export class TaskIndex {
         this.calls.set(c.id, { kind: 'shell', label: c.input.description || c.input.command?.slice(0, 60) || 'shell' });
       if (c.type === 'tool_use' && (c.name === 'Agent' || c.name === 'Task'))
         this.calls.set(c.id, { kind: 'agent', label: c.input?.description || 'subagent', agentType: c.input?.subagent_type });
+      // The plan file plan mode writes; watching the writes shows the plan while it's still being drafted.
+      if (c.type === 'tool_use' && !e.isSidechain && (c.name === 'Write' || c.name === 'Edit') && c.input?.file_path?.startsWith(PLANS))
+        this.planPath = c.input.file_path;
     }
     const r = e.toolUseResult;
+    if (!e.isSidechain && typeof r?.filePath === 'string' && r.filePath.startsWith(PLANS) && 'plan' in r) this.planPath = r.filePath;
     const toolUseId = e.message?.content?.find?.((c) => c.tool_use_id)?.tool_use_id;
     if (r && typeof r === 'object' && toolUseId) {
       const id = r.backgroundTaskId || r.agentId;
