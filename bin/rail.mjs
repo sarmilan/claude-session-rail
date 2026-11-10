@@ -110,7 +110,7 @@ const bar = (pct, n = 8) => {
 };
 
 // ── Actions ────────────────────────────────────────────────────────────────────
-const ui = { sel: null, open: { context: false, connectors: false, more: false }, scroll: 0, tick: 0,
+const ui = { sel: null, open: { environment: true, context: false, connectors: false, more: false }, scroll: 0, tick: 0,
   overlay: null, toast: null };
 // Inline images only in a live iTerm2 pane; --frame output (and other terminals) get text octants.
 const iterm = process.env.TERM_PROGRAM === 'iTerm.app' || process.env.LC_TERMINAL === 'iTerm2';
@@ -224,14 +224,18 @@ function buildMain(W) {
 
   // Environment
   const env = data.env;
-  heading('Environment');
-  pair(`▭  ${env?.computer ?? '…'}`);
-  pair(`▢  ${env ? `${env.repo} · ${env.parent}` : '…'}`, '', env && item('repo', () => repoMenu(env)),
-    { leftStyle: (s) => s.replace(/ · (.*)$/, (m, p) => ' · ' + dim(p)) });
-  if (env?.isGit) pair(`⎇  ${env.branch ?? '(detached)'}`, env.dirty ? `${env.dirty} changed` : '',
-    env.branch && item('branch', () => branchMenu(env)), { rightStyle: dim });
-  pair('◌  Remote Control', '/remote-control', item('remote', () => toast('Type /remote-control in your Claude session')),
-    { leftStyle: dim, rightStyle: dim });
+  rule();
+  pair(`Environment ${caret(ui.open.environment)}`, '', item('environment', () => { ui.open.environment = !ui.open.environment; }),
+    { leftStyle: bold });
+  if (ui.open.environment) {
+    pair(`▭  ${env?.computer ?? '…'}`);
+    pair(`▢  ${env ? `${env.repo} · ${env.parent}` : '…'}`, '', env && item('repo', () => repoMenu(env)),
+      { leftStyle: (s) => s.replace(/ · (.*)$/, (m, p) => ' · ' + dim(p)) });
+    if (env?.isGit) pair(`⎇  ${env.branch ?? '(detached)'}`, env.dirty ? `${env.dirty} changed` : '',
+      env.branch && item('branch', () => branchMenu(env)), { rightStyle: dim });
+    pair('◌  Remote Control', '/remote-control', item('remote', () => toast('Type /remote-control in your Claude session')),
+      { leftStyle: dim, rightStyle: dim });
+  }
   rule();
 
   // Context
