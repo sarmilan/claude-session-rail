@@ -2,18 +2,19 @@
 // The desk: a wider iTerm panel between Claude and the rail, with tabs for the work itself.
 //   Plan  the plan plan mode is writing (live, from the session's transcript)
 //   Diff  every file changed since the branch forked from the default branch, and each file's diff
-//   Review  a code review of those changes by a headless Claude, with findings you can send to Claude
+//   Review  runs the code-review skill on those changes, keeps its findings per branch, and hands the ones
+//           you accept to Claude to fix
 // It follows what Claude is doing: a new or edited plan brings up Plan, changed files bring up Diff, a
 // finished review brings up Review.
 // Switching tabs yourself turns that off until you press `a`.
 //   node desk.mjs                                   interactive panel
 //   node desk.mjs --json                            print the collected state once
 //   node desk.mjs --frame [W H] [--tab plan|diff|review] [--file N]   print one rendered frame (no TTY needed)
+//     [--review-json F --select N --jump N]          …with a saved review record (reviewer.mjs's store shape)
 //   --cwd DIR / --pid PID                           the folder and Claude process this desk belongs to
 import { execFile } from 'node:child_process';
-import { readFileSync } from 'node:fs';
 import * as src from './sources.mjs';
-import { reviewBranch } from './reviewer.mjs';
+import { reviewBranch, loadReviews, saveReviews } from './reviewer.mjs';
 import { ESC, fg, dim, bold, C, charWidth, width, trunc, clean } from './term.mjs';
 
 const args = process.argv.slice(2);
@@ -24,10 +25,10 @@ const taskIndex = new src.TaskIndex();
 
 // ── Data ───────────────────────────────────────────────────────────────────────
 const data = { plan: null, recent: null, root: null, files: [], diff: null, claude: null, // diff: { path, lines } of the open file
-  review: { running: null, result: null, sig: null } };                       // result: what reviewBranch resolved
+  review: { running: null, runs: [], path: undefined } };                    // runs: the branch's saved reviews, newest first
 const TABS = ['plan', 'diff', 'review'];
 const ui = { tab: 'plan', auto: true, scroll: { plan: 0, diff: 0, review: 0 }, sel: 0, open: null, toast: null,
-  jump: null, rsel: 0, marked: new Set(), autoReview: false, autoSend: false };
+  jump: null, rsel: 0 };
 const seen = { plan: undefined, diff: undefined }; // last signatures, to notice changes
 const toast = (text) => { ui.toast = { text, until: Date.now() + 2500 }; };
 let draw = () => {}; // replaced by the interactive panel
@@ -46,10 +47,7 @@ const loaders = {
   async plan() {
     const agents = await src.sessions();
     const current = (pinnedPid && agents.find((a) => a.pid === pinnedPid)) || src.currentSession(agents, cwd);
-    // Claude finishing its turn (busy → idle) is when iTerm's Workgroup asks for a review; so does the desk.
-    const wasBusy = data.claude?.status === 'busy';
     data.claude = current;
-    if (wasBusy && current?.status === 'idle') onIdle();
     await taskIndex.update((await src.sessionFiles(current)).transcriptPath);
     data.plan = await src.readPlan(taskIndex.planPath);
     if (changed('plan', data.plan ? `${data.plan.path}:${data.plan.mtime}` : '')) {
@@ -66,29 +64,72 @@ const loaders = {
     ui.sel = Math.min(ui.sel, Math.max(0, data.files.length - 1));
     if (ui.open) await loadFile(ui.open);
   },
+  // The branch's review record, read again when the branch changes (a running review keeps running and
+  // saves to the branch it started on).
+  async reviews() {
+    const path = await src.reviewsPath(cwd);
+    if (path === data.review.path) return;
+    data.review = { ...data.review, runs: await loadReviews(path), path };
+    ui.rsel = 0; ui.scroll.review = 0;
+  },
 };
 
 // ── Review ─────────────────────────────────────────────────────────────────────
 const diffSig = () => JSON.stringify(data.files);
+// The tab shows the newest successful review. A failed run is only kept as the newest entry, to say why it
+// failed: it never hides the review before it, and failures can't push real reviews out of the history.
+const latest = () => data.review.runs.find((r) => !r.error) ?? null;
+const failed = () => (data.review.runs[0]?.error ? data.review.runs[0] : null);
+const pending = () => (latest()?.findings ?? []).map((f, i) => (f.acceptedAt ? -1 : i)).filter((i) => i >= 0);
+const record = (run, runs) => [run, ...runs.filter((r) => !r.error)];
 // Returns why it couldn't start, or null when it started.
 function startReview() {
   if (data.review.running) return 'A review is already running';
   if (!data.root) return 'Not a git repository';
   if (!data.files.length) return 'Nothing to review';
-  const controller = new AbortController(), sig = diffSig();
+  if (!data.review.path) return 'Still loading this branch’s reviews';
+  const controller = new AbortController(), sig = diffSig(), path = data.review.path;
   data.review.running = { controller, startedAt: Date.now() };
-  reviewBranch(cwd, { signal: controller.signal }).then((result) => {
-    data.review = { running: null, result, sig: result.error ? null : sig }; // a failed review can be retried
-    ui.rsel = 0; ui.marked.clear(); ui.scroll.review = 0;
-    if (ui.auto && !result.error) ui.tab = 'review';
-    if (ui.autoSend && !result.error && result.findings.length && data.claude?.status === 'idle') sendFindings(result.findings, true);
+  reviewBranch(cwd, { signal: controller.signal }).then(async (run) => {
+    data.review.running = null;
+    // A cancelled run leaves the record alone; a failed one is kept so the tab says why.
+    if (run.error !== 'Review cancelled') {
+      run = { ...run, sig };
+      if (path === data.review.path) {
+        data.review.runs = record(run, data.review.runs);
+        await saveReviews(path, data.review.runs);
+        ui.rsel = 0; ui.scroll.review = 0;
+        if (ui.auto) ui.tab = 'review';
+      } else await saveReviews(path, record(run, await loadReviews(path))); // the branch changed meanwhile
+    }
     draw();
   });
   return null;
 }
 const cancelReview = () => data.review.running?.controller.abort();
-function onIdle() {
-  if (ui.autoReview && data.files.length && diffSig() !== data.review.sig) startReview();
+
+// Hand the latest review's findings at `indices` to Claude; once they're delivered, mark them accepted.
+// Findings on their way are held in `sending`, so a second press during the send can't paste them twice.
+const sending = new Set();
+function acceptFindings(indices) {
+  const run = latest();
+  const picked = indices.filter((i) => run?.findings[i] && !run.findings[i].acceptedAt && !sending.has(run.findings[i]));
+  if (!picked.length) return toast(!run?.findings.length ? 'No findings to accept' : sending.size ? 'Sending to Claude…' : 'Already accepted');
+  const path = data.review.path;
+  for (const i of picked) sending.add(run.findings[i]);
+  sendFindings(picked.map((i) => run.findings[i]), async (ok) => {
+    for (const i of picked) sending.delete(run.findings[i]);
+    if (!ok) return draw();
+    // Mark the run in the list as it is now: a branch switch during the send may have reloaded it from disk.
+    const runs = path === data.review.path ? data.review.runs : await loadReviews(path);
+    const target = runs.find((r) => r.startedAt === run.startedAt);
+    if (target) {
+      const at = Date.now();
+      for (const i of picked) if (target.findings[i]) target.findings[i].acceptedAt = at;
+      await saveReviews(path, runs);
+    }
+    draw();
+  });
 }
 
 // Type the findings into Claude's pane as one pasted message (bracketed paste keeps the line breaks
@@ -110,17 +151,19 @@ const SEND = `on run argv
   end tell
   return ""
 end run`;
-function sendFindings(findings, auto = false) {
+// `onDone(ok)`: ok is true only when the text reached Claude's pane.
+function sendFindings(findings, onDone) {
   const pid = data.claude?.pid;
-  if (!pid || !findings.length) return toast("Couldn't find this desk's Claude session");
-  const text = [`Code review findings on this branch${auto ? ' (sent automatically by the desk)' : ''}. Check each one and fix the real problems:`,
+  if (!pid) { toast("Couldn't find this desk's Claude session"); return onDone(false); }
+  const text = ['Code review findings on this branch, accepted. Fix each one:',
     ...findings.map((f, i) => `${i + 1}. [${f.severity}] ${f.file ?? ''}${f.line ? `:${f.line}` : ''} ${f.title}${f.detail ? `\n   ${f.detail}` : ''}`)].join('\n');
   execFile('ps', ['-o', 'tty=', '-p', String(pid)], (err, tty) => {
     tty = tty?.toString().trim();
-    if (err || !tty || tty === '??') { toast("Claude's pane isn't a terminal"); return draw(); }
+    if (err || !tty || tty === '??') { toast("Claude's pane isn't a terminal"); return onDone(false); }
     execFile('osascript', ['-e', SEND, `/dev/${tty}`, clean(text)], { timeout: 10_000 }, (e, out) => {
-      toast(e || out.toString().trim() !== 'ok' ? "Couldn't reach Claude's pane in iTerm" : `Sent ${findings.length} finding${findings.length === 1 ? '' : 's'} to Claude`);
-      draw();
+      const ok = !e && out.toString().trim() === 'ok';
+      toast(ok ? `Sent ${findings.length} finding${findings.length === 1 ? '' : 's'} to Claude` : "Couldn't reach Claude's pane in iTerm");
+      onDone(ok);
     });
   });
 }
@@ -270,27 +313,68 @@ const ago = (ms) => {
   const m = Math.round((Date.now() - ms) / 60000);
   return m < 1 ? 'just now' : m < 60 ? `${m}m ago` : m < 1410 ? `${Math.round(m / 60)}h ago` : `${Math.round(m / 1440)}d ago`;
 };
+// A clickable button: its text, styled, and remembered as a span on the current line for mouse clicks.
+const button = (label, colour) => `${ESC}48;5;237m` + bold(fg(colour, ` ${label} `)) + `${ESC}49m`;
+const when = (ms) => new Date(ms).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
 function reviewLines(w) {
-  const { running, result } = data.review;
-  const lines = [], ids = [];
+  const { running } = data.review, run = latest(), fail = failed(), open = pending();
+  const lines = [], ids = [], buttons = [];
   const push = (l, id = null) => { lines.push(l); ids.push(id); };
-  if (running) push(fg(C.accent, `◌ Reviewing ${data.files.length} file${data.files.length === 1 ? '' : 's'}… ${Math.round((Date.now() - running.startedAt) / 1000)}s`) + dim('  x cancel'));
-  else if (result?.error) push(fg(C.red, `✗ ${trunc(clean(result.error), w - 20)}`) + dim('  r retry'));
-  else if (result) {
-    const n = result.findings.length;
-    push(bold(n ? `${n} finding${n === 1 ? '' : 's'}` : fg(C.green, '✓ No problems found')) + dim(`  · reviewed ${ago(result.finishedAt)}`)
-      + (data.review.sig !== diffSig() ? fg(C.yellow, '  · changed since · r re-run') : ''));
-  } else push(dim(data.files.length ? "No review yet. Press r to review this branch's changes (about a minute)." : 'Nothing to review yet.'));
-  push(dim(`auto-review when Claude finishes: ${ui.autoReview ? fg(C.green, 'on') : 'off'} (i) · auto-send: ${ui.autoSend ? fg(C.green, 'on') : 'off'} (S)`));
-  (result?.findings ?? []).forEach((f, i) => {
-    push('', null);
-    const box = ui.marked.has(i) ? fg(C.accent, '[x]') : dim('[ ]');
+  // Lay out a row of buttons and trailing text; each button's columns are kept for clicks.
+  const row = (parts, id = null) => {
+    let l = '', x = 0;
+    for (const p of parts) {
+      if (p.action) { buttons.push({ row: lines.length, from: x, to: x + width(p.label) + 2, action: p.action }); l += button(p.label, p.colour); x += width(p.label) + 2; }
+      else { l += p.text; x += width(p.plain ?? p.text); }
+    }
+    push(l, id);
+  };
+
+  // The action row: Run (or the running review), Accept all, and where the latest review stands.
+  const parts = [
+    running ? { action: 'cancel', label: `◌ Reviewing… ${Math.round((Date.now() - running.startedAt) / 1000)}s · x cancel`, colour: C.accent }
+      : { action: 'run', label: fail ? '↻ Retry review' : run ? '↻ Run again' : '▶ Run review', colour: C.accent },
+    ...(open.length && !running ? [{ text: '  ' }, { action: 'acceptAll', label: `✓ Accept all ${open.length}`, colour: C.green }] : []),
+  ];
+  // Where the latest review stands, only when it fits whole: the buttons matter more.
+  const used = parts.reduce((n, p) => n + (p.action ? width(p.label) + 2 : width(p.text)), 0);
+  const status = [run && `reviewed ${ago(run.finishedAt)}`, run && run.sig !== diffSig() && 'changed since'].filter(Boolean);
+  while (status.length && used + 2 + width(status.join(' · ')) > w) status.pop();
+  if (status.length && !running) parts.push({ text: '  ' + dim(status.join(' · ')), plain: '  ' + status.join(' · ') });
+  row(parts);
+  push('');
+  if (fail) { for (const l of wrapRuns([{ t: `✗ The last review failed: ${clean(fail.error)}`, s: 'text' }], w)) push(fg(C.red, l)); if (run) push(''); }
+  if (!run && !fail) {
+    const text = data.files.length ? "No review on this branch yet. Run one to check this branch's changes with the code-review skill (a minute or more)." : 'Nothing to review yet.';
+    for (const l of wrapRuns([{ t: text, s: 'text' }], w)) push(dim(l));
+  }
+  else if (run && !run.findings.length) push(fg(C.green, '✓ No problems found'));
+
+  (run?.findings ?? []).forEach((f, i) => {
     const where = f.file ? clean(f.file) + (f.line ? `:${f.line}` : '') : '';
-    push(`${box} ${fg(SEV[f.severity], `● ${f.severity}`)}  ${dim(trunc(where, w - 16))}`, i);
-    for (const l of wrapRuns(runs(f.title, 'text').map((r) => ({ ...r, s: r.s === 'text' ? 'bold' : r.s })), w, '    ')) push(l, i);
-    for (const l of wrapRuns([{ t: clean(f.detail), s: 'text' }], w, '    ')) push(dim(l), i);
+    if (f.acceptedAt) {
+      push(`${fg(C.green, '✓ accepted')}  ${dim(trunc(where, w - 14))}`, i);
+      for (const l of wrapRuns([{ t: clean(f.title), s: 'text' }], w, '    ')) push(dim(l), i);
+    } else {
+      const head = `● ${f.severity}  `, room = w - width(head) - 12;
+      const shown = trunc(where, Math.max(4, room));
+      row([{ text: fg(SEV[f.severity], `● ${f.severity}`) + '  ' + dim(shown), plain: head + shown },
+        { text: ' '.repeat(Math.max(1, w - width(head) - width(shown) - 10)) }, { action: `accept:${i}`, label: 'accept', colour: C.green }], i);
+      for (const l of wrapRuns(runs(f.title, 'text').map((r) => ({ ...r, s: r.s === 'text' ? 'bold' : r.s })), w, '    ')) push(l, i);
+      for (const l of wrapRuns([{ t: clean(f.detail), s: 'text' }], w, '    ')) push(dim(l), i);
+    }
+    push('');
   });
-  return { lines, ids };
+
+  const earlier = data.review.runs.filter((r) => !r.error && r !== run);
+  if (earlier.length) {
+    push(dim('── Earlier reviews ' + '─'.repeat(Math.max(0, w - 19))));
+    for (const r of earlier) {
+      const n = r.findings.length, ok = r.findings.filter((f) => f.acceptedAt).length;
+      push(dim(trunc(`${when(r.startedAt)} · ${n} finding${n === 1 ? '' : 's'} · ${ok} accepted`, w)));
+    }
+  }
+  return { lines, ids, buttons };
 }
 
 // ── Frame ──────────────────────────────────────────────────────────────────────
@@ -299,9 +383,9 @@ function frame(W, H) {
   const w = W - 2, bodyH = H - 4;
   // Tab bar, between two rules: each tab's span is remembered for mouse clicks.
   const { a, r } = totals();
-  const nf = data.review.result?.findings?.length;
+  const nf = pending().length;
   const labels = { plan: 'Plan', diff: `Diff ${data.files.length ? `+${a} −${r}` : ''}`.trim(),
-    review: data.review.running ? 'Review ◌' : nf ? `Review ${nf}` : 'Review' };
+    review: `Review${nf ? ` ${nf}` : ''}${data.review.running ? ' ◌' : ''}` };
   let x = 1, bar = '';
   const tabs = TABS.map((t) => {
     const text = ` ${labels[t]} `;
@@ -315,9 +399,9 @@ function frame(W, H) {
     .find((m) => width(bar) + width(m) <= w);
   if (mode) bar += ' '.repeat(w - width(bar) - width(mode)) + mode;
 
-  let body, ids = [], target = -1;
+  let body, ids = [], buttons = [], target = -1;
   if (ui.tab === 'plan') body = planLines(w);
-  else if (ui.tab === 'review') ({ lines: body, ids } = reviewLines(w));
+  else if (ui.tab === 'review') ({ lines: body, ids, buttons } = reviewLines(w));
   else if (ui.open) ({ lines: body, target } = fileLines(w));
   else ({ lines: body, ids } = listLines(w));
   const selected = ui.tab === 'review' ? ui.rsel : ui.sel;
@@ -341,12 +425,13 @@ function frame(W, H) {
 
   const more = body.length > scroll + bodyH ? '↓ more · ' : '';
   const hints = ui.tab === 'plan' ? `${more}↑↓ scroll · tab switch · a auto · q quit`
-    : ui.tab === 'review' ? `↑↓ move · ⏎ go to line · space mark · s send to Claude · r review`
+    : ui.tab === 'review' ? `${more}↑↓ move · ⏎ go to line · y accept · A accept all · r run review · x cancel`
     : ui.open ? `${more}↑↓ scroll · n/p file · esc back · q quit`
     : `↑↓ move · ⏎ open · tab switch · a auto · q quit`;
   // Cut the plain text before styling: a line past the last column would scroll the screen.
   const footer = ui.toast && ui.toast.until > Date.now() ? fg(C.green, trunc(` ${ui.toast.text}`, W - 1)) : dim(trunc(` ${hints}`, W - 1));
-  layout = { tabs, tabRow: 2, body: 3, ids: ids.slice(scroll, scroll + bodyH), scroll, bodyH };
+  layout = { tabs, tabRow: 2, body: 3, ids: ids.slice(scroll, scroll + bodyH), scroll, bodyH,
+    buttons: buttons.filter((b) => b.row >= scroll && b.row < scroll + bodyH).map((b) => ({ ...b, row: b.row - scroll })) };
   const rule = ' ' + dim('─'.repeat(w));
   return [rule, ' ' + bar, rule, ...view, footer];
 }
@@ -368,7 +453,7 @@ const openFile = async (i) => {
 
 // Open a finding's file in the Diff tab, scrolled to its line.
 async function jumpTo(i) {
-  const f = data.review.result?.findings?.[i];
+  const f = latest()?.findings?.[i];
   const at = data.files.findIndex((x) => x.path === f?.file);
   if (at < 0) return toast(f?.file ? `${clean(f.file)} isn't in the diff any more` : 'That finding has no file');
   ui.tab = 'diff';
@@ -382,9 +467,8 @@ if (args.includes('--frame')) {
   await collect();
   pick(flag('--tab') ?? 'plan');
   if (flag('--file') != null) { ui.tab = 'diff'; await openFile(+flag('--file')); }
-  // A saved review result (reviewBranch's JSON), for testing the Review tab without running a review.
-  if (flag('--review-json')) { data.review = { running: null, result: JSON.parse(readFileSync(flag('--review-json'), 'utf8')), sig: diffSig() }; ui.tab = 'review'; }
-  for (const i of (flag('--mark') ?? '').split(',').filter(Boolean)) ui.marked.add(+i);
+  // A saved review record (reviewer.mjs's store), for testing the Review tab without running a review.
+  if (flag('--review-json')) { data.review = { running: null, runs: await loadReviews(flag('--review-json')) }; ui.tab = 'review'; }
   if (flag('--select') != null) ui.rsel = +flag('--select');
   if (flag('--jump') != null) await jumpTo(+flag('--jump'));
   console.log(frame(W, H).join('\n'));
@@ -415,7 +499,7 @@ const refresh = (name) => {
   let busy = false;
   return async () => { if (busy) return; busy = true; try { await loaders[name](); } catch {} busy = false; draw(); };
 };
-const schedule = { plan: 1000, diff: 3000, recent: 60_000 };
+const schedule = { plan: 1000, diff: 3000, reviews: 3000, recent: 60_000 };
 const runners = Object.fromEntries(Object.keys(schedule).map((k) => [k, refresh(k)]));
 // The desk opens on Plan (recent work until there's a plan); after the first load, changes take over.
 // Recent work asks gh, which can take seconds, so it arrives after the first draw.
@@ -434,10 +518,17 @@ if (pinnedPid) {
   }, 1000);
 }
 
+// The Review tab's actions, shared by keys and button clicks.
+const review = (action) => {
+  if (action === 'run') return toast(startReview() ?? 'Reviewing…');
+  if (action === 'cancel') return cancelReview();
+  if (action === 'acceptAll') return acceptFindings(pending());
+  if (action.startsWith('accept:')) { ui.rsel = +action.slice(7); return acceptFindings([ui.rsel]); }
+};
 const manual = (tab) => { if (tab !== ui.tab) { ui.tab = tab; if (ui.auto) { ui.auto = false; toast('Auto-switch off · a to turn it back on'); } } };
 const scrollBy = (d) => { const key = ui.tab === 'diff' && ui.open ? 'file' : ui.tab; ui.scroll[key] = (ui.scroll[key] ?? 0) + d; };
 const move = (d) => {
-  const n = data.review.result?.findings?.length ?? 0;
+  const n = latest()?.findings?.length ?? 0;
   if (ui.tab === 'review') { if (n) ui.rsel = Math.max(0, Math.min(n - 1, ui.rsel + d)); else scrollBy(d); return; }
   if (ui.tab === 'diff' && !ui.open && data.files.length) ui.sel = Math.max(0, Math.min(data.files.length - 1, ui.sel + d));
   else scrollBy(d);
@@ -450,13 +541,11 @@ const handleKey = async (k) => {
   if (k === '\x1b[Z') return manual(TABS[(TABS.indexOf(ui.tab) + TABS.length - 1) % TABS.length]);
   if (k === '1' || k === '2' || k === '3') return manual(TABS[+k - 1]);
   if (ui.tab === 'review') {
-    const findings = data.review.result?.findings ?? [];
-    if (k === 'r') return toast(startReview() ?? 'Reviewing…');
-    if (k === 'x') { cancelReview(); return; }
-    if (k === 'i') { ui.autoReview = !ui.autoReview; return toast(ui.autoReview ? 'Reviews when Claude finishes a turn' : 'Auto-review off'); }
-    if (k === 'S') { ui.autoSend = !ui.autoSend; return toast(ui.autoSend ? 'Auto-review findings go straight to Claude' : 'Auto-send off'); }
-    if (k === ' ' && findings.length) { ui.marked.has(ui.rsel) ? ui.marked.delete(ui.rsel) : ui.marked.add(ui.rsel); return move(1); }
-    if (k === 's' && findings.length) return sendFindings(ui.marked.size ? findings.filter((_, i) => ui.marked.has(i)) : [findings[ui.rsel]].filter(Boolean));
+    const findings = latest()?.findings ?? [];
+    if (k === 'r') return review('run');
+    if (k === 'x') return review('cancel');
+    if (k === 'y') return review(`accept:${ui.rsel}`);
+    if (k === 'A') return review('acceptAll');
     if ((k === '\r' || k === 'l' || k === '\x1b[C') && findings.length) return jumpTo(ui.rsel);
   }
   if (k === 'a') { ui.auto = !ui.auto; return toast(ui.auto ? 'Following Claude again' : 'Auto-switch off'); }
@@ -482,7 +571,11 @@ const handleMouse = async (b, x, y) => {
   if (y === layout.tabRow) { const t = layout.tabs.find((s) => x - 1 >= s.from && x - 1 < s.to); if (t) manual(t.tab); return; }
   const i = layout.ids[y - 1 - layout.body];
   if (ui.tab === 'diff' && !ui.open && i != null) return openFile(i);
-  if (ui.tab === 'review' && i != null) { if (ui.rsel === i) return jumpTo(i); ui.rsel = i; }
+  if (ui.tab === 'review') {
+    const b = layout.buttons.find((s) => s.row === y - 1 - layout.body && x - 2 >= s.from && x - 2 < s.to);
+    if (b) return review(b.action);
+    if (i != null) { if (ui.rsel === i) return jumpTo(i); ui.rsel = i; }
+  }
 };
 
 process.stdin.setRawMode(true);

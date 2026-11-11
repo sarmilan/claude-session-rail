@@ -4,8 +4,8 @@ A Claude Code plugin (repo root = plugin = marketplace) that opens a Claude-desk
 
 ## Layout
 - `bin/rail.mjs`: the terminal UI (modes: interactive, `--json`, `--frame W H [--activate a,b] [--open-context]`)
-- `bin/desk.mjs`: the wider Plan / Diff / Review panel (modes: interactive, `--json`, `--frame W H [--tab plan|diff|review] [--file N] [--review-json F --mark 0,1 --select N --jump N]`)
-- `bin/reviewer.mjs`: the desk's headless `claude -p` code reviewer (read-only tools, JSON findings)
+- `bin/desk.mjs`: the wider Plan / Diff / Review panel (modes: interactive, `--json`, `--frame W H [--tab plan|diff|review] [--file N] [--review-json F --select N --jump N]`)
+- `bin/reviewer.mjs`: runs the `code-review` skill headless (`claude -p --json-schema`) for the desk's Review tab, and keeps each branch's reviews in `.git/session-rail/reviews/`
 - `bin/term.mjs`: drawing helpers shared by the rail and the desk (colours, display width, wrap, `clean()`)
 - `bin/sources.mjs`: data sources. Every export resolves to plain JSON and never throws.
 - `bin/mascot.mjs`: the mascot under the legend: movement, inline PNG in iTerm2, Unicode octants in `--frame`/elsewhere

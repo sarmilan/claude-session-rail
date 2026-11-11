@@ -67,7 +67,7 @@ Click a row, or use the arrow keys and Enter, to open it. Pull requests open in 
 
 - **Plan:** the plan Claude writes in plan mode, shown as it's written.
 - **Diff:** every file changed since the branch forked from the default branch, the same base as the rail's `+N −N`. Untracked files are included, marked `new`. Open a file to see its diff.
-- **Review:** a code review of those changes by a separate, headless Claude that can only read the code. It reports real problems only (bugs, crashes, security issues, code that won't run), each with its file and line. Open a finding to jump to that line in the diff, or send findings to Claude to fix.
+- **Review:** click **Run review** to run the `code-review` skill (the same review `/end` expects) on those changes in a separate, headless Claude. Each finding shows its severity, file and line. Click **accept** on one, or **Accept all**, to hand them to Claude to fix. Accepted findings stay in the list, ticked. Reviews are saved per branch inside `.git`, so the tab keeps a record of earlier runs and what you accepted. Open a finding to jump to that line in the diff.
 
 The desk follows Claude: a new or changed plan brings up Plan, changed files bring up Diff, and a finished review brings up Review. Pick a tab yourself and it stops following until you press `a`.
 
@@ -81,14 +81,12 @@ Keys:
 | `Space` / `b`, `PgDn` / `PgUp`, `g` / `G` | page, top, bottom |
 | `Enter` | open a file (Diff) or go to a finding's line (Review) |
 | `n` `p`, `Esc` | next/previous file, back to the list |
-| `r` | review now (Review), refresh (other tabs) |
-| `Space`, `s` | mark findings, send the marked ones (or the selected one) to Claude |
-| `i` | review automatically each time Claude finishes a turn (off by default) |
-| `S` | send automatic reviews' findings straight to Claude (off by default) |
+| `r` | run a review (Review), refresh (other tabs) |
+| `y`, `A` | accept the selected finding, accept all (Review) |
 | `x` | cancel a running review |
 | `q` | close the desk |
 
-A review takes about a minute and uses your Claude account like any other `claude -p` run.
+A review takes a minute or more and uses your Claude account like any other `claude -p` run. Nothing is sent to Claude until you accept it.
 
 ## What you need
 
@@ -125,7 +123,7 @@ The rail only reads files Claude Code already keeps on your Mac: the list of run
 It has these parts:
 
 1. **The rail** (`bin/rail.mjs`) draws the narrow panel in the terminal. It's plain Node with no dependencies.
-2. **The desk** (`bin/desk.mjs`) draws the wider panel. It finds the plan file in the session's conversation log and asks `git` for the diff. Its reviewer (`bin/reviewer.mjs`) runs `claude -p` with read-only tools, no MCP servers, and no saved session. It notices Claude finishing a turn from Claude's own session file.
+2. **The desk** (`bin/desk.mjs`) draws the wider panel. It finds the plan file in the session's conversation log and asks `git` for the diff. Its reviewer (`bin/reviewer.mjs`) runs the `code-review` skill through `claude -p` with a JSON schema for the findings, no MCP servers and no saved session, and keeps each branch's reviews in `.git/session-rail/reviews/`.
 3. **The pane opener** (`bin/pane.mjs`) uses iTerm2's AppleScript support to fill the screen, split Claude's pane, run each panel (desk next to Claude, rail on the far right), size them in one pass, and hand focus back to Claude.
 4. **The plugin** (`hooks/register.ts`) opens both panels when a session starts, adds `/rail` and `/desk`, and closes them when the session ends.
 

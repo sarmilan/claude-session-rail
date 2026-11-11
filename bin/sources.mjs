@@ -57,7 +57,7 @@ async function defaultBranch(cwd) {
 
 // The commit this branch forked from the default branch. On the default branch itself that's HEAD, so
 // diffs against it show just the uncommitted changes.
-async function forkPoint(cwd) {
+export async function forkPoint(cwd) {
   const base = await defaultBranch(cwd);
   return base ? (await run('git', ['merge-base', 'HEAD', base], { cwd }))?.trim() || null : null;
 }
@@ -72,6 +72,26 @@ async function branchDiff(cwd) {
 }
 
 // ── Branch changes, file by file (the review panel's Diff tab) ─────────────────
+// Where the desk keeps this branch's code reviews: inside the shared git dir (so worktrees share it and it is
+// never committed), one file per branch. null outside a repo. The desk polls this, so git is asked for the
+// repo's dirs once and the branch is read from HEAD after that. A rebase reviews into the branch being
+// rebased; any other detached HEAD shares one "detached" file rather than starting a new one per commit.
+const gitDirs = new Map();
+export async function reviewsPath(cwd) {
+  if (!gitDirs.has(cwd)) {
+    const out = await run('git', ['rev-parse', '--path-format=absolute', '--git-dir', '--git-common-dir'], { cwd });
+    const [dir, common] = out?.trim().split('\n') ?? [];
+    if (!dir || !common) return null; // not cached, so a folder that becomes a repo is noticed
+    gitDirs.set(cwd, { dir, common });
+  }
+  const { dir, common } = gitDirs.get(cwd);
+  const read = async (p) => { try { return (await readFile(join(dir, p), 'utf8')).trim(); } catch { return ''; } };
+  const head = await read('HEAD'); // a detached HEAD holds a commit id, so only a "ref:" line names the branch
+  const ref = head.startsWith('ref: ') ? head.slice(5) : (await read('rebase-merge/head-name')) || (await read('rebase-apply/head-name'));
+  const branch = ref.startsWith('refs/heads/') ? ref.slice(11) : 'detached';
+  return join(common, 'session-rail', 'reviews', `${encodeURIComponent(branch)}.json`); // keeps feature/x and feature_x apart
+}
+
 // Every file changed since the fork point, plus untracked files (a file Claude just created isn't tracked
 // yet, and would otherwise be missing). Paths are relative to the repo root.
 export async function branchFiles(cwd) {
