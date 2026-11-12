@@ -20,7 +20,7 @@ const pinnedPid = Number(flag('--pid')) || null; // the Claude process this rail
 const taskIndex = new src.TaskIndex();
 
 // ── Data ───────────────────────────────────────────────────────────────────────
-const data = { env: null, account: null, usage: [], agents: [], current: null, stats: null, connectors: null, prs: null, activity: null,
+const data = { env: null, account: null, usage: [], agents: [], overview: null, current: null, stats: null, connectors: null, prs: null, activity: null,
   tasks: { running: [], finished: 0, done: [] } };
 
 const loaders = {
@@ -34,13 +34,15 @@ const loaders = {
     data.activity = await src.activity(data.current?.sessionId);
   },
   async env() { data.env = await src.environment(cwd); },
+  async sessions() { data.overview = await src.sessionsOverview(data.agents, data.current?.pid); },
   async account() { [data.account, data.usage] = await Promise.all([src.account(), src.usage()]); },
   async prs() { data.prs = await src.prs(cwd); },
   async connectors() { data.connectors = await src.connectors(); },
 };
 
 export async function collect() {
-  await Promise.all(Object.values(loaders).map((f) => f()));
+  await loaders.fast(); // Sessions builds on its list of sessions
+  await Promise.all(Object.entries(loaders).filter(([k]) => k !== 'fast').map(([, f]) => f()));
   return { cwd, ...data };
 }
 
@@ -68,7 +70,7 @@ const bar = (pct, n = 8) => {
 };
 
 // ── Actions ────────────────────────────────────────────────────────────────────
-const ui = { sel: null, open: { environment: true, context: false, connectors: false, more: false, settings: false, others: false }, scroll: 0, tick: 0,
+const ui = { sel: null, open: { environment: true, context: false, connectors: false, more: false, settings: false }, scroll: 0, tick: 0,
   overlay: null, toast: null };
 // Inline images only in a live iTerm2 pane; --frame output (and other terminals) get text octants.
 const iterm = process.env.TERM_PROGRAM === 'iTerm.app' || process.env.LC_TERMINAL === 'iTerm2';
@@ -121,6 +123,19 @@ const branchMenu = (env) => menu(env.branch, [
   { label: 'Copy branch name', run: () => copy(env.branch, 'branch name') },
   { label: 'Open branch on GitHub', run: () => launch('gh', ['browse', '--branch', env.branch], 'Opened on GitHub', 'GitHub unavailable') },
 ], [`${env.dirty} uncommitted file${env.dirty === 1 ? '' : 's'}`]);
+
+// pane.mjs prints one JSON line and always exits 0; hand its state to cb.
+const PANE = new URL('./pane.mjs', import.meta.url).pathname;
+const pane = (argv, cb) => execFile(process.execPath, [PANE, ...argv], { timeout: 15_000 }, (err, stdout) => {
+  let state = 'error'; try { state = JSON.parse(stdout).state; } catch {}
+  cb(state); draw();
+});
+// Jump to a session's iTerm tab; one without a terminal (the Claude app) gets its menu.
+const goTo = (s) => {
+  if (s.current) return toast('This is the current session');
+  if (!s.tty) return agentMenu(s);
+  pane(['focus', s.tty], (state) => { if (state !== 'focused') toast(state === 'not-found' ? 'Not an iTerm tab' : "Couldn't switch"); });
+};
 
 const agentMenu = (a) => {
   const info = [`${a.status} for ${ago(a.statusSince)} · ${a.surface === 'desktop' ? 'Claude app' : 'terminal'}`,
@@ -210,6 +225,26 @@ function buildMain(W) {
   const rule = () => line(dim('─'.repeat(inner)));
   const heading = (t) => line(bold(t));
   const caret = (open) => (open ? '▾' : '▸');
+
+  // Sessions: every Claude on this Mac, this one first, then those needing you. Enter jumps to its tab.
+  rule();
+  const list = data.overview ?? [];
+  pair('Sessions', list.length ? String(list.length) : '…', undefined, { leftStyle: bold, rightStyle: dim });
+  const STATE = {
+    busy: [() => fg(C.accent, ui.tick % 2 ? '●' : '◉'), (s) => fg(C.accent, s)],
+    waiting: [() => fg(C.yellow, '◆'), (s) => fg(C.yellow, s)],
+    blocked: [() => fg(C.red, '⧗'), (s) => fg(C.red, s)],
+    idle: [() => dim('○'), dim],
+  };
+  for (const s of list) {
+    const id = item(`session:${s.pid}`, () => goTo(s));
+    const [dot, paint] = STATE[s.state] ?? STATE.idle;
+    const right = s.state;
+    const l = trunc(clean(s.title), inner - 4 - width(right) - 1);
+    const gap = Math.max(1, inner - 4 - width(l) - width(right));
+    line(`${s.current ? '▸' : ' '} ${dot()} ${s.current ? bold(l) : l}${' '.repeat(gap)}${paint(right)}`, id);
+    pair(`    ${[s.repo, s.branch, clean(s.doing)].filter(Boolean).join(' · ')}`, '', id, { leftStyle: dim });
+  }
 
   // Environment
   const env = data.env;
@@ -340,21 +375,6 @@ function buildMain(W) {
     rule();
   }
 
-  // Other sessions: every other Claude on this Mac, folded into one row
-  const others = data.agents.filter((a) => a.pid !== data.current?.pid);
-  pair(`Other sessions ${caret(ui.open.others)}`, others.length ? String(others.length) : 'none',
-    item('others', () => { ui.open.others = !ui.open.others; }), { leftStyle: bold, rightStyle: dim });
-  if (ui.open.others) for (const a of others) {
-    const id = item(`agent:${a.pid}`, () => agentMenu(a));
-    const busy = a.status === 'busy';
-    const dot = busy ? fg(C.accent, ui.tick % 2 ? '●' : '◉') : dim('○');
-    const surface = a.surface === 'desktop' ? 'app' : a.surface;
-    const right = `${a.status}  ${surface}`;
-    const l = trunc(a.name, inner - 2 - width(right) - 1);
-    const gap = Math.max(1, inner - 2 - width(l) - width(right));
-    line(`${dot} ${l}${' '.repeat(gap)}${busy ? fg(C.accent, a.status) : dim(a.status)}  ${dim(surface)}`, id);
-    pair(`  ${a.repo} · ${ago(a.statusSince)}`, '', id, { leftStyle: dim });
-  }
   return { rows, items };
 }
 
@@ -511,7 +531,7 @@ const refresh = (name) => {
   let busy = false;
   return async () => { if (busy) return; busy = true; try { await loaders[name](); } catch {} busy = false; draw(); };
 };
-const schedule = { fast: 1000, env: 5000, account: 5000, prs: 60_000, connectors: 300_000 };
+const schedule = { fast: 1000, sessions: 3000, env: 5000, account: 5000, prs: 60_000, connectors: 300_000 };
 const runners = Object.fromEntries(Object.keys(schedule).map((k) => [k, refresh(k)]));
 for (const [k, ms] of Object.entries(schedule)) { runners[k](); setInterval(runners[k], ms); }
 setInterval(() => { ui.tick++; draw(); }, 1000);
