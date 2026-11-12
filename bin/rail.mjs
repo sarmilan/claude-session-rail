@@ -11,17 +11,21 @@ import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import * as src from './sources.mjs';
 import { ESC, fg, dim, bold, C, charWidth, width, trunc, wrap, clean } from './term.mjs';
-import { createMascot, creatureNames, stageFor } from './mascot.mjs';
+import { createMascot, creatureNames, stageFor, progressFor } from './mascot.mjs';
+import { isApproved } from './brief.mjs';
 import * as fontsize from './fontsize.mjs';
 
 const args = process.argv.slice(2);
 const flag = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
+// A numeric flag's value, or null when it's missing or not a number.
+const numFlag = (name) => { const v = flag(name); return v?.trim() && Number.isFinite(+v) ? +v : null; };
 const cwd = flag('--cwd') || process.cwd();
 const pinnedPid = Number(flag('--pid')) || null; // the Claude process this rail belongs to
 const taskIndex = new src.TaskIndex();
 
 // ── Data ───────────────────────────────────────────────────────────────────────
-const data = { env: null, account: null, usage: [], agents: [], overview: null, current: null, stats: null, connectors: null, prs: null, worktrees: null, activity: null,
+const data = { env: null, brief: null, account: null, usage: [], agents: [], overview: null, current: null, stats: null, connectors: null, prs: null,
+  worktrees: null, activity: null,
   tasks: { running: [], finished: 0, done: [] } };
 
 const loaders = {
@@ -35,7 +39,10 @@ const loaders = {
     data.tasks = files.tasksDir ? await taskIndex.list(files.tasksDir) : { running: [], finished: 0, done: [] };
     data.activity = await src.activity(data.current?.sessionId);
   },
-  async env() { data.env = await src.environment(cwd); },
+  async env() {
+    const [env, brief] = await Promise.all([src.environment(cwd), src.readBrief(cwd)]);
+    data.env = env; data.brief = brief?.status ? { status: brief.status, chunks: brief.chunks } : null; // what the pet needs
+  },
   async sessions() { data.overview = await src.sessionsOverview(data.agents, data.current?.pid); },
   async account() { [data.account, data.usage] = await Promise.all([src.account(), src.usage()]); },
   // The PRs and worktree cards only show on Git: off it, load them once and leave them (setTab refreshes on arrival).
@@ -117,7 +124,8 @@ const iterm = process.env.TERM_PROGRAM === 'iTerm.app' || process.env.LC_TERMINA
 // The chosen creature is remembered across rails; `c` cycles through them.
 const MASCOT_FILE = join(homedir(), '.claude', 'session-rail', 'mascot.json');
 const savedCreature = (() => {
-  try { return Math.max(0, creatureNames.indexOf(JSON.parse(readFileSync(MASCOT_FILE, 'utf8')).creature)); } catch { return 0; }
+  // By the name's last word, so a pick saved under an old name ("Claudey the snail", "Turtle") still loads.
+  try { return Math.max(0, creatureNames.indexOf(String(JSON.parse(readFileSync(MASCOT_FILE, 'utf8')).creature).split(' ').pop().toLowerCase())); } catch { return 0; }
 })();
 const mascot = createMascot({ images: iterm && !args.includes('--frame') && Boolean(process.stdout.isTTY), creature: savedCreature });
 const showMascot = (W, H) => H >= 24 && W >= mascot.width + 4;
@@ -125,10 +133,38 @@ const saveCreature = (name) => {
   try { mkdirSync(dirname(MASCOT_FILE), { recursive: true }); writeFileSync(MASCOT_FILE, JSON.stringify({ creature: name })); } catch {}
 };
 const nextCreature = (d = 1) => saveCreature(mascot.next(d));
-// The pet grows with the context window (--pet-stage N pins a stage for --frame).
+// The pet grows with the branch's brief (--pet-stage N pins a stage for --frame).
 const stageFlag = flag('--pet-stage');
 const pinned = stageFlag != null && /^[0-3]$/.test(stageFlag) ? +stageFlag : null;
-const petStage = () => pinned ?? stageFor(data.stats?.contextPct);
+const petStage = () => pinned ?? stageFor(data.brief);
+// And walks the branch's road, left to right as chunks get Done (--pet-progress F pins it for --frame).
+const progressFlag = numFlag('--pet-progress');
+const petProgress = () => progressFlag ?? progressFor(data.brief);
+// A visitor for each running subagent: the main thread's Agent calls in flight, plus background subagents,
+// whose Agent call returns at once but whose task keeps running (--visitors N pins it for --frame).
+const visitorsFlag = numFlag('--visitors');
+const subagents = () => visitorsFlag ?? ((data.activity?.running ?? []).filter((c) => (c.tool === 'Agent' || c.tool === 'Task') && !c.agent).length
+  + data.tasks.running.filter((t) => t.kind === 'agent').length);
+// A little one trails behind for each background shell task (background subagents are visitors).
+const companionsFlag = numFlag('--companions');
+const backgroundTasks = () => companionsFlag ?? data.tasks.running.filter((t) => t.kind === 'shell').length;
+// It stands still with a ? while the brief gate holds edits (--held for --frame); any approval lets go (the gate
+// keeps allowing edits once a brief is approved, even after it changes).
+const petHeld = () => args.includes('--held') || (src.gateHeld(data.activity) && !isApproved(data.brief?.status));
+// It flinches once at each new failed tool call; failures from before the rail started don't count, nor
+// the gate's refusals (they count as failed calls), which show the ? instead. Other failures while the gate
+// holds (a Bash command, say) still do.
+let lastFailure = Date.now();
+const checkFailure = () => {
+  const f = data.activity?.recent?.find((r) => !r.ok), at = f?.at ?? 0, gate = data.activity?.gate;
+  const refusal = gate && f?.tool === gate.tool && Math.abs(at - gate.at) < 5000;
+  if (at > lastFailure && !refusal) mascot.flinch();
+  lastFailure = Math.max(lastFailure, at);
+};
+const feedPet = (W) => {
+  mascot.setStage(petStage()); mascot.setProgress(petProgress()); mascot.setVisitors(subagents(), W);
+  mascot.setCompanions(backgroundTasks()); mascot.setHeld(petHeld()); checkFailure();
+};
 const claudeBusy = () => data.tasks.running.length > 0 || data.current?.status === 'busy';
 
 const toast = (text) => { ui.toast = { text, until: Date.now() + 2500 }; };
@@ -540,7 +576,7 @@ function buildMain(W) {
     kids.forEach((k, i) => actor(dim(i === kids.length - 1 ? '  └' : '  ├') + ' ' + k.mark, '', k.what, k.at, { id: k.id }));
     if (act?.desk) actor(spin(true), 'Desk', act.desk.kind ?? 'running', act.desk.startedAt);
     // The gate's refusal, while it's recent.
-    if (act?.gate && Date.now() - act.gate.at < 120_000) actor(fg(C.yellow, '⧗'), 'Gate', `held ${act.gate.tool} ${clean(rel(act.gate.file))}`, act.gate.at);
+    if (src.gateHeld(act)) actor(fg(C.yellow, '⧗'), 'Gate', `held ${act.gate.tool} ${clean(rel(act.gate.file))}`, act.gate.at);
   }
   rule();
 
@@ -689,7 +725,11 @@ if (args.includes('--frame')) {
   const W = +args[i + 1] || 42, H = +args[i + 2] || 60;
   for (const k of ['context', 'connectors', 'settings']) if (args.includes(`--open-${k}`)) ui.open[k] = true;
   await collect();
-  mascot.setStage(petStage());
+  feedPet(W); mascot.setHeld(false);
+  // let it walk to its spot on the road (at a past time, so no blink is left on the frame), then hold it there
+  for (let n = 0, t = Date.now() - 1000; n < W * 2; n++) mascot.step(W, false, t);
+  mascot.setHeld(petHeld());
+  if (args.includes('--flinch')) mascot.flinch();
   // e.g. --activate pr:8  or  --activate finished,opt:0  (a chain of clicks)
   for (const id of (flag('--activate') || '').split(',').filter(Boolean)) frame(W, H).items.find((it) => it.id === id)?.activate();
   console.log(frame(W, H).lines.join('\n'));
@@ -736,7 +776,7 @@ setInterval(() => { ui.tick++; draw(); }, 1000);
 fontsize.baseSize(pinnedPid).then((b) => { font.base = b; draw(); });
 // Put the panes on the saved font size once the layout has settled (pane.mjs sizes the splits after opening them).
 if (font.size) setTimeout(() => setFont(font.size), 3000);
-setInterval(() => { mascot.setStage(petStage()); mascot.step(out.columns || 40, claudeBusy()); draw(); }, 200);
+setInterval(() => { feedPet(out.columns || 40); mascot.step(out.columns || 40, claudeBusy()); draw(); }, 200);
 draw();
 
 // A rail pinned to a Claude process quits (closing its pane) once that process is gone for 3s.

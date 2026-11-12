@@ -52,6 +52,11 @@ const shell = (px, x, c) => {
   px.push([x, 2, 174, 0], [x - 1, 1, 174, 0]);
 };
 
+// Specks below the floor line, the ground the creature walks on: sand, soil, mud.
+// One colour draws no extra random number, so the beach's plants keep the spots they had before.
+const specks = (colours) => (px, x, r) =>
+  px.push([x, -1 - Math.floor(r() * 3), colours.length > 1 ? colours[Math.floor(r() * colours.length)] : colours[0], 0]);
+
 // Habitats: plants per 100 sprite pixels of width, placed at random (but seeded) spots.
 const HABITATS = {
   woodland: [
@@ -59,14 +64,16 @@ const HABITATS = {
     [2, (px, x) => mushroom(px, x)],
     [4, (px, x, r) => pebble(px, x, 2 + Math.floor(r() * 2), 240)],
     [4, (px, x) => tuft(px, x, 2, 22)],
+    [10, specks([94, 101])], // soil and leaf litter (last, so the plants keep their seeded spots)
   ],
   pond: [
     [3, (px, x, r) => reed(px, x, 10 + Math.floor(r() * 5))],
     [5, (px, x, r) => blade(px, x, 4 + Math.floor(r() * 6), r() < 0.5 ? 1 : -1)],
     [2, (px, x, r) => rock(px, x, 6 + r() * 4, 3 + Math.floor(r() * 2))],
+    [10, specks([101, 30])], // mud and water
   ],
   beach: [
-    [10, (px, x, r) => px.push([x, -1 - Math.floor(r() * 3), 137, 0])], // sand specks below the floor
+    [10, specks([137])], // sand
     [3, (px, x, r) => seaweed(px, x, 5 + Math.floor(r() * 7))],
     [3, (px, x, r) => shell(px, x, [181, 217, 224][Math.floor(r() * 3)])],
     [2, (px, x) => pebble(px, x, 2, 244)],

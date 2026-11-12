@@ -5,9 +5,12 @@
 // `sideways` creatures (the crab) never turn round, they just walk the other way. `speed` is ticks per
 // frame (a tick is ~200ms); busy creatures go at one frame a tick. `habitat` names the foliage it walks
 // through (habitats.mjs).
-// `stages` (optional): four forms, hatchling → heavy, that the mascot grows through as the context
-// window fills; a stage form is drawn like a creature and may set `scale` (image pixels per sprite
-// pixel, default 4) and `rows` (terminal rows, default 3) to be drawn bigger.
+// `stages` (optional): four forms, hatchling → heavy, that the mascot grows through as the branch's
+// brief heads toward its compaction (stageFor in mascot.mjs); a stage form is drawn like a creature and
+// may set `scale` (image pixels per sprite pixel, default 4) and `rows` (terminal rows, default 3) to be
+// drawn bigger.
+// `baby`: a 6×4 drawing in the creature's own palette, facing right, for the companions that trail behind
+// it (one per running background task).
 export const SPR_W = 34, SPR_H = 16;
 
 function canvas(lift = 0) {
@@ -33,16 +36,17 @@ function canvas(lift = 0) {
   return { set, span, vline, ell, eye, mirror, rows: () => g.map((r) => r.join('')) };
 }
 
-// ── Claudey the snail ──────────────────────────────────────────────────────────
+// ── Snail ──────────────────────────────────────────────────────────────────────
 const SHELL = [[6, 11], [4, 13], [3, 14], [2, 15], [2, 16], [1, 16], [1, 16], [1, 16], [1, 16], [2, 15], [2, 15], [3, 14]];
 const SPIRAL = { 3: [8, 9, 10, 11], 4: [6, 7, 12, 13], 5: [5, 9, 10, 14], 6: [5, 8, 11, 14], 7: [5, 8, 10, 14],
   8: [6, 9, 13], 9: [7, 8, 11, 12], 10: [9, 10] };
 const SHINE = { 1: [6, 7], 2: [6], 4: [3], 5: [2] };
 
 const snail = {
-  speed: 3,
-  name: 'Claudey the snail',
+  speed: 2,
+  name: 'snail',
   habitat: 'woodland',
+  baby: ['.SS..B', 'SDDS.B', 'SSSSBB', 'BBBBBB'],
   palette: { S: 71, D: 28, W: 157, B: 114, E: 231, P: 233 },
   advance: [true, false], // stretch forward, then the shell catches up
   zAt: [[20, 8], [26, 2]],
@@ -79,7 +83,7 @@ const shellRings = ({ ell, set }, cx, cy, rx, ry, shine) => {
 };
 
 const snailHatchling = {
-  speed: 4,
+  speed: 2,
   palette: { S: 114, D: 71, W: 194, B: 157, K: 71, E: 231, P: 233 },
   advance: [true, false],
   zAt: [[19, 4], [24, 0]],
@@ -101,7 +105,7 @@ const snailHatchling = {
 };
 
 const snailAdult = {
-  speed: 2,
+  speed: 1,
   palette: { S: 35, D: 22, W: 121, B: 78, K: 22, E: 231, P: 233 },
   advance: [true, false],
   zAt: [[21, 6], [26, 1]],
@@ -151,10 +155,11 @@ snail.stages = [snailHatchling, snail, snailAdult, snailHeavy];
 
 // ── Turtle ─────────────────────────────────────────────────────────────────────
 const turtle = {
-  speed: 4,
-  name: 'Turtle',
+  speed: 2,
+  name: 'turtle',
   habitat: 'pond',
-  palette: { S: 65, H: 22, R: 58, W: 108, L: 149, l: 106, K: 22, E: 231, P: 233 },
+  baby: ['.SSS..', 'SHSHSL', 'RRRRRL', '.L.L..'],
+  palette: { S: 77, H: 28, R: 64, W: 193, L: 149, l: 106, K: 22, E: 231, P: 233 },
   advance: [true, false],
   zAt: [[24, 7], [28, 1]],
   draw({ frame, blink, sleep }) {
@@ -197,8 +202,8 @@ const turtleLegs = ({ set, span, vline }, far, near, thick, claw) => {
 };
 
 const turtleHatchling = {
-  speed: 5,
-  palette: { S: 108, H: 65, R: 143, W: 151, L: 193, l: 150, K: 65, E: 231, P: 233 },
+  speed: 3,
+  palette: { S: 120, H: 71, R: 107, W: 194, L: 193, l: 150, K: 65, E: 231, P: 233 },
   advance: [true, false],
   zAt: [[20, 5], [25, 0]],
   draw({ frame, blink, sleep }) {
@@ -221,8 +226,8 @@ const turtleHatchling = {
 };
 
 const turtleAdult = {
-  speed: 2,
-  palette: { S: 29, H: 23, R: 94, W: 72, L: 112, l: 70, K: 22, E: 231, P: 233 },
+  speed: 1,
+  palette: { S: 34, H: 22, R: 136, W: 120, L: 112, l: 70, K: 22, E: 231, P: 233 },
   advance: [true, false],
   zAt: [[25, 6], [29, 0]],
   draw({ frame, blink, sleep }) {
@@ -251,7 +256,7 @@ const turtleAdult = {
 const turtleHeavy = {
   speed: 1,
   scale: 5, rows: 4, // drawn bigger, a row taller
-  palette: { S: 94, H: 52, R: 130, X: 223, W: 137, L: 101, l: 59, K: 52, E: 231, P: 160 },
+  palette: { S: 172, H: 94, R: 130, X: 223, W: 221, L: 101, l: 59, K: 52, E: 231, P: 160 },
   advance: [true, false],
   zAt: [[25, 6], [29, 0]],
   draw({ frame, blink, sleep }) {
@@ -279,11 +284,12 @@ const turtleHeavy = {
 turtle.stages = [turtleHatchling, turtle, turtleAdult, turtleHeavy];
 
 // ── Crab ───────────────────────────────────────────────────────────────────────
-// Four stages as the context window fills (see `stages` below): hatchling, this one, adult, heavy.
+// Four stages as the brief heads toward its compaction (see `stages` below): hatchling, this one, adult, heavy.
 const crab = {
-  speed: 2,
-  name: 'Crab',
+  speed: 1,
+  name: 'crab',
   habitat: 'beach',
+  baby: ['.E..E.', 'CCCCCC', 'CDCCDC', 'C.CC.C'],
   palette: { C: 209, D: 166, K: 88, E: 231, P: 233 },
   advance: [true, true],
   sideways: true,
@@ -342,7 +348,7 @@ const pincer = ({ ell, set, span }, cx, cy, rx, ry, open, line = 'D') => {
 };
 
 const crabHatchling = {
-  speed: 3,
+  speed: 2,
   palette: { C: 216, D: 173, K: 95, E: 231, P: 233 },
   advance: [true, true],
   sideways: true,
