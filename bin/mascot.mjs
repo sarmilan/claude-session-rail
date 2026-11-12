@@ -68,7 +68,7 @@ export const progressFor = (brief) => (brief?.status ? doneShare(brief) ?? 0 : n
 const PACE = 4; // columns it wanders either side of its spot on the road
 const ANGER = ['.A.A.', 'AA.AA', '.....', 'AA.AA', '.A.A.']; // a popping vein, drawn up by a claw
 const PUFF = ['U.A.U', '.AUA.', 'AUUUA', '.AUA.', 'U.A.U']; // a failed tool call
-const QUERY = ['.QQQ.', 'Q...Q', '...Q.', '..Q..', '.....', '..Q..']; // held by the brief gate
+const QUERY = ['.QQQ.', 'Q...Q', '..QQ.', '.....', '..Q..']; // held by the brief gate (5 rows, like the others, to fit above it)
 const PUFF_MS = 1500, MAX_COMPANIONS = 3;
 
 const xtermRgb = (n) => {
