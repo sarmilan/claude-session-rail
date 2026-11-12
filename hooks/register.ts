@@ -3,6 +3,7 @@ import { approvalRecord, briefFile, briefStatus, NO_BRIEF_BRANCHES, parseBrief }
 import * as act from './activity.ts'
 import { goAhead } from './goahead.ts'
 import * as compact from './compact.ts'
+import { codeRun, gateReason as reviewWait, keptRuns, mergesPr, reportFromText, reviewsFile } from '../bin/cadence.mjs'
 
 // The controller (bin/pane.mjs) does the iTerm work; this module only decides when to call it.
 // It runs through sh so the user's PATH finds `node`; the script path is passed as an argument,
@@ -43,6 +44,7 @@ const runStart = async ($: EngineInterface) => {
 // shows "changed since approval" and a review of the change. Bash isn't gated.
 type Brief = {
   branch: string
+  common: string
   path: string
   approvedPath: string
   dir: string
@@ -70,7 +72,7 @@ const readBrief = async ($: EngineInterface): Promise<Brief | null> => {
   try {
     approval = approved ? JSON.parse(approved) : null
   } catch {}
-  return { branch, path, approvedPath, dir: `${common}/session-rail/`, text, approval }
+  return { branch, common, path, approvedPath, dir: `${common}/session-rail/`, text, approval }
 }
 
 const BRIEF_SHAPE = `# <title>
@@ -94,7 +96,7 @@ Work the brief out with the person before editing any code. Don't wait to be ask
 
 ${BRIEF_SHAPE}
 
-Keep the solution and the outline the simplest way to reach the goal. Edit, Write and NotebookEdit calls on any other file are refused until the brief has a problem, a solution and at least one chunk, and the person has approved it. When it's complete, ask them to review it and press Approve in the desk's Plan tab. Never approve it yourself or write its approval file.
+Keep the solution and the outline the simplest way to reach the goal. Edit, Write and NotebookEdit calls on any other file are refused until the brief has a problem, a solution and at least one chunk, and the person has approved it. When it's complete, call the review_approach tool on it (a plan review: the cheapest time to change course), work its findings into the brief, then ask them to review it and press Approve in the desk's Plan tab. Never approve it yourself or write its approval file.
 
 While you work, keep the brief current: if the problem, the solution or the outline changes, update the brief right away.
 
@@ -103,9 +105,13 @@ Work through the chunks in order. When you finish one:
 2. When it's satisfactory, add two lines under the chunk's outline:
 Done: <a short happy-path summary: what changed and how it works end to end>
 Files: <comma-separated paths relative to the repo root>
-3. Commit the chunk on its own: one commit per chunk, its message naming the chunk.
-4. Push the branch. After the first chunk's commit, also open a pull request for the branch, titled after the brief, with its Problem and Solution as the description; later pushes update it.
-5. Move straight on to the next chunk without waiting for the person, unless something needs their decision.
+3. Call the review_approach tool. Apply each finding and update the brief to match; if one shouldn't be applied, pass your reason in its notes. Call it once more to check them, at most two rounds; if something is still open after that, say so to the person.
+4. Run what the chunk built once for real (the command, the UI frame, the hook in a live session), not only its tests, and fix what that shows.
+5. Commit the chunk on its own: one commit per chunk, its message naming the chunk.
+6. Push the branch. After the first chunk's commit, also open a pull request for the branch, titled after the brief, with its Problem and Solution as the description and a Progress checklist of the chunks; tick each chunk as it lands, noting its approach review (for example "review: 2 findings, applied"). Later pushes update it.
+7. Move straight on to the next chunk without waiting for the person, unless something needs their decision.
+
+Before merging, which waits for the person to say so: run /code-review --fix over the whole branch (against the default branch) and commit and push its fixes. Then call review_approach with final: true: it also checks what the code review's fixer did (that fixes landed, and whether each skip or "no change" is sound). Apply what it finds, commit and push, and call it with final: true once more to check them: at most two rounds. If something is still open after that, list it in the PR and ask the person instead of looping. The plugin refuses gh pr merge until the code review has run since the last chunk's review, the final approach review has run after it on the last commit with nothing uncommitted, and nothing is open.
 
 At the end of the session, check the work against the brief's Problem and Solution.`
 
@@ -128,6 +134,112 @@ const gate = async ($: EngineInterface, tool: string, file: string) => {
     : gateReason(b)
   if (reason) record($, a => act.refused(a, tool, file, Date.now()))
   return reason
+}
+
+// ── The review cadence (bin/cadence.mjs) ──────────────────────────────────────
+// On a branch with an approved brief, `gh pr merge` waits for a code review of the whole branch and a final
+// approach review, both after the last commit on a clean tree, with nothing open. Commits aren't gated. The
+// code review is recorded from /code-review's final JSON block. A failure in the gate lets the command through.
+type Run = Record<string, unknown> & { findings: unknown[] }
+const readRuns = async ($: EngineInterface, path: string): Promise<Run[]> => {
+  try {
+    const runs = (JSON.parse(String(await $.fs.read(path))) as { runs?: unknown }).runs
+    return Array.isArray(runs) ? (runs as Run[]).filter(r => r && Array.isArray(r.findings)) : []
+  } catch {
+    return []
+  }
+}
+// The commit HEAD points at, or null.
+const headCommit = async ($: EngineInterface, cwd: string) => {
+  const rev = await $.process.run(['git', '-C', cwd, 'rev-parse', 'HEAD'], { timeoutMs: 5_000 })
+  return rev.exitCode === 0 ? rev.stdout.trim() : null
+}
+// Whether the tree has uncommitted changes (true when git can't say).
+const isDirty = async ($: EngineInterface, cwd: string) => {
+  const st = await $.process.run(['git', '-C', cwd, 'status', '--porcelain'], { timeoutMs: 10_000 })
+  return st.exitCode !== 0 || st.stdout.trim() !== ''
+}
+// The branch's review record, beside its brief.
+const runsPath = (b: Brief) => reviewsFile(b.common, b.branch)
+// Without the tool (the engine refused it) Claude can't satisfy the gate, so it stands aside.
+let reviewToolReady = false
+const reviewGate = async ($: EngineInterface, command: string) => {
+  if (!mergesPr(command) || !reviewToolReady) return null
+  const b = await readBrief($)
+  if (!b?.approval?.approvedAt) return null
+  const [commit, runs] = await Promise.all([headCommit($, await $.session.cwd()), readRuns($, runsPath(b))])
+  return commit ? reviewWait(runs, { head: commit }) : null
+}
+const recordCodeReview = async ($: EngineInterface, report: unknown) => {
+  const b = await readBrief($)
+  if (!b) return
+  const cwd = await $.session.cwd()
+  const [commit, dirty, earlier] = await Promise.all([headCommit($, cwd), isDirty($, cwd), readRuns($, runsPath(b))])
+  const runs = [codeRun(report, { head: commit, dirty, at: Date.now() }), ...earlier]
+  // Written beside it and renamed over it, so the desk never reads half a file.
+  const tmp = `${runsPath(b)}.${Date.now()}.tmp`
+  await $.fs.write(tmp, JSON.stringify({ runs: keptRuns(runs) }, null, 1))
+  await $.process.run(['mv', '-f', tmp, runsPath(b)], { timeoutMs: 5_000 })
+}
+
+// What a run's prompt is told: end with a findings block that carries the run's token, so the plugin knows
+// the answer is this run's report however it ran (forked or inline, in the main loop or a subagent).
+const reportOutcomes = (token: string) =>
+  `session-rail: this branch's merge waits for this review. End your final message with a \`\`\`json block holding {"run": "${token}", "findings": [...]}: the findings after --fix, each given an "outcome": "fixed", "skipped" or "no_change_needed" (an empty list when there were none).`
+
+// A /code-review run on a gated branch, armed when the Skill tool runs it or the person types it (a skill
+// merely preloaded into an agent arms nothing). It gets a token, its first prompt asks for the token in the
+// final findings block, and the answer that carries it is the report, wherever it comes from. A new run
+// replaces an unfinished one. With nothing armed, a hand-off costs one state read.
+const CODE_REVIEW = { plugin: 'session-rail', key: 'codeReview' } as const
+const isCodeReview = (skill: unknown) => typeof skill === 'string' && (skill === 'code-review' || skill.endsWith(':code-review'))
+const armCodeReview = async ($: EngineInterface) => {
+  const b = reviewToolReady ? await readBrief($).catch(() => null) : null
+  // Without the tool the gate stands aside, and off a gated branch nothing waits: a run left armed earlier ends here.
+  if (!b?.approval?.approvedAt) return $.state.set(CODE_REVIEW, null)
+  await $.state.set(CODE_REVIEW, { token: `cr-${Date.now().toString(36)}`, prompted: false })
+}
+const finishCodeReview = async ($: EngineInterface, answer: string) => {
+  const run = (await $.state.get(CODE_REVIEW)).value
+  if (!run) return
+  const report = reportFromText(answer)
+  // The report after --fix gives findings an outcome (one left without stays open); an empty list is clean.
+  if (report?.run !== run.token) return
+  if (report.findings.length && !report.findings.some((f: { outcome?: unknown }) => typeof f.outcome === 'string')) return
+  await $.state.set(CODE_REVIEW, null)
+  await recordCodeReview($, report)
+}
+
+// review_approach: the tool Claude calls before each commit (and with final before a merge). It runs the
+// desk's reviewer through its CLI, which saves the run in the branch's record and prints what Claude reads.
+const REVIEW_TOOL = {
+  name: 'review_approach',
+  description:
+    "Runs the session-rail approach review: a staff engineer checks this branch's brief, its finished chunks and the changed files for a simpler, cheaper or more complete way to the goal, checks whether the earlier findings were applied, and checks what /code-review's fixer did about its findings. Call it on the brief once it's complete (before asking for approval), after each chunk's Done line, and once more to check applied findings (at most two rounds); call it with final: true before merging, after /code-review --fix over the whole branch and its fixes are committed. Takes under a minute.",
+  inputSchema: {
+    type: 'object',
+    properties: {
+      final: { type: 'boolean', description: 'The final review of the whole branch before merging' },
+      notes: {
+        type: 'array',
+        description: "Your reply to an earlier finding you chose not to apply: its id and why. The review decides whether to accept it.",
+        items: { type: 'object', properties: { id: { type: 'string' }, note: { type: 'string' } }, required: ['id', 'note'] },
+      },
+    },
+  },
+  isDeferred: false,
+}
+const runReview = async ($: EngineInterface, input: { final?: unknown; notes?: unknown }) => {
+  const args = ['--run', ...(input.final === true ? ['--final'] : []), ...(Array.isArray(input.notes) ? ['--notes', JSON.stringify(input.notes)] : [])]
+  try {
+    const r = await $.process.run(['/bin/sh', '-c', 'exec node "$@"', 'sh', `${$.plugin.root}/bin/reviewer.mjs`, ...args], {
+      cwd: await $.session.cwd(),
+      timeoutMs: 600_000,
+    })
+    return r.stdout.trim() || `The approach review printed nothing${r.stderr.trim() ? `: ${r.stderr.trim().split('\n').pop()}` : ''}.`
+  } catch (err) {
+    return `The approach review didn't finish: ${err instanceof Error ? err.message : String(err)}`
+  }
 }
 
 // /approve-brief: the same as Approve in the desk, for when the desk isn't open. It approves a complete brief
@@ -270,6 +382,7 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     // Each on its own: a name the engine refuses (one Claude Code has since taken) must not stop the panels opening.
     for (const command of COMMANDS) await $.command.register(command).catch(() => {})
+    reviewToolReady = await $.tool.register(REVIEW_TOOL).then(() => true, () => false)
     // Interactive terminal sessions only, and never block startup on iTerm. One call fills the screen, opens
     // both panels and sizes them once, so the window doesn't jump between steps. Then /start, if there is one.
     if (e.isInteractive && e.surface === 'terminal') {
@@ -300,8 +413,9 @@ export const register: Register = on => {
     }
     return next(e)
   })
-  on('turn.complete', ($, e, next) => {
+  on('turn.complete', async ($, e, next) => {
     if (!e.agentId) record($, a => act.turnEnded(a, Date.now()))
+    if (!e.isAborted) await finishCodeReview($, e.answer).catch(() => {})
     return next(e)
   })
   on('turn.abort', ($, e, next) => {
@@ -335,6 +449,35 @@ export const register: Register = on => {
     const deny = await gate($, 'NotebookEdit', e.notebook_path)
     return deny ? { deny } : next(e)
   }).catch(($, e, next) => next(e))
+
+  // The review cadence: merges wait for the reviews, and /code-review's report is recorded.
+  on('tool.call', { tool: 'mcp__session-rail__review_approach' }, async ($, e) => ({ result: await runReview($, e as never) }) as never)
+  on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
+    const deny = await reviewGate($, e.command)
+    return deny ? { deny } : next(e)
+  }).catch(($, e, next) => next(e))
+  // /code-review's output contract is a JSON block, not ReportFindings: on a gated branch an armed run's prompt
+  // asks for outcomes and its token in that block, and the answer carrying the token is recorded (turn.complete).
+  // The Skill tool running code-review arms the run.
+  on('tool.call', { tool: 'Skill' }, async ($, e, next) => {
+    if (isCodeReview(e.skill)) await armCodeReview($).catch(() => {})
+    return next(e)
+  })
+  // …and so does the person typing /code-review (the main loop is the caller).
+  on('command.run', async ($, e, next) => {
+    if (isCodeReview(e.command)) await armCodeReview($).catch(() => {})
+    return next(e)
+  })
+  // The run's own prompt (the first after arming) asks for outcomes in its final block; a skill merely
+  // preloaded into an agent isn't changed.
+  on('skill.prompt', async ($, e, next) => {
+    const r = await next(e)
+    if (!isCodeReview(e.skill)) return r
+    const run = (await $.state.get(CODE_REVIEW).catch(() => ({ value: null }))).value
+    if (!run || run.prompted) return r
+    await $.state.set(CODE_REVIEW, { ...run, prompted: true })
+    return { text: `${r.text}\n\n${reportOutcomes(run.token)}` }
+  })
 
   // Rate limits are per account, so one file serves every rail; the newest reading wins.
   // sh resolves $HOME (no Node APIs here) and the mv keeps a rail from reading half a file.
