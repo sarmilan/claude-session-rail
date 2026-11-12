@@ -3,7 +3,7 @@
 A Claude Code plugin (repo root = plugin = marketplace) that opens a Claude-desktop-style session rail as an iTerm2 split. See README.md for behavior and architecture.
 
 ## Layout
-- `bin/rail.mjs`: the terminal UI (modes: interactive, `--json`, `--frame W H [--activate a,b] [--open-context]`)
+- `bin/rail.mjs`: the terminal UI (modes: interactive, `--json`, `--frame W H [--tab session|git] [--activate a,b] [--open-context]`)
 - `bin/desk.mjs`: the wider Plan / Diff / Review panel (modes: interactive, `--json`, `--frame W H [--tab plan|diff|review] [--file N] [--review-json F --select N --jump N]`)
 - `bin/reviewer.mjs`: the desk's Review tab: a headless staff-engineer review of the branch's approach (`claude -p --json-schema`, read-only) from its brief and chunk records, kept per branch in `.git/session-rail/reviews/`
 - `bin/term.mjs`: drawing helpers shared by the rail and the desk (colours, display width, wrap, `clean()`)

@@ -3,6 +3,7 @@
 //   node rail.mjs                 interactive panel (run it in a narrow iTerm pane)
 //   node rail.mjs --json          print the collected state once
 //   node rail.mjs --frame [W H]   print one rendered frame (for testing, no TTY needed)
+//   --tab session|git             open on that tab (otherwise the session's saved tab, or Session)
 //   --cwd DIR                     use DIR instead of the current folder
 import { execFile, spawn } from 'node:child_process';
 import { openSync, readSync, fstatSync, closeSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
@@ -27,6 +28,7 @@ const loaders = {
   async fast() {
     data.agents = await src.sessions();
     data.current = (pinnedPid && data.agents.find((a) => a.pid === pinnedPid)) || src.currentSession(data.agents, cwd);
+    restoreTab(data.current?.sessionId);
     const files = await src.sessionFiles(data.current);
     await taskIndex.update(files.transcriptPath);
     data.stats = taskIndex.context();
@@ -70,8 +72,41 @@ const bar = (pct, n = 8) => {
 };
 
 // ── Actions ────────────────────────────────────────────────────────────────────
+const TABS = ['session', 'git'];
+const TAB_LABELS = { session: 'Session', git: 'Git' };
+// Each rail remembers its own tab, in <session id>.rail.json beside the session's activity file, restored once
+// the session is known. --frame (and --tab) open where they say, Session by default.
+const isFrame = args.includes('--frame');
+const startTab = flag('--tab');
+const railFile = (sid) => join(homedir(), '.claude', 'session-rail', 'activity', `${sid}.rail.json`);
+let tabRestored = isFrame || TABS.includes(startTab), tabSwitched = false;
+const showTab = (t) => { ui.tab = t; ui.scroll = 0; ui.sel = null; }; // each tab starts at its top
+const saveTab = (sid) => {
+  if (!isFrame && sid) try { mkdirSync(dirname(railFile(sid)), { recursive: true }); writeFileSync(railFile(sid), JSON.stringify({ tab: ui.tab })); } catch {}
+};
+const restoreTab = (sid) => {
+  if (tabRestored || !sid) return;
+  tabRestored = true;
+  if (tabSwitched) return saveTab(sid); // a switch before the session was known wins over the saved tab, and is kept
+  try { const t = JSON.parse(readFileSync(railFile(sid), 'utf8')).tab; if (TABS.includes(t)) showTab(t); } catch {}
+};
 const ui = { sel: null, open: { environment: true, context: false, connectors: false, more: false, settings: false }, scroll: 0, tick: 0,
-  overlay: null, toast: null, input: null };
+  overlay: null, toast: null, input: null, tab: TABS.includes(startTab) ? startTab : 'session' };
+// Switch tabs; --frame doesn't touch the saved one.
+const setTab = (t) => {
+  tabSwitched = true;
+  if (t === ui.tab) return;
+  showTab(t);
+  saveTab(data.current?.sessionId);
+};
+const stepTab = (d) => setTab(TABS[(TABS.indexOf(ui.tab) + TABS.length + d) % TABS.length]);
+const otherTab = () => stepTab(1);
+// The tab under screen column x (1-based; column 1 is the frame's left pad, tabs are two spaces apart), else null.
+const tabAt = (x) => {
+  let from = 2;
+  for (const t of TABS) { const to = from + TAB_LABELS[t].length; if (x >= from && x < to) return t; from = to + 2; }
+  return null;
+};
 // Inline images only in a live iTerm2 pane; --frame output (and other terminals) get text octants.
 const iterm = process.env.TERM_PROGRAM === 'iTerm.app' || process.env.LC_TERMINAL === 'iTerm2';
 // The chosen creature is remembered across rails; `c` cycles through them.
@@ -265,8 +300,53 @@ function buildMain(W) {
   const heading = (t) => line(bold(t));
   const caret = (open) => (open ? '▾' : '▸');
 
+  // The repo row, on the Git tab and under Environment.
+  const env = data.env;
+  const repoRow = () => pair(`▢  ${env ? `${env.repo} · ${env.parent}` : '…'}`, '', env && item('repo', () => repoMenu(env)),
+    { leftStyle: (s) => s.replace(/ · (.*)$/, (m, p) => ' · ' + dim(p)) });
+
+  // +added −removed since the branch forked, then how many files are uncommitted.
+  const branchRow = () => {
+    if (!env?.isGit) return;
+    const diff = env.added || env.removed ? `+${env.added} −${env.removed}` : '';
+    pair(`⎇  ${env.branch ?? '(detached)'}`, [diff, env.dirty && `${env.dirty} changed`].filter(Boolean).join(' · '),
+      env.branch && item('branch', () => branchMenu(env)),
+      { rightStyle: (s) => s.replace(/^\+(\d+) −(\d+)/, (m, a, r) => fg(C.green, `+${a}`) + ' ' + fg(C.red, `−${r}`))
+        .replace(/( · )?(\d+ changed)$/, (m, sep = '', t) => dim(sep + t)) });
+  };
+
+  // Git: the repo, this branch, and the open pull requests.
+  const gitTab = () => {
+    repoRow();
+    branchRow();
+    rule();
+
+    // Pull requests: yours, open in this repo
+    heading('Pull requests');
+    const pr = data.prs;
+    if (!pr) line(dim('Loading…'));
+    else if (!pr.ok) line(dim('GitHub unavailable'));
+    else if (!pr.items.length) line(dim('No open pull requests'));
+    else {
+      for (const p of ui.open.more ? pr.items : pr.items.slice(0, 5)) {
+        const id = item(`pr:${p.number}`, () => prMenu(p));
+        pair(`⑂ ${clean(p.title)}`, '⋯', id, { leftStyle: (s) => fg(p.isDraft ? C.gray : C.purple, s[0]) + s.slice(1), rightStyle: dim });
+        pair(`  ${env?.repo ?? ''} #${p.number}${p.isDraft ? ' · draft' : ''}`, '', id, { leftStyle: dim });
+      }
+      if (pr.items.length > 5) line(dim(ui.open.more ? 'Show less' : 'Show more'), item('more', () => { ui.open.more = !ui.open.more; }));
+    }
+    rule();
+  };
+
+  // Tabs: the active one bold and underlined in orange. Enter flips; a click picks by column (tabAt).
+  const labels = TABS.map((t) => [t, TAB_LABELS[t]]);
+  pair(labels.map(([t, l]) => (t === ui.tab ? bold(fg(C.accent, l)) : dim(l))).join('  '), '⇥', item('tabs', otherTab), { rightStyle: dim });
+  const under = labels.map(([t, l]) => (t === ui.tab ? fg(C.accent, '━'.repeat(l.length)) : dim('─'.repeat(l.length)))).join(dim('──'));
+  line(under + dim('─'.repeat(Math.max(0, inner - width(labels.map(([, l]) => l).join('  '))))));
+
+  if (ui.tab === 'git') { gitTab(); return { rows, items }; }
+
   // Sessions: every Claude on this Mac, this one first, then those needing you. Enter jumps to its tab.
-  rule();
   const list = data.overview ?? [];
   pair(`Sessions ${dim(list.length ? String(list.length) : '…')}`, '+ new', item('new-session', () => { ui.input = { text: '' }; }),
     { leftStyle: bold, rightStyle: (s) => fg(C.accent, s) });
@@ -287,7 +367,6 @@ function buildMain(W) {
   }
 
   // Environment
-  const env = data.env;
   rule();
   pair(`Environment ${caret(ui.open.environment)}`, '', item('environment', () => { ui.open.environment = !ui.open.environment; }),
     { leftStyle: bold });
@@ -295,16 +374,8 @@ function buildMain(W) {
     pair(`▭  ${env?.computer ?? '…'}`);
     // Which login this Claude uses.
     if (data.account?.email) pair(`@  ${data.account.email}`, '', undefined, { leftStyle: (s) => s.slice(0, 3) + dim(s.slice(3)) });
-    pair(`▢  ${env ? `${env.repo} · ${env.parent}` : '…'}`, '', env && item('repo', () => repoMenu(env)),
-      { leftStyle: (s) => s.replace(/ · (.*)$/, (m, p) => ' · ' + dim(p)) });
-    if (env?.isGit) {
-      // +added −removed since the branch forked, then how many files are uncommitted.
-      const diff = env.added || env.removed ? `+${env.added} −${env.removed}` : '';
-      pair(`⎇  ${env.branch ?? '(detached)'}`, [diff, env.dirty && `${env.dirty} changed`].filter(Boolean).join(' · '),
-        env.branch && item('branch', () => branchMenu(env)),
-        { rightStyle: (s) => s.replace(/^\+(\d+) −(\d+)/, (m, a, r) => fg(C.green, `+${a}`) + ' ' + fg(C.red, `−${r}`))
-          .replace(/( · )?(\d+ changed)$/, (m, sep = '', t) => dim(sep + t)) });
-    }
+    repoRow();
+    branchRow();
     pair('◌  Remote Control', '/remote-control', item('remote', () => toast('Type /remote-control in your Claude session')),
       { leftStyle: dim, rightStyle: dim });
   }
@@ -345,22 +416,6 @@ function buildMain(W) {
   if (ui.open.connectors) for (const c of cn?.items ?? []) {
     pair(`  ${c.ok ? '✔' : '✗'} ${c.name}`, c.ok ? '' : c.state, undefined,
       { leftStyle: (s) => s.replace(/^( {2})(.)/, (m, sp, mark) => sp + fg(c.ok ? C.green : C.red, mark)), rightStyle: dim });
-  }
-  rule();
-
-  // Changes (open PRs)
-  heading('Changes');
-  const pr = data.prs;
-  if (!pr) line(dim('Loading…'));
-  else if (!pr.ok) line(dim('GitHub unavailable'));
-  else if (!pr.items.length) line(dim('No open pull requests'));
-  else {
-    for (const p of ui.open.more ? pr.items : pr.items.slice(0, 5)) {
-      const id = item(`pr:${p.number}`, () => prMenu(p));
-      pair(`⑂ ${p.title}`, '⋯', id, { leftStyle: (s) => fg(p.isDraft ? C.gray : C.purple, s[0]) + s.slice(1), rightStyle: dim });
-      pair(`  ${data.env?.repo ?? ''} #${p.number}${p.isDraft ? ' · draft' : ''}`, '', id, { leftStyle: dim });
-    }
-    if (pr.items.length > 5) line(dim(ui.open.more ? 'Show less' : 'Show more'), item('more', () => { ui.open.more = !ui.open.more; }));
   }
   rule();
 
@@ -483,7 +538,8 @@ function frame(W, H) {
   const bodyH = H - 1 - (withMascot ? mascot.rows : 0) - (settings?.rows.length ?? 0);
   const { rows, items } = ui.overlay ? buildOverlay(W, bodyH) : buildMain(W);
   if (settings) items.push(...settings.rows, settings.toggle);
-  if (!items.some((i) => i.id === ui.sel)) ui.sel = items[ui.overlay?.kind === 'menu' && items.length > 1 ? 1 : 0]?.id ?? null;
+  // The first row, past a menu's ‹ back or the tab bar.
+  if (!items.some((i) => i.id === ui.sel)) ui.sel = items[(ui.overlay?.kind === 'menu' || items[0]?.id === 'tabs') && items.length > 1 ? 1 : 0]?.id ?? null;
   const scroll = ui.overlay ? 0 : (() => {
     const first = rows.findIndex((r) => r.id === ui.sel);
     const last = rows.findLastIndex((r) => r.id === ui.sel);
@@ -632,6 +688,8 @@ const handleKey = (k) => {
     if (k === 'q') return quit();
     if (k === 'r') { Object.values(runners).forEach((f) => f()); return toast('Refreshing…'); }
     if (k === 'c') return nextCreature();
+    if (k === '\t' || k === ']') return stepTab(1);
+    if (k === '\x1b[Z' || k === '[') return stepTab(-1);
     if (ui.sel === 'font' && (k === '\x1b[D' || k === 'h')) return stepFont(-1)();
     if (ui.sel === 'font' && (k === '\x1b[C' || k === 'l')) return stepFont(1)();
     if (ui.sel === 'pet' && (k === '\x1b[D' || k === 'h')) return nextCreature(-1);
@@ -652,6 +710,7 @@ const handleMouse = (b, x, y) => {
   if (b !== 0) return;                     // left click only
   const id = current.viewIds[y - 1];
   if (!id) return;
+  if (id === 'tabs') { const t = tabAt(x); return t ? setTab(t) : otherTab(); } // a label picks its tab, the ⇥ flips
   ui.sel = id;
   activate(id);
 };
