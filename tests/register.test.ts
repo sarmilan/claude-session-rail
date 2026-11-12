@@ -165,3 +165,12 @@ test('main gets no brief section', async ($, on) => {
   const { sections } = await $.prompt.compose(COMPOSE)
   expect(sections.some(x => x.id === 'session-rail-brief')).toBe(false)
 })
+
+test('/start runs once per session, even when session.start runs again after a reload', async ($, on) => {
+  const calls = harness(on, 'opened', ['help', 'start'])
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await new Promise(r => setTimeout(r, 10))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await new Promise(r => setTimeout(r, 10))
+  expect(calls.filter(c => c === '/start').length).toBe(1)
+})

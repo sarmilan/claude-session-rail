@@ -19,11 +19,12 @@ const pane = ($: EngineInterface, action: 'layout' | 'open' | 'close' | 'toggle'
 
 // The person's own /start (a skill or command of theirs, not a plugin's or an MCP server's), run as if typed
 // once the session is idle. The plugin is shared, so it runs only where such a command exists, and once per
-// process: session.start fires again after /clear. A refusal (a host's limit, say) is ignored.
-let startRan = false
+// session: the flag lives in $.state, which outlives a hot reload of this module (/reload-plugins runs
+// session.start again). A refusal (a host's limit, say) is ignored.
+const START_RAN = { plugin: 'session-rail', key: 'startRan' } as const
 const runStart = async ($: EngineInterface) => {
-  if (startRan) return
-  startRan = true
+  if ((await $.state.get(START_RAN)).value) return
+  await $.state.set(START_RAN, true)
   try {
     if ((await $.command.list()).some(c => c.name === 'start' && c.source === 'user'))
       await $.command.run({ command: 'start', args: '' })
