@@ -416,7 +416,7 @@ export const register: Register = on => {
     const known = e.resume && activity.agents?.[e.resume.agentId]
     if (known) {
       const r = await next(e)
-      if (!r.deny) record($, a => act.agentStarted(a, e.resume!.agentId, { ...known, since: Date.now(), endedAt: undefined }))
+      if (!r.deny) record($, a => act.agentStarted(a, e.resume!.agentId, { ...known, since: Date.now(), background: e.background === true, endedAt: undefined }))
       return r
     }
     const agents = Object.values(activity.agents ?? {})
