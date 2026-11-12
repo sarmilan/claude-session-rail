@@ -6,6 +6,9 @@ declare module 'claude-code' {
       startRan: boolean
       // The branch's approval as the go-ahead poll last saw it (hooks/goahead.ts), so a reload doesn't resend.
       approvalSeen: { branch: string; approvedAt: number | null } | null
+      // Auto-compaction (hooks/compact.ts): the branch the poll last saw, and a branch just left that may be compacted after.
+      branchSeen: string | null
+      compactAfter: string | null
     }
   }
 }

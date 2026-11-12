@@ -1,5 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import { goAhead } from '../hooks/goahead.ts'
+import * as compact from '../hooks/compact.ts'
 
 // Each hook below stands for the engine. process.run records the controller action asked for.
 const harness = (on: Parameters<Parameters<typeof test>[1]>[1], reply = 'opened', commands = ['help']) => {
@@ -261,4 +262,88 @@ test('a refused edit is a failed call, and the gate records what it refused', as
   const a = await activityOf(files)
   expect(a.gate).toMatchObject({ tool: 'Edit', file: '/repo/src/a.ts' })
   expect(a.recent[0]).toMatchObject({ tool: 'Edit', ok: false })
+})
+
+// ── Auto-compaction (hooks/compact.ts) ────────────────────────────────────────
+test('compact: leaving a feature branch counts, main or the same branch does not; a Done chunk is finished', () => {
+  expect(compact.leftBranch('feature/x', 'main')).toBe('feature/x')
+  expect(compact.leftBranch('feature/x', 'feature/y')).toBe('feature/x')
+  expect(compact.leftBranch('main', 'feature/y')).toBe(null)
+  expect(compact.leftBranch('feature/x', 'feature/x')).toBe(null)
+  expect(compact.leftBranch(null, 'feature/x')).toBe(null)
+  expect(compact.finished(COMPLETE)).toBe(false)
+  expect(compact.finished(COMPLETE + 'Done: it works.\n')).toBe(true)
+  expect(compact.finished(null)).toBe(false)
+  expect(compact.instructions('feature/x', 'main')).toContain('Summarise feature/x')
+})
+
+// A repo whose branch the test switches; `merged` answers git merge-base --is-ancestor.
+const compactHarness = (on: Parameters<Parameters<typeof test>[1]>[1], opts: { merged: boolean; done: boolean; setting?: string; fail?: boolean }) => {
+  const repo = { branch: 'feature/x' }
+  const brief = COMPLETE + (opts.done ? 'Done: it works.\n' : '')
+  const files: Record<string, string> = { '/repo/.git/session-rail/briefs/feature%2Fx.md': brief }
+  if (opts.setting) files['/home/.claude/session-rail/settings.json'] = opts.setting
+  const compactions: string[] = []
+  on('command.register', () => ({ value: { command: 'x' } }))
+  on('session.cwd', () => ({ value: '/repo' }))
+  on('session.id', () => ({ value: 's1' }))
+  on('env.get', () => ({ value: '/home' }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('process.run', (_, e) => {
+    const isAncestor = e.argv.includes('--is-ancestor')
+    const out = e.argv[0] === 'git' ? `/repo/.git\n${repo.branch}\n` : '{"state":"opened"}\n'
+    return { value: { exitCode: isAncestor && !opts.merged ? 1 : 0, stdout: isAncestor ? '' : out, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('fs.read', (_, e) => (e.path in files ? { value: files[e.path]! } : { deny: 'ENOENT' }))
+  on('fs.write', (_, e) => {
+    files[e.path] = e.text
+    return { value: undefined }
+  })
+  on('prompt.submit', (_, e) => ({ text: e.text }))
+  on('session.compact', (_, e) => {
+    compactions.push(String((e as { instructions?: string }).instructions))
+    if (opts.fail) throw new Error('a turn is running')
+    return { messages: [{ role: 'user', text: 'summary', toolUses: [] }] } as never
+  })
+  on('clock.every', () => ({ deny: 'the test polls by restarting the session' }))
+  // Each session.start polls once right away, which is how the test steps the poll.
+  const poll = async ($: Parameters<Parameters<typeof test>[1]>[0]) => {
+    await $.session.start({ cwd: '/repo', surface: null, isInteractive: true })
+    await new Promise(r => setTimeout(r, 30))
+  }
+  return { repo, files, compactions, poll }
+}
+
+test('leaving a finished, merged branch compacts once, and the activity records it', async ($, on) => {
+  const { repo, files, compactions, poll } = compactHarness(on, { merged: true, done: true })
+  await poll($)
+  expect(compactions).toEqual([])
+  repo.branch = 'main'
+  await poll($)
+  expect(compactions.length).toBe(1)
+  expect(compactions[0]).toContain('The work on feature/x is merged')
+  await poll($)
+  expect(compactions.length).toBe(1)
+  expect(JSON.parse(files['/home/.claude/session-rail/activity/s1.json']!).compacted).toMatchObject({ after: 'feature/x' })
+})
+
+for (const [name, opts] of [
+  ['an unmerged branch', { merged: false, done: true }],
+  ['a branch with no finished chunk', { merged: true, done: false }],
+  ['auto-compact turned off', { merged: true, done: true, setting: '{"autoCompact":false}' }],
+] as const)
+  test(`leaving ${name} does not compact`, async ($, on) => {
+    const { repo, compactions, poll } = compactHarness(on, opts)
+    await poll($)
+    repo.branch = 'feature/y'
+    await poll($)
+    expect(compactions).toEqual([])
+  })
+
+test('a compaction that keeps failing is tried 3 times, then dropped', async ($, on) => {
+  const { repo, compactions, poll } = compactHarness(on, { merged: true, done: true, fail: true })
+  await poll($)
+  repo.branch = 'main'
+  for (let i = 0; i < 5; i++) await poll($)
+  expect(compactions.length).toBe(3)
 })

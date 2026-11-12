@@ -14,6 +14,8 @@ export type Activity = {
   recent: Finished[]
   // The brief gate's latest refusal.
   gate?: { at: number; tool: string; file: string }
+  // The plugin's latest compaction of the session, after the branch it finished.
+  compacted?: { at: number; after: string }
 }
 
 const RECENT = 8
@@ -53,6 +55,9 @@ export function callFinished(a: Activity, id: string, ok: boolean, now: number):
   const claude = call.agent || mainBusy(next) ? a.claude : { state: 'thinking' as const, since: now, model: a.claude.model }
   const done: Finished = { tool: call.tool, arg: call.arg, ok, at: now, ms: now - call.since, ...(call.agent ? { agent: call.agent } : {}) }
   return { ...next, updatedAt: now, claude, recent: [done, ...a.recent].slice(0, RECENT) }
+}
+export function compacted(a: Activity, after: string, now: number): Activity {
+  return { ...a, updatedAt: now, compacted: { at: now, after } }
 }
 export function refused(a: Activity, tool: string, file: string, now: number): Activity {
   return { ...a, updatedAt: now, gate: { at: now, tool, file } }

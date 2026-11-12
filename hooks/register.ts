@@ -2,6 +2,7 @@ import type { EngineInterface, Register } from 'claude-code'
 import { approvalRecord, briefFile, briefStatus, NO_BRIEF_BRANCHES, parseBrief } from '../bin/brief.mjs'
 import * as act from './activity.ts'
 import { goAhead } from './goahead.ts'
+import * as compact from './compact.ts'
 
 // The controller (bin/pane.mjs) does the iTerm work; this module only decides when to call it.
 // It runs through sh so the user's PATH finds `node`; the script path is passed as an argument,
@@ -48,13 +49,19 @@ type Brief = {
   text: string | null
   approval: { approvedAt?: number; core?: string } | null
 }
-const readBrief = async ($: EngineInterface): Promise<Brief | null> => {
+// The repo's shared git dir and the checked-out branch ('HEAD' when detached), or null outside git.
+const gitHead = async ($: EngineInterface) => {
   const cwd = await $.session.cwd()
   const git = await $.process.run(['git', '-C', cwd, 'rev-parse', '--path-format=absolute', '--git-common-dir', '--abbrev-ref', 'HEAD'], {
     timeoutMs: 5_000,
   })
   const [common, branch] = git.exitCode === 0 ? git.stdout.trim().split('\n') : []
-  if (!common || !branch || NO_BRIEF_BRANCHES.includes(branch)) return null
+  return common && branch ? { cwd, common, branch } : null
+}
+const readBrief = async ($: EngineInterface): Promise<Brief | null> => {
+  const head = await gitHead($)
+  if (!head || NO_BRIEF_BRANCHES.includes(head.branch)) return null
+  const { common, branch } = head
   const path = briefFile(common, branch, 'md')
   const approvedPath = briefFile(common, branch, 'approved.json')
   const read = (p: string) => $.fs.read(p).then(t => String(t), () => null)
@@ -141,29 +148,80 @@ const approveCommand = async ($: EngineInterface) => {
 // look for a new approval every 2 seconds and tell Claude to start (or, after a change, to carry on). One
 // sender for every way to approve; $.prompt.submit waits until Claude is idle and never types over the person.
 const APPROVAL_SEEN = { plugin: 'session-rail', key: 'approvalSeen' } as const
-let polling = false
 const checkApproval = async ($: EngineInterface) => {
-  if (polling) return
-  polling = true
+  const b = await readBrief($)
+  if (!b) return
+  const now = { branch: b.branch, approvedAt: typeof b.approval?.approvedAt === 'number' ? b.approval.approvedAt : null }
+  const prev = (await $.state.get(APPROVAL_SEEN)).value ?? null
+  if (prev?.branch === now.branch && prev.approvedAt === now.approvedAt) return
+  await $.state.set(APPROVAL_SEEN, now)
+  const text = goAhead(prev, now, b.text ? parseBrief(b.text).chunks[0]?.name : undefined)
+  if (text) await $.prompt.submit({ text })
+}
+
+// ── Auto-compaction (compact.ts) ──────────────────────────────────────────────
+// When the session leaves a branch, it's remembered; once Claude's turn has ended, the session is compacted
+// if that branch's brief has a finished chunk and its tip is in the default branch. A turn still running
+// (compact rejects) leaves it for the next poll, up to 3 tries, since each try is a model call; an unmerged or
+// unfinished branch, or the setting off, drops it.
+const BRANCH_SEEN = { plugin: 'session-rail', key: 'branchSeen' } as const
+const COMPACT_AFTER = { plugin: 'session-rail', key: 'compactAfter' } as const
+const merged = async ($: EngineInterface, cwd: string, branch: string) => {
+  for (const base of ['origin/HEAD', 'main', 'master']) {
+    const r = await $.process.run(['git', '-C', cwd, 'merge-base', '--is-ancestor', branch, base], { timeoutMs: 5_000 }).catch(() => null)
+    if (r?.exitCode === 0) return true
+  }
+  return false
+}
+const autoCompactOn = async ($: EngineInterface) => {
   try {
-    const b = await readBrief($)
-    if (!b) return
-    const now = { branch: b.branch, approvedAt: typeof b.approval?.approvedAt === 'number' ? b.approval.approvedAt : null }
-    const prev = (await $.state.get(APPROVAL_SEEN)).value ?? null
-    if (prev?.branch === now.branch && prev.approvedAt === now.approvedAt) return
-    await $.state.set(APPROVAL_SEEN, now)
-    const text = goAhead(prev, now, b.text ? parseBrief(b.text).chunks[0]?.name : undefined)
-    if (text) await $.prompt.submit({ text })
+    const home = await $.env.get('HOME')
+    return (JSON.parse(String(await $.fs.read(`${home}/.claude/session-rail/settings.json`))) as { autoCompact?: boolean }).autoCompact !== false
   } catch {
-  } finally {
-    polling = false
+    return true
   }
 }
+let compactTries = 0
+const checkBoundary = async ($: EngineInterface) => {
+  const head = await gitHead($)
+  if (!head) return
+  const prev = (await $.state.get(BRANCH_SEEN)).value ?? null
+  if (prev !== head.branch) {
+    await $.state.set(BRANCH_SEEN, head.branch)
+    const left = compact.leftBranch(prev, head.branch)
+    if (left) await $.state.set(COMPACT_AFTER, left)
+  }
+  const after = (await $.state.get(COMPACT_AFTER)).value ?? null
+  if (!after || activity.claude.state !== 'waiting') return
+  const brief = await $.fs.read(briefFile(head.common, after, 'md')).then(t => String(t), () => null)
+  const drop = () => {
+    compactTries = 0
+    return $.state.set(COMPACT_AFTER, null)
+  }
+  if (!(await autoCompactOn($)) || !compact.finished(brief) || !(await merged($, head.cwd, after))) return drop()
+  try {
+    const r = await $.session.compact({ instructions: compact.instructions(after, head.branch) })
+    await drop()
+    if (!('skip' in r)) record($, a => act.compacted(a, after, Date.now()))
+  } catch {
+    if (++compactTries >= 3) await drop() // else a turn is running: try again on the next poll
+  }
+}
+
+// One poll for both, never overlapping (a compaction takes a while): the go-ahead, then the boundary.
 let poller: { cancel: () => void } | null = null
-const watchApproval = ($: EngineInterface) => {
+let pollBusy = false
+const pollOnce = async ($: EngineInterface) => {
+  if (pollBusy) return
+  pollBusy = true
+  await checkApproval($).catch(() => {})
+  await checkBoundary($).catch(() => {})
+  pollBusy = false
+}
+const watch = ($: EngineInterface) => {
   poller?.cancel()
-  void checkApproval($)
-  poller = $.clock.every(2_000, () => void checkApproval($))
+  void pollOnce($)
+  poller = $.clock.every(2_000, () => void pollOnce($))
 }
 
 // ── Live activity for the rail's Now section (activity.ts) ────────────────────
@@ -218,7 +276,7 @@ export const register: Register = on => {
       void pane($, 'layout')
       void runStart($)
     }
-    if (e.isInteractive) watchApproval($)
+    if (e.isInteractive) watch($)
     return next(e)
   })
 
