@@ -174,6 +174,7 @@ export function createMascot({ images = false, creature = 0, now = Date.now() } 
   const flock = createVisitors(); // a flier for each running subagent (visitors.mjs)
   const companions = []; // the x of each one trailing behind, a running background task each
   let held = false, puffUntil = 0;
+  let lastStrip = { key: '', data: '' }; // the last strip drawn with visitors
   // The drawing for this stage: the creature's own stage form, or the creature itself.
   const form = () => CREATURES[index].stages?.[stage] ?? CREATURES[index];
   const width = () => (images ? Math.ceil((SPR_W * (form().scale ?? SCALE)) / colPx()) : SPR_W / 2); // columns it occupies
@@ -240,12 +241,14 @@ export function createMascot({ images = false, creature = 0, now = Date.now() } 
       s.mode = busy ? 'busy' : t - s.lastActive > IDLE_MS ? 'sleep' : 'walk';
       const [lo, hi] = bounds(W);
       s.x = Math.max(lo, Math.min(s.x, hi));
+      const home = progress == null ? null : Math.round(lo + progress * (hi - lo)); // its spot on the road
       if (s.mode !== 'sleep') { // the little ones keep a column apart behind it, a column a tick at most
         const cw = companionWidth(), span = companions.length * (cw + 1);
-        // on the road, the way it came; on whichever side has room when it's near an edge
+        // on the road, the way it came; the side with more room when that one has too little. On the road the
+        // room is judged from its spot, not where it paces, so they don't swing round it at every step.
+        const ref = home ?? s.x, roomL = ref - lo, roomR = W - 1 - (ref + width());
         let left = progress != null || s.dir > 0;
-        if (left && s.x - span < lo) left = false;
-        else if (!left && s.x + width() + span > W - 1) left = true;
+        if ((left ? roomL : roomR) < span) left = roomL >= roomR;
         companions.forEach((x, i) => {
           const target = left ? s.x - (i + 1) * (cw + 1) : s.x + width() + 1 + i * (cw + 1);
           companions[i] = x + Math.sign(target - x);
@@ -263,8 +266,7 @@ export function createMascot({ images = false, creature = 0, now = Date.now() } 
       else if (mood.shake && s.hopI < 0 && Math.random() < mood.shake) s.shake = 4;
       // On the road it paces around its spot, and heads straight there when it's further off.
       let a = lo, b = hi, heading = false;
-      if (progress != null) {
-        const home = Math.round(lo + progress * (hi - lo));
+      if (home != null) {
         a = Math.max(lo, home - PACE); b = Math.min(hi, home + PACE);
         if (s.x < a || s.x > b) { heading = true; s.dir = s.x < a ? 1 : -1; }
       }
@@ -306,8 +308,11 @@ export function createMascot({ images = false, creature = 0, now = Date.now() } 
           const ground = foliage(CREATURES[index].habitat, Math.ceil((cols * colPx()) / SCALE), sway);
           return stripImage(c, pixels(c, pose), cols, colPx(), x, { scale, stripRows, lift: s.lift, mark, flip: s.dir < 0 && !c.sideways, ground, sprites });
         };
-        // Visitors wobble every tick, so a strip with them is never drawn twice: don't let it crowd out the cache.
-        const data = flock.size ? make() : cached(`${poseKey}|${cols}|${x}|${aspect}|${s.lift}|${mark?.[0] ?? ''}|${sway}|${extras}`, make);
+        // Visitors wobble every tick, so a strip with them is kept only until the next change (redraws between
+        // ticks reuse it) rather than crowding out the cache.
+        const key = `${poseKey}|${cols}|${x}|${aspect}|${s.lift}|${mark?.[0] ?? ''}|${sway}|${extras}`;
+        if (flock.size && lastStrip.key !== key) lastStrip = { key, data: make() };
+        const data = flock.size ? lastStrip.data : cached(key, make);
         return { lines: Array(rowsOut).fill(blankLine), image: { row: 0, rows: stripRows, col: 1, data } };
       }
       const grid = Array.from({ length: SPR_H / 4 + 1 }, () => Array.from({ length: W }, () => ' '));
