@@ -416,13 +416,13 @@ export const register: Register = on => {
     const known = e.resume && activity.agents?.[e.resume.agentId]
     if (known) {
       const r = await next(e)
-      record($, a => act.agentStarted(a, e.resume!.agentId, { ...known, since: Date.now(), endedAt: undefined }))
+      if (!r.deny) record($, a => act.agentStarted(a, e.resume!.agentId, { ...known, since: Date.now(), endedAt: undefined }))
       return r
     }
     const agents = Object.values(activity.agents ?? {})
     const name = pickName([...agents.map(g => g.name), ...naming.keys()])
     const colour = pickColour([...agents.filter(g => !g.endedAt).map(g => g.colour), ...naming.values()])
-    const what = e.description.trim()
+    const what = (e.description ?? '').trim()
     naming.set(name, colour)
     try {
       const r = await next(e.workflow || e.resume ? e : { ...e, description: what ? `${name}: ${what}` : name })

@@ -581,7 +581,7 @@ function buildMain(W) {
           at: g.since, id: task ? item(`task:${task.id}`, () => viewLog(task)) : undefined };
       }),
       ...unnamed.map((c) => ({ mark: fg(C.accent, '◆'), what: clean(c.arg) + (unnamed.length === 1 && loose ? ` · ${loose.tool} ${clean(rel(loose.arg))}` : ''), at: c.since })),
-      ...tasks.filter((t) => !act?.agents?.[t.id]).map((t) => ({ mark: fg(C.accent, t.kind === 'agent' ? '◆' : '◇'), what: t.label, at: t.startedAt, id: item(`task:${t.id}`, () => viewLog(t)) })),
+      ...tasks.filter((t) => !named.some(([id]) => id === t.id)).map((t) => ({ mark: fg(C.accent, t.kind === 'agent' ? '◆' : '◇'), what: t.label, at: t.startedAt, id: item(`task:${t.id}`, () => viewLog(t)) })),
     ];
     kids.forEach((k, i) => actor(dim(i === kids.length - 1 ? '  └' : '  ├') + ' ' + k.mark, k.name ?? '', k.what, k.at, { id: k.id, colour: k.colour }));
     if (act?.desk) actor(spin(true), 'Desk', act.desk.kind ?? 'running', act.desk.startedAt);

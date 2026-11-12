@@ -296,6 +296,18 @@ test('activity: an agent ends once, and only the last ten ended agents are kept'
   expect(act.agentEnded(a, 'nope', 999)).toBe(a)
 })
 
+test('activity: an ended agent takes its calls in flight with it, and the main turn ends its foreground agents', () => {
+  let a = act.fresh(0)
+  a = act.agentStarted(a, 'fg', { name: 'A', colour: 80, what: '', since: 1, background: false })
+  a = act.agentStarted(a, 'bg', { name: 'B', colour: 141, what: '', since: 1, background: true })
+  a = act.callStarted(a, { id: 'c1', tool: 'Read', arg: 'x', since: 2, agent: 'fg' })
+  a = act.callStarted(a, { id: 'c2', tool: 'Read', arg: 'y', since: 2, agent: 'bg' })
+  a = act.turnEnded(a, 10)
+  expect(a.agents!.fg.endedAt).toBe(10)
+  expect(a.agents!.bg.endedAt).toBeUndefined()
+  expect(a.running.map(c => c.id)).toEqual(['c2'])
+})
+
 test('a spawned subagent gets a name and colour, its task reads "Name: description", and it ends at its turn', async ($, on) => {
   const { files } = withActivity(on, { branch: 'main' })
   on('turn.complete', () => ({ text: '' }))

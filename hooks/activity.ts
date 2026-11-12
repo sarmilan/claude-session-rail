@@ -44,9 +44,12 @@ const mainBusy = (a: Activity) => a.running.some(c => !c.agent)
 export function turnStarted(a: Activity, model: string | undefined, now: number): Activity {
   return { ...a, updatedAt: now, claude: { state: 'thinking', since: now, ...(model ?? a.claude.model ? { model: model ?? a.claude.model } : {}) } }
 }
-// The turn ended (or was stopped): Claude waits for the person, and nothing of the main thread is running.
+// The turn ended (or was stopped): Claude waits for the person, and nothing of the main thread is running. Its
+// foreground subagents can't outlive it, so any still live (one stopped without an agentId on its abort) end too.
 export function turnEnded(a: Activity, now: number): Activity {
-  return { ...a, updatedAt: now, claude: { state: 'waiting', since: now, model: a.claude.model }, running: a.running.filter(c => c.agent) }
+  const live = Object.entries(a.agents ?? {}).filter(([, g]) => !g.endedAt && !g.background).map(([id]) => id)
+  const ended = live.reduce((b, id) => agentEnded(b, id, now), a)
+  return { ...ended, updatedAt: now, claude: { state: 'waiting', since: now, model: a.claude.model }, running: ended.running.filter(c => c.agent) }
 }
 export function callStarted(a: Activity, call: Call): Activity {
   const claude = call.agent ? a.claude : { state: 'tool' as const, since: call.since, model: a.claude.model }
@@ -70,12 +73,13 @@ export function refused(a: Activity, tool: string, file: string, now: number): A
 export function agentStarted(a: Activity, id: string, agent: Agent): Activity {
   return { ...a, updatedAt: agent.since, agents: { ...a.agents, [id]: agent } }
 }
-// Its own turn.complete: it stays in the record, marked ended, until ten later ones push it out.
+// Its own turn.complete: it stays in the record, marked ended, until ten later ones push it out. Any call it
+// left in flight (it was stopped mid-call) goes with it.
 export function agentEnded(a: Activity, id: string, now: number): Activity {
   const agent = a.agents?.[id]
   if (!agent || agent.endedAt) return a
   const agents = { ...a.agents, [id]: { ...agent, endedAt: now } }
   const ended = Object.entries(agents).filter(([, g]) => g.endedAt).sort(([, x], [, y]) => y.endedAt! - x.endedAt!)
   for (const [old] of ended.slice(ENDED)) delete agents[old]
-  return { ...a, updatedAt: now, agents }
+  return { ...a, updatedAt: now, agents, running: a.running.filter(c => c.agent !== id) }
 }
