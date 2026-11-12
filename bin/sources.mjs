@@ -311,7 +311,7 @@ export async function worktrees(cwd) {
       base ? run('git', ['rev-list', '--left-right', '--count', `${base}...HEAD`], { cwd: w.path }) : null,
       run('git', ['status', '--porcelain'], { cwd: w.path }),
     ]);
-    const [behind, ahead] = (counts ?? '').trim().split(/\s+/).map(Number);
+    const [behind, ahead] = counts?.trim() ? counts.trim().split(/\s+/).map(Number) : [];
     // nothing ahead: its tip is in the default branch (the default branch itself is just behind, not merged)
     const merged = Boolean(w.branch) && w.branch !== baseName && ahead === 0 && behind > 0 && head != null
       && !(await branchedFrom(w.path, head, base));

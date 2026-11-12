@@ -39,7 +39,7 @@ const loaders = {
   async sessions() { data.overview = await src.sessionsOverview(data.agents, data.current?.pid); },
   async account() { [data.account, data.usage] = await Promise.all([src.account(), src.usage()]); },
   async prs() { data.prs = await src.prs(cwd); },
-  async worktrees() { data.worktrees = { ...(await src.worktrees(cwd)), at: Date.now() }; },
+  async worktrees() { if (ui.tab !== 'git' && data.worktrees) return; data.worktrees = { ...(await src.worktrees(cwd)), at: Date.now() }; },
   async connectors() { data.connectors = await src.connectors(); },
 };
 
@@ -99,9 +99,9 @@ const setTab = (t) => {
   tabSwitched = true;
   showTab(t);
   saveTab(data.current?.sessionId);
-  // The worktree cards refresh every 60s; arriving on Git brings them up to date (through the runner, so it
+  // The worktree cards and PR checks refresh every 60s (the cards only on Git); arriving on Git brings them up to date (through the runner, so it
   // can't overlap a scheduled load).
-  if (t === 'git' && !isFrame) runners.worktrees();
+  if (t === 'git' && !isFrame) { runners.worktrees(); runners.prs(); }
 };
 const stepTab = (d) => setTab(TABS[(TABS.indexOf(ui.tab) + TABS.length + d) % TABS.length]);
 const otherTab = () => stepTab(1);
@@ -361,7 +361,7 @@ function buildMain(W) {
       const dirty = w.current && env?.isGit ? env.dirty : w.dirty;
       const dirt = dirty == null ? fg(C.red, 'missing') : dirty ? `${dirty} changed` : 'clean';
       const parts = [sync, dirt, badge(p)].filter(Boolean).join(dim(' · '));
-      spread(`    ${width(parts) > inner - 4 ? dim(trunc(parts.replace(/\x1b\[[0-9;]*m/g, ''), inner - 4)) : parts}`, '', id);
+      spread(`    ${width(parts) > inner - 4 ? dim(trunc(clean(parts), inner - 4)) : parts}`, '', id);
     }
     rule();
 
@@ -386,11 +386,13 @@ function buildMain(W) {
       const order = { fail: 0, pending: 1, pass: 2 };
       const checks = [...mine.checks].sort((a, b) => order[a.state] - order[b.state]);
       if (!checks.length) line(dim('No checks'));
+      const seen = {};
       checks.forEach((c) => {
         const [color, mark] = CHECK[c.state];
+        const key = `${c.name}\x1f${c.url}`, n = (seen[key] = (seen[key] ?? 0) + 1); // ids must be unique or j/k sticks on the repeat
         const note = { fail: 'failing', pending: 'running', pass: '' }[c.state];
         spread(`${fg(color, mark)} ${trunc(clean(c.name), inner - 2 - width(note) - 1)}`, dim(note),
-          c.url ? item(`check:${c.url}`, () => launch('open', [c.url], 'Opened the check')) : undefined); // names repeat across workflows; the run's url keeps the selection when the order changes
+          c.url ? item(`check:${key}${n > 1 ? `#${n}` : ''}`, () => launch('open', [c.url], 'Opened the check')) : undefined); // names repeat across workflows; the run's url keeps the selection when the order changes
       });
       rule();
     }
