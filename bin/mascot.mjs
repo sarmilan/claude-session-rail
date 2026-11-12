@@ -35,8 +35,10 @@ function pixels(c, { frame, blink, sleep, dir, z }) {
   }
   return rows;
 }
-const RAGE_COLOR = 196;
-const colorOf = (c, key) => (key === 'Z' ? ZED_COLOR : key === 'A' ? RAGE_COLOR : c.palette[key]);
+// The marks over the pet keep their own letters: A the anger mark and the failure puff's red, U the puff's
+// orange, Q the gate's yellow question mark.
+const MARK_COLORS = { Z: ZED_COLOR, A: 196, U: 208, Q: 220 };
+const colorOf = (c, key) => MARK_COLORS[key] ?? c.palette[key];
 
 // How each growth stage behaves: `dSpeed` adjusts ticks per frame for creatures without their own stage
 // drawings; from the adult on it hops every `hopEvery` ticks (`hop`: lift in sprite pixels per tick),
@@ -64,6 +66,9 @@ export const stageFor = (brief) => {
 export const progressFor = (brief) => (brief?.status ? doneShare(brief) ?? 0 : null);
 const PACE = 4; // columns it wanders either side of its spot on the road
 const ANGER = ['.A.A.', 'AA.AA', '.....', 'AA.AA', '.A.A.']; // a popping vein, drawn up by a claw
+const PUFF = ['U.A.U', '.AUA.', 'AUUUA', '.AUA.', 'U.A.U']; // a failed tool call
+const QUERY = ['.QQQ.', 'Q...Q', '...Q.', '..Q..', '.....', '..Q..']; // held by the brief gate
+const PUFF_MS = 1500, MAX_COMPANIONS = 3;
 
 const xtermRgb = (n) => {
   if (n >= 232) { const v = 8 + 10 * (n - 232); return [v, v, v]; }
@@ -101,7 +106,7 @@ const pngEncode = (w, h, raw) => {
 // `colPx` is image pixels per terminal column; `x` is the creature's left edge.
 const SCALE = 4, STRIP_ROWS = 3, ROW_PX = 34, FLOOR_RGB = xtermRgb(240);
 const SWAY = [0, 1, 0, -1]; // the foliage's lean, a step a second (5 ticks)
-function stripImage(c, rows, cols, colPx, x, { scale = SCALE, stripRows = STRIP_ROWS, lift = 0, rage = false, flip = false, ground = [], visitors = [] } = {}) {
+function stripImage(c, rows, cols, colPx, x, { scale = SCALE, stripRows = STRIP_ROWS, lift = 0, mark = null, flip = false, ground = [], sprites = [] } = {}) {
   const h = stripRows * ROW_PX, floorY = h - ROW_PX / 2 - 1, top = floorY - (SPR_H + lift) * scale;
   const w = Math.max(1, Math.round(cols * colPx)), stride = w * 4 + 1;
   const raw = Buffer.alloc(h * stride);
@@ -111,8 +116,8 @@ function stripImage(c, rows, cols, colPx, x, { scale = SCALE, stripRows = STRIP_
     const rgb = xtermRgb(colour), gy = up > 0 ? floorY - up * SCALE : floorY + 2 + (-up - 1) * SCALE;
     for (let dy = 0; dy < SCALE; dy++) for (let dx = 0; dx < SCALE; dx++) putRgb(gx * SCALE + dx, gy + dy, rgb);
   }
-  for (const v of visitors) { // over the foliage, behind the creature; `alt` lifts them 7 … 15 sprite pixels
-    const vy = floorY - (7 + Math.round(v.alt * 8) + v.rows.length) * SCALE;
+  for (const v of sprites) { // visitors and companions: over the foliage, behind the creature, `up` pixels up
+    const vy = floorY - (v.up + v.rows.length) * SCALE;
     v.rows.forEach((row, ry) => [...row].forEach((k, rx) => {
       if (k === '.') return;
       const rgb = xtermRgb(v.palette[k]);
@@ -123,9 +128,9 @@ function stripImage(c, rows, cols, colPx, x, { scale = SCALE, stripRows = STRIP_
     const key = rows[Math.floor(y / scale)][Math.floor(px / scale)];
     if (key !== '.') put(x + px, top + y, key);
   }
-  if (rage) { // the anger mark, a sprite pixel a dot, above the front (the right claw, or the head when turned left)
-    const ax = x + Math.round(SPR_W * scale * (flip ? 0.2 : 0.8)) - (flip ? ANGER[0].length * scale : 0), ay = Math.max(0, top - ANGER.length * scale - 2);
-    ANGER.forEach((row, ry) => [...row].forEach((k, rx) => {
+  if (mark) { // anger, a puff or a ?, a sprite pixel a dot, above the front (the right claw, or the head turned left)
+    const ax = x + Math.round(SPR_W * scale * (flip ? 0.2 : 0.8)) - (flip ? mark[0].length * scale : 0), ay = Math.max(0, top - mark.length * scale - 2);
+    mark.forEach((row, ry) => [...row].forEach((k, rx) => {
       if (k !== '.') for (let dy = 0; dy < scale; dy++) for (let dx = 0; dx < scale; dx++) put(ax + rx * scale + dx, ay + ry * scale + dy, k);
     }));
   }
@@ -166,6 +171,8 @@ export function createMascot({ images = false, creature = 0, now = Date.now() } 
   let index = ((creature % CREATURES.length) + CREATURES.length) % CREATURES.length;
   let stage = 0, progress = null;
   const flock = createVisitors(); // a flier for each running subagent (visitors.mjs)
+  const companions = []; // the x of each one trailing behind, a running background task each
+  let held = false, puffUntil = 0;
   // The drawing for this stage: the creature's own stage form, or the creature itself.
   const form = () => CREATURES[index].stages?.[stage] ?? CREATURES[index];
   const width = () => (images ? Math.ceil((SPR_W * (form().scale ?? SCALE)) / colPx()) : SPR_W / 2); // columns it occupies
@@ -176,6 +183,20 @@ export function createMascot({ images = false, creature = 0, now = Date.now() } 
     return cache.get(key);
   };
   const bounds = (W) => [1, W - 1 - width()];
+  // The mark over its head: a failure's puff, else the gate's ?, else the heavy stage's flickering anger.
+  const markFor = (t) => {
+    if (s.mode === 'sleep') return null;
+    if (t < puffUntil) return PUFF;
+    if (held) return QUERY;
+    return MOOD[stage].rage && s.lift === 0 && Math.floor(s.tick / 3) % 2 ? ANGER : null;
+  };
+  // The companions to draw: the creature's baby, facing the way it walks, bobbing out of step.
+  const littleOnes = (sleep) => {
+    const cr = CREATURES[index], flip = s.dir < 0 && !cr.sideways;
+    const rows = flip ? cr.baby.map((r) => [...r].reverse().join('')) : cr.baby;
+    return companions.map((x, i) => ({ x, rows, palette: cr.palette, bob: !sleep && !held && (s.tick + i * 2) % 4 < 2 ? 1 : 0 }));
+  };
+  const companionWidth = () => (images ? Math.ceil((6 * SCALE) / colPx()) : 3); // columns a little one takes
 
   return {
     get width() { return width(); },
@@ -188,6 +209,16 @@ export function createMascot({ images = false, creature = 0, now = Date.now() } 
     setProgress(f) { progress = f == null ? null : Math.max(0, Math.min(1, f)); },
     // How many subagents are running: a visitor each, up to 4; one flies off as each finishes.
     setVisitors(n, W = 42) { flock.want(n, W); },
+    // How many background tasks are running: a little one trails behind for each, up to 3.
+    setCompanions(n) {
+      n = Math.max(0, Math.min(MAX_COMPANIONS, n | 0));
+      while (companions.length < n) companions.push(companions.at(-1) ?? s.x);
+      companions.length = n;
+    },
+    // A tool call failed: it flinches, and a red puff pops over it for a moment.
+    flinch(t = Date.now()) { s.shake = 4; puffUntil = t + PUFF_MS; },
+    // The brief gate is holding edits: it stands still, awake, with a ? over its head.
+    setHeld(on) { held = Boolean(on); },
     get index() { return index; },
     get name() { return CREATURES[index].name; },
 
@@ -204,11 +235,27 @@ export function createMascot({ images = false, creature = 0, now = Date.now() } 
       const c = form(), mood = MOOD[stage];
       s.tick++;
       flock.step(s.x + width() / 2, W, s.tick, width() / 2, images ? Math.ceil((7 * SCALE) / colPx()) : 4);
-      if (busy) s.lastActive = t;
+      if (busy || held) s.lastActive = t;
       s.mode = busy ? 'busy' : t - s.lastActive > IDLE_MS ? 'sleep' : 'walk';
       const [lo, hi] = bounds(W);
       s.x = Math.max(lo, Math.min(s.x, hi));
+      if (s.mode !== 'sleep') { // the little ones keep a column apart behind it, a column a tick at most
+        const cw = companionWidth(), span = companions.length * (cw + 1);
+        // on the road, the way it came; on whichever side has room when it's near an edge
+        let left = progress != null || s.dir > 0;
+        if (left && s.x - span < lo) left = false;
+        else if (!left && s.x + width() + span > W - 1) left = true;
+        companions.forEach((x, i) => {
+          const target = left ? s.x - (i + 1) * (cw + 1) : s.x + width() + 1 + i * (cw + 1);
+          companions[i] = x + Math.sign(target - x);
+        });
+      }
       if (s.mode === 'sleep') { s.phase = 0; s.hopI = -1; s.lift = 0; s.shake = 0; return; }
+      if (held) { // stands still and blinks; a flinch still wears off
+        s.phase = 0; s.hopI = -1; s.lift = 0; if (s.shake > 0) s.shake--;
+        if (s.blinkUntil < t && Math.random() < 0.04) s.blinkUntil = t + 250;
+        return;
+      }
       if (s.blinkUntil < t && Math.random() < 0.04) s.blinkUntil = t + 250;
       // hops and shakes, as the stage's mood has them
       if (mood.hop) {
@@ -250,33 +297,42 @@ export function createMascot({ images = false, creature = 0, now = Date.now() } 
       if (images) {
         const scale = c.scale ?? SCALE, stripRows = c.rows ?? STRIP_ROWS;
         const jitter = s.shake ? (s.tick % 2 ? scale : -scale) : 0;
-        const rage = Boolean(mood.rage && !sleep && s.lift === 0 && Math.floor(s.tick / 3) % 2);
+        const mark = markFor(t);
         const cols = W - 2, x = Math.round((s.x - 1) * colPx()) + jitter;
         const sway = SWAY[Math.floor(s.tick / 5) % SWAY.length];
-        const visitors = flock.sprites(s.tick).map((v) => ({ ...v, px: Math.round((v.x - 1) * colPx()) }));
-        const flying = visitors.map((v) => `${v.px},${Math.round(v.alt * 8)},${v.rows.join('')}`).join(';'); // what stripImage draws
-        const data = cached(`${poseKey}|${cols}|${x}|${aspect}|${s.lift}|${rage}|${sway}|${flying}`, () => {
+        const sprites = [
+          ...flock.sprites(s.tick).map((v) => ({ ...v, up: 7 + Math.round(v.alt * 8) })), // alt lifts them 7 … 15 pixels
+          ...littleOnes(sleep).map((v) => ({ ...v, up: v.bob })),
+        ].map((v) => ({ ...v, px: Math.round((v.x - 1) * colPx()) }));
+        const extras = sprites.map((v) => `${v.px},${v.up},${v.rows.join('')}`).join(';'); // what stripImage draws
+        const data = cached(`${poseKey}|${cols}|${x}|${aspect}|${s.lift}|${mark?.[0] ?? ''}|${sway}|${extras}`, () => {
           const ground = foliage(CREATURES[index].habitat, Math.ceil((cols * colPx()) / SCALE), sway);
-          return stripImage(c, pixels(c, pose), cols, colPx(), x, { scale, stripRows, lift: s.lift, rage, flip: s.dir < 0 && !c.sideways, ground, visitors });
+          return stripImage(c, pixels(c, pose), cols, colPx(), x, { scale, stripRows, lift: s.lift, mark, flip: s.dir < 0 && !c.sideways, ground, sprites });
         });
         return { lines: Array(rowsOut).fill(blankLine), image: { row: 0, rows: stripRows, col: 1, data } };
       }
       const grid = Array.from({ length: SPR_H / 4 + 1 }, () => Array.from({ length: W }, () => ' '));
       for (let col = 1; col < W - 1; col++) grid[SPR_H / 4][col] = `${ESC}2m▔${ESC}22m`;
       const sky = Array.from({ length: W }, () => ' '); // the blank line above, where high visitors fly
-      for (const v of flock.sprites(s.tick)) { // 2 cells high, behind the creature
-        const padded = [...v.rows, '.......'].map((r) => `${r}.`), top = v.alt > 0.5 ? -1 : 0;
-        octantRows(v, padded.concat(Array(8 - padded.length).fill('........'))).forEach((cells, r) => cells.forEach((cell, col) => {
-          const X = Math.round(v.x) + col, line = r + top === -1 ? sky : grid[r + top];
-          if (!cell || X < 1 || X >= W - 1) return;
-          line[X] = `${ESC}38;5;${cell.fg}m${cell.bg != null ? `${ESC}48;5;${cell.bg}m` : ''}${cell.ch}${ESC}0m`;
+      // A small drawing as octant cells, its top on `line` (-1 the sky, 0… the sprite rows), clipped to the strip.
+      const paint = (v, x, line) => {
+        const w = Math.ceil(v.rows[0].length / 2) * 2, h = Math.ceil(v.rows.length / 4) * 4;
+        const rows = Array.from({ length: h }, (_, y) => (v.rows[y] ?? '').padEnd(w, '.'));
+        octantRows(v, rows).forEach((cells, r) => cells.forEach((cell, col) => {
+          const X = Math.round(x) + col, row = line + r === -1 ? sky : grid[line + r];
+          if (!cell || !row || X < 1 || X >= W - 1) return;
+          row[X] = `${ESC}38;5;${cell.fg}m${cell.bg != null ? `${ESC}48;5;${cell.bg}m` : ''}${cell.ch}${ESC}0m`;
         }));
-      }
+      };
+      for (const v of flock.sprites(s.tick)) paint(v, v.x, v.alt > 0.5 ? -1 : 0); // 2 cells high, behind it
+      for (const v of littleOnes(sleep)) paint(v, v.x, SPR_H / 4 - 1);
       cached(poseKey, () => octantRows(c, pixels(c, pose))).forEach((cells, r) => cells.forEach((cell, col) => {
         if (!cell) return;
         const bg = cell.bg != null ? `${ESC}48;5;${cell.bg}m` : '';
         grid[r][s.x + col] = `${ESC}38;5;${cell.fg}m${bg}${cell.ch}${ESC}0m`;
       }));
+      const mark = markFor(t), flip = s.dir < 0 && !c.sideways;
+      if (mark) paint({ rows: mark, palette: {} }, s.x + Math.round(width() * (flip ? 0.2 : 0.8)) - (flip ? 3 : 0), -1);
       return { lines: [sky.join(''), ...grid.map((row) => row.join(''))], image: null };
     },
 

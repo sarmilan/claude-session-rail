@@ -218,9 +218,11 @@ export async function sessions() {
 // A session is blocked when the brief gate refused an edit in the last 2 minutes, busy while Claude works,
 // waiting when its turn ended in the last hour (it's the person's move), else idle.
 const GATE_HOLD = 2 * 60_000, WAIT_FRESH = 60 * 60_000;
+// Whether the brief gate is holding the session: it refused an edit in the last 2 minutes (the rail's pet too).
+export const gateHeld = (act, now = Date.now()) => Boolean(act?.gate && now - act.gate.at < GATE_HOLD);
 export function sessionState(s, act, now = Date.now()) {
   const rel = (p) => (p && s.cwd && p.startsWith(s.cwd + '/') ? p.slice(s.cwd.length + 1) : p ?? '');
-  if (act?.gate && now - act.gate.at < GATE_HOLD) return { state: 'blocked', doing: `${act.gate.tool} ${rel(act.gate.file)}: brief not approved`, since: act.gate.at };
+  if (gateHeld(act, now)) return { state: 'blocked', doing: `${act.gate.tool} ${rel(act.gate.file)}: brief not approved`, since: act.gate.at };
   const c = act?.claude;
   if (c && c.state !== 'waiting') {
     const call = act.running.find((r) => !r.agent);

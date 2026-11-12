@@ -1,6 +1,6 @@
 // Visitors: a small flier over the pet's strip for each running subagent (the rail counts the main
 // thread's Agent calls). Each is a 7×5 pixel sprite, facing right, with two wing frames, drawn like a
-// creature: palette letters to xterm-256, '.' transparent, and not A or Z, which the mascot keeps for its
+// creature: palette letters to xterm-256, '.' transparent, and not A, U, Q or Z, which the mascot keeps for its
 // marks. They come in from an edge, drift in a wobbly path around the pet, and fly off the nearest edge
 // when their subagent finishes.
 

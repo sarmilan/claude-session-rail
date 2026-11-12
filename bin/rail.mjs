@@ -102,6 +102,24 @@ const visitorsFlag = flag('--visitors');
 const subagents = () => (visitorsFlag?.trim() && Number.isFinite(+visitorsFlag) ? +visitorsFlag
   : (data.activity?.running ?? []).filter((c) => c.tool === 'Agent' && !c.agent).length
     + data.tasks.running.filter((t) => t.kind === 'agent').length);
+// A little one trails behind for each background shell task (background subagents are visitors).
+const companionsFlag = flag('--companions');
+const backgroundTasks = () => (companionsFlag?.trim() && Number.isFinite(+companionsFlag) ? +companionsFlag
+  : data.tasks.running.filter((t) => t.kind === 'shell').length);
+// It stands still with a ? while the brief gate holds edits (--held for --frame); an approved brief lets go.
+const petHeld = () => args.includes('--held') || (src.gateHeld(data.activity) && data.brief?.status !== 'approved');
+// It flinches once at each new failed tool call; failures from before the rail started don't count, nor
+// the gate's refusals (they count as failed calls), which show the ? instead.
+let lastFailure = null;
+const checkFailure = () => {
+  const at = data.activity?.recent?.find((r) => !r.ok)?.at ?? 0;
+  if (lastFailure !== null && at > lastFailure && !petHeld()) mascot.flinch();
+  if (data.activity) lastFailure = Math.max(lastFailure ?? 0, at);
+};
+const feedPet = (W) => {
+  mascot.setStage(petStage()); mascot.setProgress(petProgress()); mascot.setVisitors(subagents(), W);
+  mascot.setCompanions(backgroundTasks()); mascot.setHeld(petHeld()); checkFailure();
+};
 const claudeBusy = () => data.tasks.running.length > 0 || data.current?.status === 'busy';
 
 const toast = (text) => { ui.toast = { text, until: Date.now() + 2500 }; };
@@ -559,9 +577,11 @@ if (args.includes('--frame')) {
   const W = +args[i + 1] || 42, H = +args[i + 2] || 60;
   for (const k of ['context', 'connectors', 'settings']) if (args.includes(`--open-${k}`)) ui.open[k] = true;
   await collect();
-  mascot.setStage(petStage()); mascot.setProgress(petProgress()); mascot.setVisitors(subagents(), W);
-  // let it walk to its spot on the road (at a past time, so no blink is left on the frame)
+  feedPet(W); mascot.setHeld(false);
+  // let it walk to its spot on the road (at a past time, so no blink is left on the frame), then hold it there
   for (let n = 0, t = Date.now() - 1000; n < W * 2; n++) mascot.step(W, false, t);
+  mascot.setHeld(petHeld());
+  if (args.includes('--flinch')) mascot.flinch();
   // e.g. --activate pr:8  or  --activate finished,opt:0  (a chain of clicks)
   for (const id of (flag('--activate') || '').split(',').filter(Boolean)) frame(W, H).items.find((it) => it.id === id)?.activate();
   console.log(frame(W, H).lines.join('\n'));
@@ -608,7 +628,7 @@ setInterval(() => { ui.tick++; draw(); }, 1000);
 fontsize.baseSize(pinnedPid).then((b) => { font.base = b; draw(); });
 // Put the panes on the saved font size once the layout has settled (pane.mjs sizes the splits after opening them).
 if (font.size) setTimeout(() => setFont(font.size), 3000);
-setInterval(() => { mascot.setStage(petStage()); mascot.setProgress(petProgress()); mascot.setVisitors(subagents(), out.columns || 40); mascot.step(out.columns || 40, claudeBusy()); draw(); }, 200);
+setInterval(() => { feedPet(out.columns || 40); mascot.step(out.columns || 40, claudeBusy()); draw(); }, 200);
 draw();
 
 // A rail pinned to a Claude process quits (closing its pane) once that process is gone for 3s.

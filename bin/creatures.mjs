@@ -9,6 +9,8 @@
 // brief heads toward its compaction (stageFor in mascot.mjs); a stage form is drawn like a creature and
 // may set `scale` (image pixels per sprite pixel, default 4) and `rows` (terminal rows, default 3) to be
 // drawn bigger.
+// `baby`: a 6×4 drawing in the creature's own palette, facing right, for the companions that trail behind
+// it (one per running background task).
 export const SPR_W = 34, SPR_H = 16;
 
 function canvas(lift = 0) {
@@ -44,6 +46,7 @@ const snail = {
   speed: 2,
   name: 'snail',
   habitat: 'woodland',
+  baby: ['.SS..B', 'SDDS.B', 'SSSSBB', 'BBBBBB'],
   palette: { S: 71, D: 28, W: 157, B: 114, E: 231, P: 233 },
   advance: [true, false], // stretch forward, then the shell catches up
   zAt: [[20, 8], [26, 2]],
@@ -155,6 +158,7 @@ const turtle = {
   speed: 2,
   name: 'turtle',
   habitat: 'pond',
+  baby: ['.SSS..', 'SHSHSL', 'RRRRRL', '.L.L..'],
   palette: { S: 77, H: 28, R: 64, W: 193, L: 149, l: 106, K: 22, E: 231, P: 233 },
   advance: [true, false],
   zAt: [[24, 7], [28, 1]],
@@ -285,6 +289,7 @@ const crab = {
   speed: 1,
   name: 'crab',
   habitat: 'beach',
+  baby: ['.E..E.', 'CCCCCC', 'CDCCDC', 'C.CC.C'],
   palette: { C: 209, D: 166, K: 88, E: 231, P: 233 },
   advance: [true, true],
   sideways: true,
