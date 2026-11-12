@@ -133,7 +133,7 @@ const approveCommand = async ($: EngineInterface) => {
   if (brief.missing.length) return `Can't approve yet: the brief is missing ${brief.missing.join(', ')}.\n${b.path}`
   if (briefStatus(brief, b.approval) === 'approved') return `The brief for ${b.branch} is already approved.`
   await $.fs.write(b.approvedPath, approvalRecord(brief, Date.now()))
-  return `Brief approved. Claude can edit code on ${b.branch}.`
+  return `Brief approved. Claude can edit code on ${b.branch} and will be told to go ahead in a moment.`
 }
 
 // ── The go-ahead (goahead.ts) ─────────────────────────────────────────────────

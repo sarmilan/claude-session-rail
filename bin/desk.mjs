@@ -660,7 +660,8 @@ const approveBrief = async () => {
   if (b.status === 'approved') return toast('Already approved');
   try { await writeFile(b.approvedPath, approvalRecord(b, Date.now())); } catch { return toast("Couldn't save the approval"); }
   await runners.plan();
-  toast('Brief approved: Claude can edit code');
+  // The hooks notice the approval and tell Claude (hooks/goahead.ts).
+  toast(b.status === 'changed' ? 'Change approved: Claude will carry on' : 'Brief approved: Claude is starting on chunk 1');
 };
 
 const handleKey = async (k) => {
