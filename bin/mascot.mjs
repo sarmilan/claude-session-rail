@@ -12,6 +12,7 @@ import { deflateSync } from 'node:zlib';
 import { CREATURES, SPR_W, SPR_H } from './creatures.mjs';
 import { foliage } from './habitats.mjs';
 import { createVisitors } from './visitors.mjs';
+import { isApproved } from './brief.mjs';
 
 const ESC = '\x1b[';
 const IDLE_MS = 60_000;  // nothing busy for this long → sleep
@@ -54,8 +55,8 @@ const MOOD = [
 // After the compaction the next branch has no approved brief, so the pet hatches again.
 // The share of Done chunks of an approved (or approved, then edited) brief, else null.
 const doneShare = (brief) => {
-  if (!['approved', 'changed'].includes(brief?.status) || !brief.chunks?.length) return null; // an edited plan keeps its growth
-  return brief.chunks.filter((c) => c.done).length / brief.chunks.length;
+  if (!isApproved(brief?.status)) return null; // an edited plan keeps its growth
+  return brief.chunks?.length ? brief.chunks.filter((c) => c.done).length / brief.chunks.length : 0;
 };
 export const stageFor = (brief) => {
   const f = doneShare(brief);
@@ -301,10 +302,12 @@ export function createMascot({ images = false, creature = 0, now = Date.now() } 
           ...littleOnes(sleep).map((v) => ({ ...v, up: v.bob })),
         ].map((v) => ({ ...v, px: Math.round((v.x - 1) * colPx()) }));
         const extras = sprites.map((v) => `${v.px},${v.up},${v.rows.join('')}`).join(';'); // what stripImage draws
-        const data = cached(`${poseKey}|${cols}|${x}|${aspect}|${s.lift}|${mark?.[0] ?? ''}|${sway}|${extras}`, () => {
+        const make = () => {
           const ground = foliage(CREATURES[index].habitat, Math.ceil((cols * colPx()) / SCALE), sway);
           return stripImage(c, pixels(c, pose), cols, colPx(), x, { scale, stripRows, lift: s.lift, mark, flip: s.dir < 0 && !c.sideways, ground, sprites });
-        });
+        };
+        // Visitors wobble every tick, so a strip with them is never drawn twice: don't let it crowd out the cache.
+        const data = flock.size ? make() : cached(`${poseKey}|${cols}|${x}|${aspect}|${s.lift}|${mark?.[0] ?? ''}|${sway}|${extras}`, make);
         return { lines: Array(rowsOut).fill(blankLine), image: { row: 0, rows: stripRows, col: 1, data } };
       }
       const grid = Array.from({ length: SPR_H / 4 + 1 }, () => Array.from({ length: W }, () => ' '));

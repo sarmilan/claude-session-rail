@@ -12,6 +12,7 @@ import { join, dirname } from 'node:path';
 import * as src from './sources.mjs';
 import { ESC, fg, dim, bold, C, charWidth, width, trunc, wrap, clean } from './term.mjs';
 import { createMascot, creatureNames, stageFor, progressFor } from './mascot.mjs';
+import { isApproved } from './brief.mjs';
 import * as fontsize from './fontsize.mjs';
 
 const args = process.argv.slice(2);
@@ -149,14 +150,14 @@ const companionsFlag = numFlag('--companions');
 const backgroundTasks = () => companionsFlag ?? data.tasks.running.filter((t) => t.kind === 'shell').length;
 // It stands still with a ? while the brief gate holds edits (--held for --frame); any approval lets go (the gate
 // keeps allowing edits once a brief is approved, even after it changes).
-const petHeld = () => args.includes('--held') || (src.gateHeld(data.activity) && !['approved', 'changed'].includes(data.brief?.status));
+const petHeld = () => args.includes('--held') || (src.gateHeld(data.activity) && !isApproved(data.brief?.status));
 // It flinches once at each new failed tool call; failures from before the rail started don't count, nor
 // the gate's refusals (they count as failed calls), which show the ? instead.
-let lastFailure = null;
+let lastFailure = Date.now();
 const checkFailure = () => {
   const at = data.activity?.recent?.find((r) => !r.ok)?.at ?? 0;
-  if (lastFailure !== null && at > lastFailure && !petHeld()) mascot.flinch();
-  if (data.activity) lastFailure = Math.max(lastFailure ?? 0, at);
+  if (at > lastFailure && !petHeld()) mascot.flinch();
+  lastFailure = Math.max(lastFailure, at);
 };
 const feedPet = (W) => {
   mascot.setStage(petStage()); mascot.setProgress(petProgress()); mascot.setVisitors(subagents(), W);

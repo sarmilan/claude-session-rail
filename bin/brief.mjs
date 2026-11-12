@@ -77,3 +77,5 @@ export function briefStatus(brief, approval) {
   if (approval?.approvedAt) return approval.core === briefCore(brief) ? 'approved' : 'changed';
   return brief.missing.length ? 'draft' : 'ready';
 }
+// Whether the person approved the brief (an edit since keeps the approval: the gate keeps allowing edits).
+export const isApproved = (status) => status === 'approved' || status === 'changed';
