@@ -4,6 +4,8 @@
 
 export type Call = { id: string; tool: string; arg: string; since: number; agent?: string }
 export type Finished = { tool: string; arg: string; ok: boolean; at: number; ms: number; agent?: string }
+// A subagent the plugin named at its spawn (bin/names.mjs): what it was asked, and when it ended, if it has.
+export type Agent = { name: string; colour: number; what: string; since: number; background: boolean; endedAt?: number }
 export type Activity = {
   updatedAt: number
   // Claude itself: thinking (a model request), running a tool, or waiting for the person.
@@ -14,11 +16,14 @@ export type Activity = {
   recent: Finished[]
   // The brief gate's latest refusal.
   gate?: { at: number; tool: string; file: string }
+  // Subagents by agentId, named at their spawn: the live ones, and the last few that ended (so Just now can name them).
+  agents?: Record<string, Agent>
   // The plugin's latest compaction of the session, after the branch it finished.
   compacted?: { at: number; after: string }
 }
 
 const RECENT = 8
+const ENDED = 10
 
 export const fresh = (now: number): Activity => ({ updatedAt: now, claude: { state: 'waiting', since: now }, running: [], recent: [] })
 
@@ -61,4 +66,16 @@ export function compacted(a: Activity, after: string, now: number): Activity {
 }
 export function refused(a: Activity, tool: string, file: string, now: number): Activity {
   return { ...a, updatedAt: now, gate: { at: now, tool, file } }
+}
+export function agentStarted(a: Activity, id: string, agent: Agent): Activity {
+  return { ...a, updatedAt: agent.since, agents: { ...a.agents, [id]: agent } }
+}
+// Its own turn.complete: it stays in the record, marked ended, until ten later ones push it out.
+export function agentEnded(a: Activity, id: string, now: number): Activity {
+  const agent = a.agents?.[id]
+  if (!agent || agent.endedAt) return a
+  const agents = { ...a.agents, [id]: { ...agent, endedAt: now } }
+  const ended = Object.entries(agents).filter(([, g]) => g.endedAt).sort(([, x], [, y]) => y.endedAt! - x.endedAt!)
+  for (const [old] of ended.slice(ENDED)) delete agents[old]
+  return { ...a, updatedAt: now, agents }
 }

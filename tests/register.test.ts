@@ -2,6 +2,10 @@ import { expect, test } from 'claude-code/testing'
 import { goAhead } from '../hooks/goahead.ts'
 import * as compact from '../hooks/compact.ts'
 import * as cadence from '../bin/cadence.mjs'
+import * as names from '../bin/names.mjs'
+import * as act from '../hooks/activity.ts'
+
+const cadenceRed = 167 // the rail's failure colour (C.red in bin/term.mjs)
 
 // Each hook below stands for the engine. process.run records the controller action asked for.
 const harness = (on: Parameters<Parameters<typeof test>[1]>[1], reply = 'opened', commands = ['help']) => {
@@ -266,6 +270,72 @@ test('a refused edit is a failed call, and the gate records what it refused', as
   const a = await activityOf(files)
   expect(a.gate).toMatchObject({ tool: 'Edit', file: '/repo/src/a.ts' })
   expect(a.recent[0]).toMatchObject({ tool: 'Edit', ok: false })
+})
+
+// ── Named subagents (bin/names.mjs, agent.spawn) ──────────────────────────────
+test('names: a name nobody holds, from a random start; the colour fewest live agents have', () => {
+  expect(names.NAMES.length).toBeGreaterThanOrEqual(300)
+  expect(new Set(names.NAMES).size).toBe(names.NAMES.length)
+  expect(names.pickName([], () => 0)).toBe(names.NAMES[0])
+  expect(names.pickName([names.NAMES[0], names.NAMES[1]], () => 0)).toBe(names.NAMES[2])
+  expect(names.pickName([names.NAMES.at(-1)!], () => 0.9999)).toBe(names.NAMES[0])
+  expect(names.pickName(names.NAMES, () => 0)).toBe(names.NAMES[0])
+  expect(names.pickColour([])).toBe(names.COLOURS[0])
+  expect(names.pickColour([names.COLOURS[0], names.COLOURS[1]])).toBe(names.COLOURS[2])
+  expect(names.pickColour([...names.COLOURS, names.COLOURS[0]])).toBe(names.COLOURS[1])
+  expect(names.COLOURS).not.toContain(cadenceRed)
+})
+
+test('activity: an agent ends once, and only the last ten ended agents are kept', () => {
+  let a = act.fresh(0)
+  for (let i = 0; i < 12; i++) a = act.agentStarted(a, `g${i}`, { name: `N${i}`, colour: 80, what: '', since: i, background: false })
+  for (let i = 0; i < 11; i++) a = act.agentEnded(a, `g${i}`, 100 + i)
+  expect(Object.keys(a.agents!).sort()).toEqual(['g1', 'g10', 'g11', 'g2', 'g3', 'g4', 'g5', 'g6', 'g7', 'g8', 'g9'])
+  expect(a.agents!.g11.endedAt).toBeUndefined()
+  expect(act.agentEnded(a, 'g5', 999).agents!.g5.endedAt).toBe(105)
+  expect(act.agentEnded(a, 'nope', 999)).toBe(a)
+})
+
+test('a spawned subagent gets a name and colour, its task reads "Name: description", and it ends at its turn', async ($, on) => {
+  const { files } = withActivity(on, { branch: 'main' })
+  on('turn.complete', () => ({ text: '' }))
+  const seen: string[] = []
+  let n = 0
+  on('agent.spawn', (_, e) => { seen.push(e.description); return { model: 'm', agentId: `ag${++n}` } })
+  await Promise.all([$.agent.spawn({ prompt: 'p', description: 'explore hooks' }), $.agent.spawn({ prompt: 'p', description: 'run tests' })])
+  let a = await activityOf(files)
+  const [one, two] = [a.agents.ag1, a.agents.ag2]
+  expect(seen).toEqual([`${one.name}: explore hooks`, `${two.name}: run tests`])
+  expect(one).toMatchObject({ what: 'explore hooks', background: expect.any(Boolean) })
+  expect(one.name).not.toBe(two.name)
+  expect(one.colour).not.toBe(two.colour)
+  await $.turn.complete(done('ag1', 'all done'))
+  a = await activityOf(files)
+  expect(a.agents.ag1.endedAt).toEqual(expect.any(Number))
+  expect(a.agents.ag2.endedAt).toBeUndefined()
+})
+
+test('a resumed subagent keeps its name and description, and is live again', async ($, on) => {
+  const { files } = withActivity(on, { branch: 'main' })
+  on('turn.complete', () => ({ text: '' }))
+  const seen: string[] = []
+  on('agent.spawn', (_, e) => { seen.push(e.description); return { model: 'm', agentId: 'ag1' } })
+  await $.agent.spawn({ prompt: 'p', description: 'explore' })
+  await $.turn.complete(done('ag1', 'ok'))
+  const before = (await activityOf(files)).agents.ag1
+  await $.agent.spawn({ prompt: 'more', description: 'explore', resume: { agentId: 'ag1' } } as never)
+  const after = (await activityOf(files)).agents.ag1
+  expect(after.name).toBe(before.name)
+  expect(after.endedAt).toBeUndefined()
+  expect(seen[1]).toBe('explore')
+})
+
+test('a refused spawn records nothing', async ($, on) => {
+  const { files } = withActivity(on, { branch: 'main' })
+  on('agent.spawn', () => ({ deny: 'no' }))
+  await $.agent.spawn({ prompt: 'p', description: 'x' }).catch(() => {})
+  await $.tool.call(edit('/repo/a.ts')) // something to write the file
+  expect((await activityOf(files)).agents).toBeUndefined()
 })
 
 // ── Auto-compaction (hooks/compact.ts) ────────────────────────────────────────
