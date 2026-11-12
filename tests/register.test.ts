@@ -85,7 +85,7 @@ const briefHarness = (on: Parameters<Parameters<typeof test>[1]>[1], { branch = 
   const base = `/repo/.git/session-rail/briefs/${encodeURIComponent(branch)}`
   const files: Record<string, string> = brief === null ? {} : { [`${base}.md`]: brief }
   const edits: string[] = []
-  on('command.register', () => ({ value: { command: 'brief' } }))
+  on('command.register', () => ({ value: { command: 'approve-brief' } }))
   on('session.cwd', () => ({ value: '/repo' }))
   on('process.run', (_, e) => {
     const out = e.argv[0] === 'git' ? `/repo/.git\n${branch}\n` : '{"state":"opened"}\n'
@@ -104,8 +104,8 @@ const briefHarness = (on: Parameters<Parameters<typeof test>[1]>[1], { branch = 
 }
 const COMPOSE = { model: 'm', promptModel: 'm', surfaces: ['terminal'], tools: ['Edit'], outputStyle: { name: 'default', isKeepingCodingInstructions: true }, traits: [] } as never
 const edit = (file_path: string) => ({ tool: 'Edit' as const, file_path, old_string: 'a', new_string: 'b' })
-const brief = ($: Parameters<Parameters<typeof test>[1]>[0], args = '') =>
-  $.command.run({ command: 'brief', args } as never) as Promise<{ text?: string }>
+const approve = ($: Parameters<Parameters<typeof test>[1]>[0]) =>
+  $.command.run({ command: 'approve-brief', args: '' } as never) as Promise<{ text?: string }>
 
 test('on a feature branch, code edits wait for a brief', async ($, on) => {
   const { edits } = briefHarness(on)
@@ -129,23 +129,23 @@ test('the brief itself can always be written, its approval file never', async ($
   expect(r.deny).toContain('only the person approves')
 })
 
-test('a draft brief names what is missing, and /brief approve refuses it', async ($, on) => {
+test('a draft brief names what is missing, and /approve-brief refuses it', async ($, on) => {
   briefHarness(on, { brief: '# T\n## Problem\nCurrently A.\n' })
   const r = (await $.tool.call(edit('/repo/src/a.ts'))) as { deny?: string }
   expect(r.deny).toContain('missing: user story, engineering outline')
-  expect((await brief($, 'approve')).text).toContain("Can't approve yet")
+  expect((await approve($)).text).toContain("Can't approve yet")
 })
 
 test('a complete brief asks for approval; once approved, edits go through and stay allowed', async ($, on) => {
   const { files, base, edits } = briefHarness(on, { brief: COMPLETE })
   expect(((await $.tool.call(edit('/repo/src/a.ts'))) as { deny?: string }).deny).toContain('not approved yet')
-  expect((await brief($)).text).toContain('ready for your approval')
-  expect((await brief($, 'approve')).text).toContain('Brief approved')
+  expect((await approve($)).text).toContain('Brief approved')
+  expect((await approve($)).text).toContain('already approved')
   expect(JSON.parse(files[`${base}.approved.json`]!).approvedAt).toBeGreaterThan(0)
   await $.tool.call(edit('/repo/src/a.ts'))
   expect(edits).toEqual(['/repo/src/a.ts'])
   files[`${base}.md`] = COMPLETE.replace('first thing', 'first and second thing')
-  expect((await brief($)).text).toContain('changed since')
+  expect((await approve($)).text).toContain('Brief approved') // approving again after a change
   await $.tool.call(edit('/repo/src/b.ts'))
   expect(edits).toEqual(['/repo/src/a.ts', '/repo/src/b.ts'])
 })
@@ -173,4 +173,18 @@ test('/start runs once per session, even when session.start runs again after a r
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
   await new Promise(r => setTimeout(r, 10))
   expect(calls.filter(c => c === '/start').length).toBe(1)
+})
+
+test('a command name the engine refuses does not stop the panels opening', async ($, on) => {
+  const calls: string[] = []
+  on('command.register', (_, e) => (e.name === 'desk' ? { deny: 'that name is taken' } : { value: { command: e.name } }))
+  on('command.list', () => ({ value: [] }))
+  on('process.run', (_, e) => {
+    calls.push(`pane.mjs ${String(e.argv[4] ?? '')}`)
+    return { value: { exitCode: 0, stdout: '{"state":"opened"}\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await new Promise(r => setTimeout(r, 10))
+  expect(calls).toContain('pane.mjs layout')
 })

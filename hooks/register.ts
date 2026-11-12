@@ -33,7 +33,7 @@ const runStart = async ($: EngineInterface) => {
 
 // ── The session brief (bin/brief.mjs) ─────────────────────────────────────────
 // On any branch but main/master, Claude writes the branch's brief before editing code, and the person
-// approves it with /brief approve (or in the desk). Until then Edit, Write and NotebookEdit are refused,
+// approves it in the desk (Approve, or A) or with /approve-brief. Until then Edit, Write and NotebookEdit are refused,
 // except on the brief itself. Once approved, edits stay allowed even if the brief changes later: the desk
 // shows "changed since approval" and a review of the change. Bash isn't gated.
 type Brief = {
@@ -104,29 +104,22 @@ const gateReason = (b: Brief) => {
 const gate = async ($: EngineInterface, file: string) => {
   const b = await readBrief($)
   if (!b) return null
-  if (file === b.approvedPath) return 'session-rail: only the person approves the brief, with /brief approve.'
+  if (file === b.approvedPath) return 'session-rail: only the person approves the brief, in the desk or with /approve-brief.'
   if (file.startsWith(b.dir) || b.approval?.approvedAt) return null
   return gateReason(b)
 }
 
-const briefCommand = async ($: EngineInterface, args: string) => {
+// /approve-brief: the same as Approve in the desk, for when the desk isn't open. It approves a complete brief
+// (again, after it changed) and otherwise says why it can't. (Claude Code ships a /brief of its own.)
+const approveCommand = async ($: EngineInterface) => {
   const b = await readBrief($)
   if (!b) return 'This branch has no session brief (main, master and a detached HEAD go without one).'
   if (b.text === null) return `No brief for ${b.branch} yet. Claude writes it at ${b.path} before editing code.`
   const brief = parseBrief(b.text)
-  if (args.trim() === 'approve') {
-    if (brief.missing.length) return `Can't approve yet: the brief is missing ${brief.missing.join(', ')}.`
-    await $.fs.write(b.approvedPath, approvalRecord(brief, Date.now()))
-    return `Brief approved. Claude can edit code on ${b.branch}.`
-  }
-  const status = briefStatus(brief, b.approval)
-  const line = {
-    draft: `draft, missing: ${brief.missing.join(', ')}`,
-    ready: "ready for your approval: press Approve in the desk's Plan tab, or /brief approve",
-    approved: 'approved',
-    changed: 'approved, and changed since (edits stay allowed)',
-  }[status]
-  return `Brief for ${b.branch}: ${line}\n${b.path}`
+  if (brief.missing.length) return `Can't approve yet: the brief is missing ${brief.missing.join(', ')}.\n${b.path}`
+  if (briefStatus(brief, b.approval) === 'approved') return `The brief for ${b.branch} is already approved.`
+  await $.fs.write(b.approvedPath, approvalRecord(brief, Date.now()))
+  return `Brief approved. Claude can edit code on ${b.branch}.`
 }
 
 const message = (state: string, panel: Panel) => {
@@ -142,11 +135,16 @@ const message = (state: string, panel: Panel) => {
   return messages[state] ?? `Couldn't open or close the ${name.toLowerCase()} (is node on your PATH?).`
 }
 
+const COMMANDS = [
+  { name: 'rail', description: 'Open or close the session rail beside this pane' },
+  { name: 'desk', description: 'Open or close the desk (plan, diff and code review) beside this pane' },
+  { name: 'approve-brief', description: "Approve this branch's session brief, so Claude can edit code" },
+]
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    await $.command.register({ name: 'rail', description: 'Open or close the session rail beside this pane' })
-    await $.command.register({ name: 'desk', description: 'Open or close the desk (plan, diff and code review) beside this pane' })
-    await $.command.register({ name: 'brief', description: "Show this branch's session brief status, or approve it: /brief approve" })
+    // Each on its own: a name the engine refuses (one Claude Code has since taken) must not stop the panels opening.
+    for (const command of COMMANDS) await $.command.register(command).catch(() => {})
     // Interactive terminal sessions only, and never block startup on iTerm. One call fills the screen, opens
     // both panels and sizes them once, so the window doesn't jump between steps. Then /start, if there is one.
     if (e.isInteractive && e.surface === 'terminal') {
@@ -158,7 +156,7 @@ export const register: Register = on => {
 
   on('command.run', { command: 'rail' }, async $ => ({ text: message(await pane($, 'toggle', 'rail'), 'rail') }))
   on('command.run', { command: 'desk' }, async $ => ({ text: message(await pane($, 'toggle', 'desk'), 'desk') }))
-  on('command.run', { command: 'brief' }, async ($, e) => ({ text: await briefCommand($, e.args) }))
+  on('command.run', { command: 'approve-brief' }, async $ => ({ text: await approveCommand($) }))
 
   // Tell Claude about the brief on any branch that has one. The text names the branch and the path only,
   // so it stays the same for the whole branch and doesn't break the prompt cache.

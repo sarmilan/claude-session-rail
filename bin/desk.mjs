@@ -636,7 +636,7 @@ const move = (d) => {
 };
 const page = () => Math.max(1, (layout.bodyH ?? 10) - 2);
 
-// A on the Plan tab: the same as /brief approve. Approval opens code edits on this branch (see hooks/register.ts).
+// A on the Plan tab: the same as /approve-brief. Approval opens code edits on this branch (see hooks/register.ts).
 const approveBrief = async () => {
   const b = data.brief;
   if (!b?.text) return toast('No brief to approve');
