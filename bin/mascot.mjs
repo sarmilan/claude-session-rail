@@ -251,12 +251,8 @@ export function createMascot({ images = false, creature = 0, now = Date.now() } 
         });
       }
       if (s.mode === 'sleep') { s.phase = 0; s.hopI = -1; s.lift = 0; s.shake = 0; return; }
-      if (held) { // stands still and blinks; a flinch still wears off
-        s.phase = 0; s.hopI = -1; s.lift = 0; if (s.shake > 0) s.shake--;
-        if (s.blinkUntil < t && Math.random() < 0.04) s.blinkUntil = t + 250;
-        return;
-      }
       if (s.blinkUntil < t && Math.random() < 0.04) s.blinkUntil = t + 250;
+      if (held) { s.phase = 0; s.hopI = -1; s.lift = 0; if (s.shake > 0) s.shake--; return; } // stands still; a flinch still wears off
       // hops and shakes, as the stage's mood has them
       if (mood.hop) {
         if (s.hopI < 0 && s.tick % mood.hopEvery === 0) s.hopI = 0;
@@ -326,13 +322,14 @@ export function createMascot({ images = false, creature = 0, now = Date.now() } 
       };
       for (const v of flock.sprites(s.tick)) paint(v, v.x, v.alt > 0.5 ? -1 : 0); // 2 cells high, behind it
       for (const v of littleOnes(sleep)) paint(v, v.x, SPR_H / 4 - 1);
+      // the mark before the creature, so its lower edge never blanks the creature's top cells
+      const mark = markFor(t), flip = s.dir < 0 && !c.sideways;
+      if (mark) paint({ rows: mark, palette: {} }, s.x + Math.round(width() * (flip ? 0.2 : 0.8)) - (flip ? 3 : 0), -1);
       cached(poseKey, () => octantRows(c, pixels(c, pose))).forEach((cells, r) => cells.forEach((cell, col) => {
         if (!cell) return;
         const bg = cell.bg != null ? `${ESC}48;5;${cell.bg}m` : '';
         grid[r][s.x + col] = `${ESC}38;5;${cell.fg}m${bg}${cell.ch}${ESC}0m`;
       }));
-      const mark = markFor(t), flip = s.dir < 0 && !c.sideways;
-      if (mark) paint({ rows: mark, palette: {} }, s.x + Math.round(width() * (flip ? 0.2 : 0.8)) - (flip ? 3 : 0), -1);
       return { lines: [sky.join(''), ...grid.map((row) => row.join(''))], image: null };
     },
 

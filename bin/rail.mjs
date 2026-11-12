@@ -15,6 +15,8 @@ import * as fontsize from './fontsize.mjs';
 
 const args = process.argv.slice(2);
 const flag = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
+// A numeric flag's value, or null when it's missing or not a number.
+const numFlag = (name) => { const v = flag(name); return v?.trim() && Number.isFinite(+v) ? +v : null; };
 const cwd = flag('--cwd') || process.cwd();
 const pinnedPid = Number(flag('--pid')) || null; // the Claude process this rail belongs to
 const taskIndex = new src.TaskIndex();
@@ -94,20 +96,19 @@ const stageFlag = flag('--pet-stage');
 const pinned = stageFlag != null && /^[0-3]$/.test(stageFlag) ? +stageFlag : null;
 const petStage = () => pinned ?? stageFor(data.brief);
 // And walks the branch's road, left to right as chunks get Done (--pet-progress F pins it for --frame).
-const progressFlag = flag('--pet-progress');
-const petProgress = () => (progressFlag?.trim() && Number.isFinite(+progressFlag) ? +progressFlag : progressFor(data.brief));
+const progressFlag = numFlag('--pet-progress');
+const petProgress = () => progressFlag ?? progressFor(data.brief);
 // A visitor for each running subagent: the main thread's Agent calls in flight, plus background subagents,
 // whose Agent call returns at once but whose task keeps running (--visitors N pins it for --frame).
-const visitorsFlag = flag('--visitors');
-const subagents = () => (visitorsFlag?.trim() && Number.isFinite(+visitorsFlag) ? +visitorsFlag
-  : (data.activity?.running ?? []).filter((c) => c.tool === 'Agent' && !c.agent).length
-    + data.tasks.running.filter((t) => t.kind === 'agent').length);
+const visitorsFlag = numFlag('--visitors');
+const subagents = () => visitorsFlag ?? ((data.activity?.running ?? []).filter((c) => (c.tool === 'Agent' || c.tool === 'Task') && !c.agent).length
+  + data.tasks.running.filter((t) => t.kind === 'agent').length);
 // A little one trails behind for each background shell task (background subagents are visitors).
-const companionsFlag = flag('--companions');
-const backgroundTasks = () => (companionsFlag?.trim() && Number.isFinite(+companionsFlag) ? +companionsFlag
-  : data.tasks.running.filter((t) => t.kind === 'shell').length);
-// It stands still with a ? while the brief gate holds edits (--held for --frame); an approved brief lets go.
-const petHeld = () => args.includes('--held') || (src.gateHeld(data.activity) && data.brief?.status !== 'approved');
+const companionsFlag = numFlag('--companions');
+const backgroundTasks = () => companionsFlag ?? data.tasks.running.filter((t) => t.kind === 'shell').length;
+// It stands still with a ? while the brief gate holds edits (--held for --frame); any approval lets go (the gate
+// keeps allowing edits once a brief is approved, even after it changes).
+const petHeld = () => args.includes('--held') || (src.gateHeld(data.activity) && !['approved', 'changed'].includes(data.brief?.status));
 // It flinches once at each new failed tool call; failures from before the rail started don't count, nor
 // the gate's refusals (they count as failed calls), which show the ? instead.
 let lastFailure = null;

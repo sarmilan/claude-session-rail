@@ -61,7 +61,7 @@ export function createVisitors() {
     step(centre, W, tick, half, vw = 4) {
       for (const v of flock) {
         const wobble = 3 * Math.sin(tick * 0.09 + v.seed);
-        const target = v.leaving ? (v.x < W / 2 ? -12 : W + 6) + wobble
+        const target = v.leaving ? (v.x < W / 2 ? -12 : W + 6) // no wobble, so it always clears the edge and goes
           : Math.max(1, Math.min(W - 1 - vw, centre + Math.sign(v.spot) * (half + 1 + (Math.abs(v.spot) - 1) * 9) - (v.spot < 0 ? vw : 0) + wobble));
         const dx = (target - v.x) * (v.leaving ? 0.12 : 0.08);
         v.x += Math.max(-1.5, Math.min(1.5, dx));
