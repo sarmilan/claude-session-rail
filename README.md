@@ -56,7 +56,7 @@ If you have a `/start` command of your own, it runs as soon as the session start
   - **Claude:** thinking (with the model), the tool it's running and on what, waiting on its subagents, or waiting for you
   - nested under it, its **subagents** (with what one is doing, when only one runs) and **background tasks**. Open a background task to see its output.
   - the **Desk** while it runs an approach review, and the **Gate** when it has just held an edit because the brief isn't approved
-- **Just now:** the last few finished tool calls, with ✔ or ✗, and the session's finished background tasks
+- **Just now:** the last few finished tool calls, with ✔ or ✗, the session's finished background tasks, and `⟲ compacted after <branch>` for an hour after the session compacted itself
 
 Click a row, or use the arrow keys and Enter, to open it. A session jumps to its iTerm window (a session in the Claude app gives you its details instead), pull requests open in the browser, and tasks show their output.
 
@@ -110,6 +110,7 @@ Files: src/a.ts, src/b.ts
 - Approving is the go-ahead: within a couple of seconds the plugin sends Claude a message to start on chunk 1, so you never have to type "go". It waits until Claude is idle and doesn't type over what you're writing.
 - Once approved, nothing blocks again. If the problem, solution or outline changes later, the Plan tab says "changed since" and offers **Approve again**, which tells Claude the change is approved so it carries on.
 - Claude works through the chunks in order. As each one is finished, it reviews it against the plan (running the tests), adds a short `Done:` summary and its `Files:`, commits it on its own and pushes, opening the pull request after the first chunk, then moves straight on to the next chunk unless something needs your decision.
+- When a branch is done the session compacts itself, so the next issue starts lean. It happens once the session leaves a branch (back to main, or onto the next issue's branch) whose brief has a finished chunk and whose work is merged into the default branch, after Claude's turn ends. The summary keeps the board, how you like work done, open issues and what's next, and shrinks the finished branch to a line. Leaving an unmerged branch doesn't compact. Turn it off in the rail's settings.
 - The approach review runs by itself at milestones: when a chunk gets its `Done:` line, and when the plan changes after approval, once the brief has been still for 20 seconds. **Run review** runs it any time, before approval too. Each run is one `claude -p` call.
 
 Keys:
@@ -154,7 +155,7 @@ If macOS asks whether to allow controlling iTerm2, allow it. That's how the pane
 - `/rail` hides or shows the rail, and `/desk` the desk.
 - They close when you quit Claude.
 - Keys: `↑` `↓` to move, `Enter` to open, `Esc` to go back, `c` to change creature, `q` to close the rail.
-- **⚙ settings**, in the rail's bottom-right corner, opens two rows under the creature: `←` `→` on **Font size** makes the Claude pane, the desk and the rail bigger or smaller together (`Enter` for Reset), and `←` `→` on **Pet** picks the creature. The font size is remembered and comes back with the next session. It works by switching the panes to iTerm profiles it generates (`session-rail 15pt` and so on), which show up in iTerm's Profiles menu.
+- **⚙ settings**, in the rail's bottom-right corner, opens three rows under the creature: `←` `→` on **Font size** makes the Claude pane, the desk and the rail bigger or smaller together (`Enter` for Reset), `←` `→` on **Pet** picks the creature, and `←` `→` on **Auto-compact** turns auto-compaction off or on. The font size is remembered and comes back with the next session. It works by switching the panes to iTerm profiles it generates (`session-rail 15pt` and so on), which show up in iTerm's Profiles menu.
 - A little pixel creature wanders along the bottom: Claudey the snail, a turtle or a crab. It walks through its own habitat (woodland for the snail, a pond for the turtle, a beach for the crab) with plants swaying gently behind it in iTerm2. It hurries while Claude is busy and falls asleep when things go quiet. Your pick is remembered.
 - The creature grows as the session's context window fills: hatchling until the session's first reply, then juvenile, adult from 40% (faster, hopping), and heavy from 60% (bigger, shaking, fuming). Each creature has a drawing for each stage, from a pale little hatchling to a spiked, scowling heavy.
 
@@ -167,7 +168,7 @@ It has these parts:
 1. **The rail** (`bin/rail.mjs`) draws the narrow panel in the terminal. It's plain Node with no dependencies.
 2. **The desk** (`bin/desk.mjs`) draws the wider panel. It reads the branch's brief (`bin/brief.mjs`), finds the plan file in the session's conversation log, asks `git` for the diff and `gh` for the board's Todo issues. Its reviewer (`bin/reviewer.mjs`) runs the approach review through `claude -p` with a JSON schema for the findings, read-only tools, no MCP servers and no saved session, and keeps each branch's reviews in `.git/session-rail/reviews/`.
 3. **The pane opener** (`bin/pane.mjs`) uses iTerm2's AppleScript support to fill the screen, split Claude's pane, run each panel (desk next to Claude, rail on the far right), size them in one pass, and hand focus back to Claude. The rail also uses it to bring another session's window to the front and to open the window for a new session.
-4. **The plugin** (`hooks/register.ts`) keeps a live record of what the session is doing (`hooks/activity.ts`: turns, every tool call, subagents, the brief gate) in `~/.claude/session-rail/activity/<session id>.json`, which the rail reads every second; the desk adds its running review beside it. It also opens both panels when a session starts, adds `/rail`, `/desk` and `/approve-brief`, and closes them when the session ends. On a feature branch it adds the brief's instructions to Claude's system prompt, refuses code edits until the brief is approved, and watches for the approval (`hooks/goahead.ts`) to tell Claude to start.
+4. **The plugin** (`hooks/register.ts`) keeps a live record of what the session is doing (`hooks/activity.ts`: turns, every tool call, subagents, the brief gate) in `~/.claude/session-rail/activity/<session id>.json`, which the rail reads every second; the desk adds its running review beside it. It also opens both panels when a session starts, adds `/rail`, `/desk` and `/approve-brief`, and closes them when the session ends. On a feature branch it adds the brief's instructions to Claude's system prompt, refuses code edits until the brief is approved, watches for the approval (`hooks/goahead.ts`) to tell Claude to start, and compacts the session after a finished, merged branch (`hooks/compact.ts`). Settings shared by the rail and the hooks (font size, auto-compact) live in `~/.claude/session-rail/settings.json`.
 
 ## Good to know
 
