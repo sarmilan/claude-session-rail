@@ -3,11 +3,11 @@
 A Claude Code plugin (repo root = plugin = marketplace) that opens a Claude-desktop-style session rail as an iTerm2 split. See README.md for behavior and architecture.
 
 ## Layout
-- `bin/rail.mjs`: the terminal UI, with Session and Git tabs (modes: interactive, `--json`, `--frame W H [--tab session|git] [--activate a,b] [--open-context]`)
+- `bin/rail.mjs`: the terminal UI, with Session and Git tabs (modes: interactive, `--json`, `--frame W H [--tab session|git] [--activate a,b] [--open-context] [--agents N]`)
 - `bin/desk.mjs`: the wider Plan / Diff / Review panel (modes: interactive, `--json`, `--frame W H [--tab plan|diff|review] [--file N] [--review-json F --select N --jump N]`)
 - `bin/reviewer.mjs`: the approach review: a headless staff-engineer review of the branch (`claude -p --json-schema`, read-only) from its brief and chunk records, which also checks the earlier open findings. Kept per branch in `.git/session-rail/reviews/`. `reviewAndSave` serves the desk's Run review and the CLI `node reviewer.mjs --run [--final] [--notes JSON]`, which the hooks' `review_approach` tool runs
 - `bin/cadence.mjs`: the review cadence's rules (pure, no Node APIs, shared by the hooks, the reviewer and the desk): the record's run and finding shape, finding statuses (open, applied, declined), a /code-review report (its final ```json findings block, `reportFromText`) as a code run, `staffCheck` (the code findings the approach review judges), and `gateReason`, which says why a merge must wait
-- `bin/term.mjs`: drawing helpers shared by the rail and the desk (colours, display width, wrap, `clean()`)
+- `bin/term.mjs`: drawing helpers shared by the rail and the desk (colours, display width, wrap, `clean()`, `tabBar`)
 - `bin/fontsize.mjs`: one font size for the Claude, desk and rail panes (Settings in the rail). Writes generated iTerm profiles to `~/Library/Application Support/iTerm2/DynamicProfiles/session-rail.json` and switches each pane with `OSC 1337;SetProfile`
 - `bin/brief.mjs`: the session brief in `.git/session-rail/briefs/<branch>.md` (parse, status, approval record). Pure, no Node APIs: shared by the desk and the hooks
 - `bin/sources.mjs`: data sources. Every export resolves to plain JSON and never throws. `sessionsOverview` feeds the rail's Sessions; `worktrees`, `environment().commits` and `prs()` (with each PR's `checks`) feed its Git tab; `newWorktree` adds the detached worktree for **+ new** in `<repo>.worktrees/<slug>`
@@ -15,6 +15,7 @@ A Claude Code plugin (repo root = plugin = marketplace) that opens a Claude-desk
 - `bin/creatures.mjs`: the mascot sprites (34×16 pixel drawings, palette, gait). Add a creature by appending to `CREATURES`.
 - `bin/habitats.mjs`: the foliage behind the mascot (woodland, pond, beach), picked by each creature's `habitat`
 - `bin/visitors.mjs`: the fliers (bee, butterfly, dragonfly, ladybird) over the mascot's strip, one per running subagent, and how they move
+- `bin/names.mjs`: subagent names (300) and colours, picked at `agent.spawn` by register.ts (pure, no Node APIs)
 - `bin/pane.mjs`: iTerm2 split controller (`open|close|toggle|status [rail|desk]`, plus `focus <tty>` and `window <tty> <command>` for the rail's Sessions; prints one JSON line, always exits 0). Layout: Claude │ desk │ rail
 - `hooks/register.ts`: plugin hooks (session.start opens the rail then the desk, `/rail`, `/desk`, session.end closes both; `/start` once per session, skipped when the rail's **+ new** set `SESSION_RAIL_STARTED`; on a feature branch the brief: a system prompt section, `/approve-brief`, and a gate on Edit/Write/NotebookEdit until it's approved. Once it's approved, the review cadence: the `review_approach` tool, /code-review's report recorded as a code run (a Skill tool call, or the person typing /code-review, arms `$.state.codeReview` with a token; the run's first prompt asks for the token inside its final JSON findings block, and the `turn.complete` answer carrying it is the report, forked or inline), and `gh pr merge` in Bash refused until `cadence.gateReason` is satisfied; commits aren't gated)
 - `hooks/goahead.ts`: when to tell Claude the brief was approved (pure). register.ts polls the approval every 2s, keeps the last one seen in `$.state`, and sends the go-ahead with `$.prompt.submit`

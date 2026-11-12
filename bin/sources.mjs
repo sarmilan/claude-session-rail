@@ -124,7 +124,8 @@ export async function activity(sessionId) {
   const [feed, desk] = await Promise.all([readJson(join(dir, `${sessionId}.json`)), readJson(join(dir, `${sessionId}.desk.json`))]);
   const review = desk?.review && desk.pid && alive(desk.pid) ? desk.review : null;
   if (!feed?.claude) return review ? { claude: null, running: [], recent: [], desk: review } : null;
-  return { claude: feed.claude, running: feed.running ?? [], recent: feed.recent ?? [], gate: feed.gate ?? null, compacted: feed.compacted ?? null, desk: review };
+  return { claude: feed.claude, running: feed.running ?? [], recent: feed.recent ?? [], gate: feed.gate ?? null, compacted: feed.compacted ?? null,
+    agents: feed.agents ?? {}, desk: review };
 }
 
 // ── Brief: the branch's goal, design and engineering chunks (see brief.mjs) ───
