@@ -2,6 +2,8 @@
 // Opens/closes the session rail and the desk as iTerm splits beside the Claude pane that runs this.
 //   node pane.mjs layout                                            (fill the screen, open both panels)
 //   node pane.mjs open | close | toggle | status [rail | desk]      (rail if not given)
+//   node pane.mjs focus <tty>                                       (bring the iTerm session on that tty to the front)
+//   node pane.mjs window <tty> <command>                            (a new window over that session's, running command)
 // The layout is Claude │ desk │ rail: the desk splits off Claude (landing left of an open rail), and the
 // rail splits off the desk when the desk is already open. Panels take a fixed share of the window's
 // columns, always from Claude's pane; the window itself never grows.
@@ -190,7 +192,57 @@ const QUIT = `on run argv
   return ""
 end run`;
 
+// Bring the session on a tty to the front: its window, its tab, then the pane itself.
+const FOCUS = `on run argv
+  tell application "iTerm2"
+    repeat with w in windows
+      repeat with t in tabs of w
+        repeat with s in sessions of t
+          if tty of s is (item 1 of argv) then
+            select w
+            tell t to select
+            tell s to select
+            activate
+            return "ok"
+          end if
+        end repeat
+      end repeat
+    end repeat
+  end tell
+  return ""
+end run`;
+
+// A new window exactly over the window of the session on a tty (else the current window), typing a command into
+// its shell. One tab per window keeps iTerm's tab bar hidden: the rail's Sessions list is the switcher.
+const NEW_WINDOW = `on run argv
+  tell application "iTerm2"
+    set target to missing value
+    repeat with w in windows
+      repeat with t in tabs of w
+        repeat with s in sessions of t
+          if tty of s is (item 1 of argv) then set target to w
+        end repeat
+      end repeat
+    end repeat
+    if target is missing value then set target to current window
+    set b to bounds of target
+    set nw to (create window with default profile)
+    set bounds of nw to b
+    tell current session of nw to write text (item 2 of argv)
+    return "ok"
+  end tell
+end run`;
+
 const action = process.argv[2] || 'status';
+const itermRunning = () => (sh('ps', ['-axo', 'comm=']) || '').split('\n').some((c) => c.endsWith('/MacOS/iTerm2'));
+// focus and tab act on any pane, so they don't need to run under a Claude.
+if (action === 'focus' || action === 'window') {
+  const [tty, command] = process.argv.slice(3);
+  if (!tty || (action === 'window' && !command)) done('error', { message: `usage: pane.mjs ${action} <tty>${action === 'window' ? ' <command>' : ''}` });
+  if (!itermRunning()) done('not-iterm');
+  if (action === 'focus') done(osa(FOCUS, tty) === 'ok' ? 'focused' : 'not-found');
+  done(osa(NEW_WINDOW, tty, command) === 'ok' ? 'opened' : 'error');
+}
 const which = process.argv[3] || 'rail';
 if (!['layout', 'open', 'close', 'toggle', 'status'].includes(action)) done('error', { message: `unknown action ${action}` });
 if (!PANELS[which]) done('error', { message: `unknown panel ${which}` });
@@ -200,7 +252,7 @@ const claude = findClaude();
 if (!claude) done('no-claude');
 // Never launch iTerm by accident: only talk to it if it's already running. (pgrep can't see it from
 // inside Claude's sandboxed shells, so read the process list instead.)
-if (!(sh('ps', ['-axo', 'comm=']) || '').split('\n').some((c) => c.endsWith('/MacOS/iTerm2'))) done('not-iterm');
+if (!itermRunning()) done('not-iterm');
 const [claudePane, windowId, windowLeft] = (osa(FIND_BY_TTY, claude.tty) || '').split(',');
 if (!claudePane) done('not-iterm');
 

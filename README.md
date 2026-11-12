@@ -11,6 +11,12 @@ If you have a `/start` command of your own, it runs as soon as the session start
 
 ```
 ┌─ claude ──────────────────────────┬─ rail ───────────────────────────┐
+│                                   │ Sessions 3                 + new │
+│                                   │ ▸ ◉ Fix login redirect loop busy │
+│                                   │     my-app · fix/42 · Edit redi… │
+│                                   │   ◆ Dark mode toggle     waiting │
+│                                   │     my-app · feature/51 · waiti… │
+│                                   │ ──────────────────────────────── │
 │                                   │ Environment                      │
 │  > fix the login redirect         │ ▭  my-macbook                    │
 │                                   │ ▢  my-app · ~/code               │
@@ -41,6 +47,7 @@ If you have a `/start` command of your own, it runs as soon as the session start
 
 ## What it shows
 
+- **Sessions:** every Claude session on your Mac, this one first (▸), then the ones that need you. Each shows its brief's title (or its branch), whether it's busy, waiting for you, blocked (the brief gate just held an edit) or idle, and underneath, its repo, branch and what it's doing right now. Every rail shows the same list.
 - **Environment:** your computer, repo, and branch, with the lines added and removed since the branch forked from the default branch (committed plus uncommitted; untracked files are not counted)
 - **Context:** how full Claude's context window is
 - **Connectors:** your MCP servers and whether they're connected
@@ -50,9 +57,12 @@ If you have a `/start` command of your own, it runs as soon as the session start
   - nested under it, its **subagents** (with what one is doing, when only one runs) and **background tasks**. Open a background task to see its output.
   - the **Desk** while it runs an approach review, and the **Gate** when it has just held an edit because the brief isn't approved
 - **Just now:** the last few finished tool calls, with ✔ or ✗, and the session's finished background tasks
-- **Other sessions:** every other Claude session on your Mac, folded into one row. Open it to see them.
 
-Click a row, or use the arrow keys and Enter, to open it. Pull requests open in the browser, tasks show their output, and sessions give you their resume command.
+Click a row, or use the arrow keys and Enter, to open it. A session jumps to its iTerm window (a session in the Claude app gives you its details instead), pull requests open in the browser, and tasks show their output.
+
+### Working on several things at once
+
+**+ new**, on the Sessions heading, starts another session without touching this one. Type the problem on the rail's bottom line and press Enter (Esc cancels). The rail adds a git worktree of the repo at the latest `main`, beside the repo in `<repo>.worktrees/<name>`, opens a new iTerm window there, at the same size and place as this one, and runs `claude "/start <your problem>"`, so `/start` files the issue and makes the branch inside that worktree. Each session has its own checkout, so two sessions never edit the same files, and each window gets its own Claude │ desk │ rail. With one tab per window iTerm shows no tab bar: the Sessions list is how you move between them.
 
 ## The desk
 
@@ -155,7 +165,7 @@ It has these parts:
 
 1. **The rail** (`bin/rail.mjs`) draws the narrow panel in the terminal. It's plain Node with no dependencies.
 2. **The desk** (`bin/desk.mjs`) draws the wider panel. It reads the branch's brief (`bin/brief.mjs`), finds the plan file in the session's conversation log, asks `git` for the diff and `gh` for the board's Todo issues. Its reviewer (`bin/reviewer.mjs`) runs the approach review through `claude -p` with a JSON schema for the findings, read-only tools, no MCP servers and no saved session, and keeps each branch's reviews in `.git/session-rail/reviews/`.
-3. **The pane opener** (`bin/pane.mjs`) uses iTerm2's AppleScript support to fill the screen, split Claude's pane, run each panel (desk next to Claude, rail on the far right), size them in one pass, and hand focus back to Claude.
+3. **The pane opener** (`bin/pane.mjs`) uses iTerm2's AppleScript support to fill the screen, split Claude's pane, run each panel (desk next to Claude, rail on the far right), size them in one pass, and hand focus back to Claude. The rail also uses it to bring another session's window to the front and to open the window for a new session.
 4. **The plugin** (`hooks/register.ts`) keeps a live record of what the session is doing (`hooks/activity.ts`: turns, every tool call, subagents, the brief gate) in `~/.claude/session-rail/activity/<session id>.json`, which the rail reads every second; the desk adds its running review beside it. It also opens both panels when a session starts, adds `/rail`, `/desk` and `/approve-brief`, and closes them when the session ends. On a feature branch it adds the brief's instructions to Claude's system prompt and refuses code edits until the brief is approved.
 
 ## Good to know
@@ -164,6 +174,7 @@ It has these parts:
 - When a session starts, the iTerm window fills the screen (without switching to macOS full screen). The desk takes 28% of the width, the rail 18.5%, and Claude keeps the rest. `/rail` and `/desk` take their share from Claude's pane, and the window never grows.
 - Context shows tokens and the model, but not cost.
 - It reads Claude Code's own files, which can change between Claude Code versions.
+- Worktrees made by **+ new** stay after their branch is merged; remove one with `git worktree remove <path>`. Claude keeps a separate project memory for each worktree, since it's a different folder.
 - Every session that loads the plugin, headless `claude -p` runs included, writes a small activity file to `~/.claude/session-rail/activity/`. Nothing cleans them up yet; they're safe to delete.
 
 ## Uninstall

@@ -214,6 +214,60 @@ export async function sessions() {
     .sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
+// ── Sessions: every session with what it's on and whether it needs the person ──
+// A session is blocked when the brief gate refused an edit in the last 2 minutes, busy while Claude works,
+// waiting when its turn ended in the last hour (it's the person's move), else idle.
+const GATE_HOLD = 2 * 60_000, WAIT_FRESH = 60 * 60_000;
+export function sessionState(s, act, now = Date.now()) {
+  const rel = (p) => (p && s.cwd && p.startsWith(s.cwd + '/') ? p.slice(s.cwd.length + 1) : p ?? '');
+  if (act?.gate && now - act.gate.at < GATE_HOLD) return { state: 'blocked', doing: `${act.gate.tool} ${rel(act.gate.file)}: brief not approved`, since: act.gate.at };
+  const c = act?.claude;
+  if (c && c.state !== 'waiting') {
+    const call = act.running.find((r) => !r.agent);
+    const doing = c.state === 'thinking' ? 'thinking' : call ? `${call.tool} ${rel(call.arg)}`.trim() : 'running a tool';
+    return { state: 'busy', doing, since: c.since };
+  }
+  if (!c && s.status === 'busy') return { state: 'busy', doing: 'working', since: s.statusSince };
+  const since = c?.since ?? s.statusSince;
+  if (now - since < WAIT_FRESH) return { state: 'waiting', doing: 'waiting for you', since };
+  return { state: 'idle', doing: 'idle', since };
+}
+
+// Every live session with its branch, brief title, tty and state. This session first, then the ones
+// needing the person (blocked, waiting), then the rest; most recent first within each.
+const RANK = { blocked: 0, waiting: 1, busy: 2, idle: 3 };
+export async function sessionsOverview(list, currentPid) {
+  const ttys = new Map(((await run('ps', ['-o', 'pid=,tty=', '-p', list.map((s) => s.pid).join(',') || '0'])) || '')
+    .split('\n').map((l) => l.trim().split(/\s+/)).filter(([, t]) => t && t !== '??').map(([p, t]) => [Number(p), `/dev/${t}`]));
+  const rows = await Promise.all(list.map(async (s) => {
+    const [act, branch, brief] = await Promise.all([
+      activity(s.sessionId),
+      s.cwd ? run('git', ['branch', '--show-current'], { cwd: s.cwd }) : null,
+      s.cwd ? readBrief(s.cwd) : null,
+    ]);
+    const b = branch?.trim() || null;
+    return { ...s, ...sessionState(s, act), branch: b, title: brief?.title || b || s.name, tty: ttys.get(s.pid) ?? null, current: s.pid === currentPid };
+  }));
+  return rows.sort((a, b) => (b.current - a.current) || (RANK[a.state] - RANK[b.state]) || (b.since - a.since));
+}
+
+// ── New session: a worktree of the repo at the default branch, detached so /start makes the branch there ─
+// It goes beside the main checkout in <repo>.worktrees/<slug>, named after the problem's first words.
+export async function newWorktree(cwd, problem) {
+  const common = (await run('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd }))?.trim();
+  if (!common) return { ok: false, message: 'Not a git repo' };
+  const main = basename(common) === '.git' ? dirname(common) : common.replace(/\.git$/, '');
+  await run('git', ['fetch', '--quiet', 'origin'], { cwd, timeout: 20_000 });
+  const base = await defaultBranch(cwd);
+  if (!base) return { ok: false, message: 'No main branch' };
+  const slug = problem.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(' ').slice(0, 4).join('-').slice(0, 40) || 'session';
+  const root = join(dirname(main), `${basename(main)}.worktrees`);
+  let dir = join(root, slug);
+  for (let n = 2; await exists(dir); n++) dir = join(root, `${slug}-${n}`);
+  const added = await run('git', ['worktree', 'add', '--detach', dir, base], { cwd, timeout: 30_000 });
+  return added == null ? { ok: false, message: "Couldn't add the worktree" } : { ok: true, dir, base };
+}
+
 // The session this rail belongs to: newest live CLI session in the rail's folder (or a parent/child of it).
 export function currentSession(list, cwd) {
   const related = (p) => p && (p === cwd || cwd.startsWith(p + '/') || p.startsWith(cwd + '/'));

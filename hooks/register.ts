@@ -26,6 +26,8 @@ const START_RAN = { plugin: 'session-rail', key: 'startRan' } as const
 const runStart = async ($: EngineInterface) => {
   if ((await $.state.get(START_RAN)).value) return
   await $.state.set(START_RAN, true)
+  // A session the rail's "+ new" started already runs /start with its problem as the first prompt.
+  if (await $.env.get('SESSION_RAIL_STARTED').catch(() => undefined)) return
   try {
     if ((await $.command.list()).some(c => c.name === 'start' && c.source === 'user'))
       await $.command.run({ command: 'start', args: '' })
