@@ -156,9 +156,11 @@ const headCommit = async ($: EngineInterface, cwd: string) => {
   const rev = await $.process.run(['git', '-C', cwd, 'rev-parse', 'HEAD'], { timeoutMs: 5_000 })
   return rev.exitCode === 0 ? rev.stdout.trim() : null
 }
-// Whether the tree has uncommitted changes.
-const isDirty = async ($: EngineInterface, cwd: string) =>
-  (await $.process.run(['git', '-C', cwd, 'status', '--porcelain'], { timeoutMs: 10_000 })).stdout.trim() !== ''
+// Whether the tree has uncommitted changes (true when git can't say).
+const isDirty = async ($: EngineInterface, cwd: string) => {
+  const st = await $.process.run(['git', '-C', cwd, 'status', '--porcelain'], { timeoutMs: 10_000 })
+  return st.exitCode !== 0 || st.stdout.trim() !== ''
+}
 // The branch's review record, beside its brief.
 const runsPath = (b: Brief) => reviewsFile(b.common, b.branch)
 // Without the tool (the engine refused it) Claude can't satisfy the gate, so it stands aside.

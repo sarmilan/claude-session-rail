@@ -5,7 +5,7 @@ Side panels for Claude Code in iTerm2, like the ones in the Claude desktop app.
 When you start `claude`, two panes open on the right:
 
 - **The rail**, a narrow pane that shows what Claude is working with and what's running. `/rail` hides it or brings it back.
-- **The desk**, a wider pane between Claude and the rail, with tabs for the plan, the diff, and a code review. It opens on Plan, which shows the latest merged PRs and commits until there's a plan. `/desk` hides it or brings it back.
+- **The desk**, a wider pane between Claude and the rail, with tabs for the plan, the diff, and the branch's reviews. It opens on Plan, which shows the latest merged PRs and commits until there's a plan. `/desk` hides it or brings it back.
 
 If you have a `/start` command of your own, it runs as soon as the session starts.
 
@@ -84,7 +84,10 @@ Click a row, or use the arrow keys and Enter, to open it. A session jumps to its
 
 - **Plan:** the branch's **brief** (see below), live, with an **Approve** button when it's ready. Until the branch has a brief, and on `main`, it lists the **Todo** issues on the repo's GitHub project board first, so you can pick one up, then the plan Claude writes in plan mode, or the latest merged PRs and commits.
 - **Diff:** every file changed since the branch forked from the default branch, the same base as the rail's `+N −N`, grouped under the brief's chunks with each chunk's summary. Untracked files are included, marked `new`. Open a file to see its diff.
-- **Review:** a staff-engineer review of the approach, run in a separate, headless Claude. It reads the brief, each chunk's summary and files, and how much each file changed, and says whether this is the simplest, most elegant and least costly way to the goal: on track, a simpler path exists, or off the goal, with findings such as a simpler design, work beyond the goal, avoidable cost, or part of the goal not covered. It doesn't review code line by line; that's the code review in `/end`. Click **accept** on a finding, or **Accept all**, to hand it to Claude, who acts on it and updates the brief. Reviews are saved per branch inside `.git`.
+- **Review:** the branch's reviews and what became of each finding (see *Reviews before each commit* below).
+  - **Approach:** a staff-engineer review in a separate, headless Claude. It reads the brief, each chunk's summary and files, and how much each file changed. It says whether this is the simplest, most elegant and least costly way to the goal: on track, a simpler path exists, or off the goal. Findings are things like a simpler design, work beyond the goal, avoidable cost, or part of the goal not covered.
+  - **Code review:** the newest `/code-review`, finding by finding, with its file and line. `Enter` jumps to that line in the diff.
+  - Each finding shows ● open, ✓ applied (✓ fixed for code) or ✗ declined, and a declined one shows the reason. Older runs are listed one line each. Reviews are saved per branch inside `.git`.
 
 The desk opens on Plan and stays on the tab you pick.
 
@@ -94,6 +97,7 @@ On any branch but `main` or `master`, Claude keeps a brief for the branch: what 
 
 ```
 # <title>
+
 ## Problem       Currently it's A; we need B to solve A
 ## Solution      As an X, I should be able to Y so I can Z
 ## Design        UI/UX decisions
@@ -109,9 +113,9 @@ Files: src/a.ts, src/b.ts
 - Claude can't edit code (Edit, Write, NotebookEdit) until the brief has a problem, a solution and at least one chunk, and you've pressed **Approve** in the Plan tab (or `A`, or `/approve-brief` when the desk isn't open). Writes Claude makes through the shell aren't covered.
 - Approving is the go-ahead: within a couple of seconds the plugin sends Claude a message to start on chunk 1, so you never have to type "go". It waits until Claude is idle and doesn't type over what you're writing.
 - Once approved, nothing blocks again. If the problem, solution or outline changes later, the Plan tab says "changed since" and offers **Approve again**, which tells Claude the change is approved so it carries on.
-- Claude works through the chunks in order. As each one is finished, it reviews it against the plan (running the tests), adds a short `Done:` summary and its `Files:`, commits it on its own and pushes, opening the pull request after the first chunk, then moves straight on to the next chunk unless something needs your decision.
+- Claude works through the chunks in order. As each one is finished, it checks it against the plan (running the tests), adds a short `Done:` summary and its `Files:`, runs the reviews and applies their findings, commits it on its own and pushes, opening the pull request after the first chunk, then moves straight on to the next chunk unless something needs your decision.
 - When a branch is done the session compacts itself, so the next issue starts lean. It happens once the session leaves a branch (back to main, or onto the next issue's branch) whose brief has a finished chunk and whose work is merged into the default branch, after Claude's turn ends. The summary keeps the board, how you like work done, open issues and what's next, and shrinks the finished branch to a line. Leaving an unmerged branch doesn't compact. Turn it off in the rail's settings.
-- The approach review runs by itself at milestones: when a chunk gets its `Done:` line, and when the plan changes after approval, once the brief has been still for 20 seconds. **Run review** runs it any time, before approval too. Each run is one `claude -p` call.
+- Every chunk is reviewed before it's committed, and the whole branch before it's merged (see *Reviews before each commit* below).
 
 Keys:
 
@@ -124,11 +128,26 @@ Keys:
 | `n` `p`, `Esc` | next/previous file, back to the list |
 | `A` | approve the brief (Plan) |
 | `r` | run a review (Review), refresh (other tabs) |
-| `y`, `A` | accept the selected finding, accept all (Review) |
+| `Enter` | jump to a code finding's line (Review) |
 | `x` | cancel a running review |
 | `q` | close the desk |
 
-A review takes under a minute and uses your Claude account like any other `claude -p` run. Nothing is sent to Claude until you accept it.
+An approach review takes under a minute and uses your Claude account like any other `claude -p` run.
+
+### Reviews before each commit
+
+Once the brief is approved, the plugin holds Claude to a review cadence:
+
+- **Before each chunk's commit**, after its `Done:` line:
+  1. Claude calls the plugin's `review_approach` tool, which runs the approach review. Claude applies every finding and calls the tool again until nothing is open. Each new review checks the earlier findings and marks each one **applied**, **declined** (Claude gave a reason not to, and the reviewer accepted it) or still **open**.
+  2. Claude then runs `/code-review --fix` on the chunk's changes. The fixed report marks each finding fixed, no change needed or skipped, and skipped counts as open.
+- **Before merging** (still only when you say so), the same pair runs over the whole branch: `review_approach` with `final: true`, and `/code-review --fix` against the default branch. They run after the last commit, with nothing uncommitted.
+- **The gate:** the plugin refuses Claude's `git commit` until both reviews have run since the last commit and nothing is open. It refuses `gh pr merge` until both final reviews have run after the last commit. Claude is told which review is missing or which findings are open.
+- **The PR's Progress checklist** notes each chunk's reviews.
+
+Each approach review is one `claude -p` call, usually under a minute, and `/code-review` runs in its own forked agent. So every chunk costs at least those two.
+
+The gate only covers commands Claude runs, so you can always commit or merge yourself, for example if the reviewer keeps failing. It counts a review as covering the work if it ran since the last commit, so a change Claude makes after the review isn't caught. **Run review** in the desk runs an approach review on demand, before approval too.
 
 ## What you need
 
@@ -147,7 +166,7 @@ In Claude Code, run:
 
 Say `y` to add the marketplace. Start a new `claude` session in iTerm2 and the desk and the rail open on the right.
 
-If macOS asks whether to allow controlling iTerm2, allow it. That's how the panels open their panes, and how the desk sends review findings to Claude.
+If macOS asks whether to allow controlling iTerm2, allow it. That's how the panels open their panes and how the rail switches between sessions.
 
 ## Use
 
@@ -166,9 +185,9 @@ The rail only reads files Claude Code already keeps on your Mac: the list of run
 It has these parts:
 
 1. **The rail** (`bin/rail.mjs`) draws the narrow panel in the terminal. It's plain Node with no dependencies.
-2. **The desk** (`bin/desk.mjs`) draws the wider panel. It reads the branch's brief (`bin/brief.mjs`), finds the plan file in the session's conversation log, asks `git` for the diff and `gh` for the board's Todo issues. Its reviewer (`bin/reviewer.mjs`) runs the approach review through `claude -p` with a JSON schema for the findings, read-only tools, no MCP servers and no saved session, and keeps each branch's reviews in `.git/session-rail/reviews/`.
+2. **The desk** (`bin/desk.mjs`) draws the wider panel. It reads the branch's brief (`bin/brief.mjs`), finds the plan file in the session's conversation log, asks `git` for the diff and `gh` for the board's Todo issues. Its reviewer (`bin/reviewer.mjs`) runs the approach review through `claude -p` with a JSON schema for the findings, read-only tools, no MCP servers and no saved session, and keeps each branch's reviews in `.git/session-rail/reviews/`. Claude runs the same reviewer through its CLI (`node bin/reviewer.mjs --run [--final] [--notes …]`), which the plugin's `review_approach` tool calls. `bin/cadence.mjs` holds the rules: finding statuses, what's open, and when a commit or merge must wait.
 3. **The pane opener** (`bin/pane.mjs`) uses iTerm2's AppleScript support to fill the screen, split Claude's pane, run each panel (desk next to Claude, rail on the far right), size them in one pass, and hand focus back to Claude. The rail also uses it to bring another session's window to the front and to open the window for a new session.
-4. **The plugin** (`hooks/register.ts`) keeps a live record of what the session is doing (`hooks/activity.ts`: turns, every tool call, subagents, the brief gate) in `~/.claude/session-rail/activity/<session id>.json`, which the rail reads every second; the desk adds its running review beside it. It also opens both panels when a session starts, adds `/rail`, `/desk` and `/approve-brief`, and closes them when the session ends. On a feature branch it adds the brief's instructions to Claude's system prompt, refuses code edits until the brief is approved, watches for the approval (`hooks/goahead.ts`) to tell Claude to start, and compacts the session after a finished, merged branch (`hooks/compact.ts`). Settings shared by the rail and the hooks (font size, auto-compact) live in `~/.claude/session-rail/settings.json`.
+4. **The plugin** (`hooks/register.ts`) keeps a live record of what the session is doing (`hooks/activity.ts`: turns, every tool call, subagents, the brief gate) in `~/.claude/session-rail/activity/<session id>.json`, which the rail reads every second; the desk adds its running review beside it. It also opens both panels when a session starts, adds `/rail`, `/desk` and `/approve-brief`, and closes them when the session ends. On a feature branch it adds the brief's instructions to Claude's system prompt, refuses code edits until the brief is approved, watches for the approval (`hooks/goahead.ts`) to tell Claude to start, compacts the session after a finished, merged branch (`hooks/compact.ts`), serves `review_approach`, records each `/code-review` report in the branch's reviews, and refuses `git commit` and `gh pr merge` until the reviews are in. Settings shared by the rail and the hooks (font size, auto-compact) live in `~/.claude/session-rail/settings.json`.
 
 ## Good to know
 

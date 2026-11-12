@@ -6,11 +6,12 @@
 // Every export resolves (never throws); a failed review comes back as { error }.
 import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { execFile, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
+import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { briefCore } from './brief.mjs';
 import { KEEP_RUNS, STATUSES, applyChecks, openFindings, trackFindings } from './cadence.mjs';
-import { branchFiles, readBrief, reviewsPath } from './sources.mjs';
+import { branchFiles, readBrief, reviewsPath, run as exec } from './sources.mjs';
 
 export const KINDS = ['simpler', 'scope', 'cost', 'goal-gap', 'elegance'];
 export const VERDICTS = ['on-track', 'simpler-path', 'off-goal'];
@@ -150,9 +151,6 @@ export async function saveReviews(path, runs) {
 }
 
 // ── A review that's part of the cadence (bin/cadence.mjs) ─────────────────────
-const git = (cwd, args) => new Promise((resolve) =>
-  execFile('git', args, { cwd, timeout: 10_000 }, (e, out) => resolve(e ? null : String(out))));
-
 // Run an approach review of the branch in `cwd` and save it: the run records the commit it reviewed and
 // whether the tree was dirty, its findings start open, and its checks mark the earlier findings. `notes`
 // ([{ id, note }]) are Claude's replies to earlier findings it chose not to apply. The desk passes the brief
@@ -162,14 +160,14 @@ export async function reviewAndSave(cwd, { final = false, notes = [], brief, fil
   brief ??= await readBrief(cwd);
   if (!path || !brief?.text) return { error: 'This branch has no brief to review' };
   files ??= (await branchFiles(cwd)).files;
-  const [head, status] = await Promise.all([git(cwd, ['rev-parse', 'HEAD']), git(cwd, ['status', '--porcelain'])]);
+  const [head, status] = await Promise.all([exec('git', ['rev-parse', 'HEAD'], { cwd }), exec('git', ['status', '--porcelain'], { cwd })]);
   const replies = new Map((Array.isArray(notes) ? notes : []).filter((n) => n && typeof n.note === 'string').map((n) => [n.id, n.note]));
   const withReplies = (runs) => runs.map((r) => ({ ...r, findings: r.findings.map((f) => (replies.has(f.id) ? { ...f, reply: replies.get(f.id) } : f)) }));
   const earlier = openFindings(withReplies(await loadReviews(path))).approach;
   const run = await reviewApproach(cwd, { brief, files, earlier, final, signal });
   if (run.error === 'Review cancelled') return run;
   const { checks = [], ...rest } = run;
-  const saved = { ...rest, type: 'approach', final, head: head?.trim() ?? null, dirty: Boolean(status?.trim()),
+  const saved = { ...rest, type: 'approach', final, head: head?.trim() ?? null, dirty: status === null || Boolean(status.trim()), // unknown counts as dirty
     findings: run.error ? [] : trackFindings(run.findings, run.startedAt) };
   // Read the file again: the review took a while, and the hooks may have recorded a code review meanwhile.
   // A failed run is kept only as the newest, to say why; it never pushes real reviews out.
@@ -201,7 +199,9 @@ export function reviewText(result) {
 
 // node reviewer.mjs --run [--final] [--notes '[{"id":"…","note":"…"}]']: review the branch in the current
 // directory, save it, and print what Claude reads. Always exits 0.
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1] && process.argv.includes('--run')) {
+// realpath: Node resolves the main module's symlinks in import.meta.url but not in argv[1].
+const isMain = () => { try { return realpathSync(process.argv[1]) === fileURLToPath(import.meta.url); } catch { return false; } };
+if (process.argv[1] && process.argv.includes('--run') && isMain()) {
   const at = process.argv.indexOf('--notes');
   let notes = [];
   try { notes = at > 0 ? JSON.parse(process.argv[at + 1]) : []; } catch {}

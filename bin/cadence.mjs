@@ -83,12 +83,12 @@ export function gateReason(runs, { action, head }) {
 }
 
 // Which git action a shell command runs, if any: 'commit' for git commit, 'merge' for gh pr merge. Only a
-// command at the start of a segment counts (after ;, &&, ||, | or a newline), so a message that mentions
-// them doesn't.
+// command at the start of a segment counts (after ;, &, &&, ||, |, ( or a newline, past env assignments and
+// command/exec/env/time), so a message that mentions them doesn't. git commit-tree and commit-graph aren't commits.
 export function gatedAction(command) {
-  for (const seg of String(command ?? '').split(/&&|\|\||[;|\n]/)) {
-    const s = seg.trim().replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*/, '');
-    if (/^git\s+(?:(?:-[Cc]\s+\S+|--?[A-Za-z][\w-]*(?:=\S*)?)\s+)*commit\b/.test(s)) return 'commit';
+  for (const seg of String(command ?? '').split(/&&|\|\||[;|&\n]/)) {
+    const s = seg.trim().replace(/^(?:\(\s*|(?:command|exec|env|time)\s+|[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*/, '');
+    if (/^git\s+(?:(?:-[Cc]\s+\S+|--?[A-Za-z][\w-]*(?:=\S*)?)\s+)*commit(?![\w-])/.test(s)) return 'commit';
     if (/^gh\s+pr\s+merge\b/.test(s)) return 'merge';
   }
   return null;

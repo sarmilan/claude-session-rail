@@ -8,7 +8,7 @@ import { parseBrief, briefStatus, NO_BRIEF_BRANCHES } from './brief.mjs';
 const HOME = homedir();
 const CLAUDE = join(HOME, '.claude');
 
-const run = (cmd, args, { cwd, timeout = 10_000 } = {}) =>
+export const run = (cmd, args, { cwd, timeout = 10_000 } = {}) =>
   new Promise((resolve) => {
     execFile(cmd, args, { cwd, timeout, maxBuffer: 4 << 20 }, (err, stdout) =>
       resolve(err ? null : stdout.toString()));
