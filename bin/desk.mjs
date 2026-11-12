@@ -394,8 +394,8 @@ function reviewLines(w) {
   if (fail) { for (const l of wrapRuns([{ t: `✗ The last review failed: ${clean(fail.error)}`, s: 'text' }], w)) push(fg(C.red, l)); push(''); }
   if (!run && !code && !fail) {
     const text = data.brief?.text
-      ? 'No reviews yet. Before each chunk\'s commit Claude runs the approach review (the brief and its finished chunks, judged by a staff engineer) and /code-review, and applies every finding; a final pair runs before the merge. Run review checks the approach now (a minute or so).'
-      : 'Reviews follow the branch\'s brief: an approach review and a code review before each chunk\'s commit, and a final pair before the merge. This branch has no brief yet.';
+      ? 'No reviews yet. Claude runs the approach review (the brief and its finished chunks, judged by a staff engineer) on the plan and after each chunk, and /code-review over the whole branch before the merge. Run review checks the approach now (under a minute).'
+      : 'Reviews follow the branch\'s brief: an approach review on the plan and after each chunk, and a code review of the whole branch before the merge. This branch has no brief yet.';
     for (const l of wrapRuns([{ t: text, s: 'text' }], w)) push(dim(l));
   }
 

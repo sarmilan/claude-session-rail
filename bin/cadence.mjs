@@ -1,15 +1,15 @@
-// The review cadence: before each chunk's commit an approach review (reviewer.mjs) and a code review
-// (/code-review, recorded from its final JSON block) run and every finding gets applied; before a merge
-// both run again over the whole branch. This module owns the rules over a branch's review record
-// (reviewer.mjs's store): finding statuses, what's still open, and why a commit or merge must wait.
-// Pure, no Node APIs: shared by the hooks, the reviewer and the desk.
+// The review cadence: an approach review (reviewer.mjs) when the brief is complete and after each chunk, and
+// before a merge a code review of the whole branch (/code-review, recorded from its final JSON block) followed
+// by a final approach review that also judges what the code review's fixer did. This module owns the rules over
+// a branch's review record (reviewer.mjs's store): finding statuses, what's still open, and why a merge must
+// wait. Pure, no Node APIs: shared by the hooks, the reviewer and the desk.
 //
-// A run: { type: 'approach' | 'code', startedAt, finishedAt, head, dirty, tree?, final?, verdict, summary, error?, findings }.
-// `head` is the commit it reviewed, `dirty` whether there were uncommitted changes and `tree` (a code run's) a
-// fingerprint of the working tree it saw. Runs from before the
+// A run: { type: 'approach' | 'code', startedAt, finishedAt, head, dirty, final?, verdict, summary, error?, findings }.
+// `head` is the commit it reviewed and `dirty` whether there were uncommitted changes. Runs from before the
 // cadence have no type (an approach review) and no head.
-// A finding: { id, kind, title, detail, severity, chunk?, file?, line?, status, outcome?, checked?, note? }, `status` one of
-// open, applied, declined; a code finding's `outcome` is its fixer's verdict and `checked` says an approach review judged it. Findings from before the cadence have no status and are left out of every count.
+// A finding: { id, kind, title, detail, severity, chunk?, file?, line?, status, outcome?, checked?, note? }, `status`
+// one of open, applied, declined; a code finding's `outcome` is its fixer's verdict and `checked` says an approach
+// review judged it. Findings from before the cadence have no status and are left out of every count.
 
 export const STATUSES = ['open', 'applied', 'declined'];
 // The record's file (the same place as sources.reviewsPath) and how many runs it keeps.
@@ -39,8 +39,7 @@ export function codeFindings(runs) {
 // A /code-review report ({ findings } in ReportFindings' shape, from reportFromText) as a code run. fixed → applied; no_change_needed or skipped → declined (the fixer's
 // call is trusted: a skip is usually a false positive); no outcome (the first report, before fixing) → open.
 // The outcome is kept, so the desk can tell a skip from no change needed.
-/** @param {unknown} report @param {{ head: string | null, dirty: boolean, at: number, tree?: string | null }} state */
-export function codeRun(report, { head, dirty, at, tree }) {
+export function codeRun(report, { head, dirty, at }) {
   const list = Array.isArray(report?.findings) ? report.findings : [];
   const findings = list.filter((f) => f && typeof f.summary === 'string').map((f, i) => {
     const status = f.outcome === 'fixed' ? 'applied' : f.outcome === 'no_change_needed' || f.outcome === 'skipped' ? 'declined' : 'open';
@@ -52,7 +51,7 @@ export function codeRun(report, { head, dirty, at, tree }) {
     };
   });
   const open = findings.filter((f) => f.status === 'open').length;
-  return { type: 'code', startedAt: at, finishedAt: at, head, dirty, tree: tree ?? null, findings,
+  return { type: 'code', startedAt: at, finishedAt: at, head, dirty, findings,
     verdict: open ? 'open-findings' : 'clean',
     summary: findings.length ? `${findings.length} finding${findings.length === 1 ? '' : 's'}, ${open} open` : 'No findings' };
 }
@@ -97,41 +96,41 @@ export function applyChecks(runs, checks) {
   }) }));
 }
 
-// Why a commit or a merge must wait, or null. `head` is the branch's current commit, `tree` a fingerprint of
-// the working tree: the code review must have seen the code as it is now, so a change made after it (applying
-// an approach finding, say) needs another /code-review. A run or a call without a tree isn't held to it. A commit needs both
-// reviews since the last commit; a merge needs both after the last commit with nothing uncommitted (so they
-// covered the whole branch as it will merge). Either way nothing may be open.
-/** @param {{ action: 'commit' | 'merge', head: string, tree?: string | null }} state */
-export function gateReason(runs, { action, head, tree }) {
-  // A merge counts only an approach review asked for as final (the whole branch, as finished).
-  const ok = runs.filter((r) => !r.error && r.head === head
-    && (action === 'commit' || (r.dirty === false && (runType(r) === 'code' || r.final === true))));
-  const since = action === 'commit' ? 'since the last commit' : 'after the last commit with nothing uncommitted';
+// Why a merge must wait, or null. `head` is the branch's current commit. The final approach review must have
+// run after the last commit with nothing uncommitted, so it saw the branch as it will merge; it judges whether
+// the code review's fixes landed, so the code review only has to come after the chunks' approach reviews and
+// before that final one (its fixes are committed in between). Nothing may be open, and the fixer's verdicts
+// must have been judged. Commits aren't gated: the merge is what ships.
+/** @param {{ head: string }} state */
+export function gateReason(runs, { head }) {
+  const done = runs.filter((r) => !r.error);
+  const final = done.find((r) => runType(r) === 'approach' && r.final === true && r.head === head && r.dirty === false);
+  const code = done.find((r) => runType(r) === 'code');
+  const lastChunkReview = done.find((r) => runType(r) === 'approach' && r.final !== true);
   const missing = [];
-  if (!ok.some((r) => runType(r) === 'approach')) missing.push(`The approach review hasn't run ${since}: call review_approach${action === 'merge' ? ' with final: true' : ''}.`);
-  // The newest code review must be the one that counts, so a later one with open findings isn't hidden.
-  const code = runs.find((r) => !r.error && runType(r) === 'code');
-  if (!code || !ok.includes(code)) missing.push(`/code-review hasn't run ${since}: run /code-review --fix${action === 'merge' ? ' over the whole branch' : ''}.`);
-  else if (tree && code.tree && code.tree !== tree) missing.push(`The code changed after the last /code-review: run /code-review --fix${action === 'merge' ? ' over the whole branch' : ''} again, then review_approach to check its findings.`);
+  if (!code || (lastChunkReview && code.startedAt < lastChunkReview.startedAt))
+    missing.push("/code-review hasn't run over the whole branch since the last chunk's review: run /code-review --fix against the default branch, and commit its fixes.");
+  else if (!final || final.startedAt < code.startedAt)
+    missing.push("The final approach review hasn't run after the code review, on the last commit with nothing uncommitted: commit any fixes, then call review_approach with final: true.");
   const open = openFindings(runs);
   const titles = (l) => l.slice(0, 3).map((f) => `"${f.title}"`).join(', ') + (l.length > 3 ? ` and ${l.length - 3} more` : '');
-  if (open.approach.length) missing.push(`The approach review has ${open.approach.length} open finding${open.approach.length === 1 ? '' : 's'} (${titles(open.approach)}): apply them, or say why not in notes, and call review_approach again so it checks them.`);
-  if (open.code.length) missing.push(`/code-review has ${open.code.length} open finding${open.code.length === 1 ? '' : 's'} (${titles(open.code)}): fix them and run /code-review --fix again; for one that shouldn't be fixed, give your reason in review_approach's notes.`);
+  if (open.approach.length) missing.push(`The approach review has ${open.approach.length} open finding${open.approach.length === 1 ? '' : 's'} (${titles(open.approach)}).`);
+  if (open.code.length) missing.push(`/code-review has ${open.code.length} open finding${open.code.length === 1 ? '' : 's'} (${titles(open.code)}).`);
   const unchecked = uncheckedFixes(runs);
-  if (unchecked.length) missing.push(`The approach review hasn't checked what /code-review's fixer did about ${unchecked.length} finding${unchecked.length === 1 ? '' : 's'} (${titles(unchecked)}): call review_approach again.`);
+  if (unchecked.length) missing.push(`The approach review hasn't checked what /code-review's fixer did about ${unchecked.length} finding${unchecked.length === 1 ? '' : 's'} (${titles(unchecked)}): call review_approach with final: true again.`);
   if (!missing.length) return null;
-  return `session-rail: ${action === 'commit' ? 'commit after the reviews' : 'merge after a final review of the whole branch'}. ${missing.join(' ')}`;
+  const capped = open.approach.length || open.code.length
+    ? " Apply open findings, commit, and call review_approach with final: true to check them (or give your reason in its notes), at most two rounds; after that, list what is still open in the PR and ask the person instead of looping." : '';
+  return `session-rail: merge after a final review of the whole branch. ${missing.join(' ')}${capped}`;
 }
 
-// Which git action a shell command runs, if any: 'commit' for git commit, 'merge' for gh pr merge. Only a
-// command at the start of a segment counts (after ;, &, &&, ||, |, ( or a newline, past env assignments and
-// command/exec/env/time), so a message that mentions them doesn't. git commit-tree and commit-graph aren't commits.
-export function gatedAction(command) {
+// Whether a shell command merges a pull request (gh pr merge). Only a command at the start of a segment counts
+// (after ;, &, &&, ||, |, ( or a newline, past env assignments and command/exec/env/time), so a message that
+// mentions it doesn't.
+export function mergesPr(command) {
   for (const seg of String(command ?? '').split(/&&|\|\||[;|&\n]/)) {
     const s = seg.trim().replace(/^(?:\(\s*|(?:command|exec|env|time)\s+|[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*/, '');
-    if (/^git\s+(?:(?:-[Cc]\s+\S+|--?[A-Za-z][\w-]*(?:=\S*)?)\s+)*commit(?![\w-])/.test(s)) return 'commit';
-    if (/^gh\s+pr\s+merge\b/.test(s)) return 'merge';
+    if (/^gh\s+pr\s+merge\b/.test(s)) return true;
   }
-  return null;
+  return false;
 }

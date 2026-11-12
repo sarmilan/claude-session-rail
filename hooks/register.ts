@@ -3,7 +3,7 @@ import { approvalRecord, briefFile, briefStatus, NO_BRIEF_BRANCHES, parseBrief }
 import * as act from './activity.ts'
 import { goAhead } from './goahead.ts'
 import * as compact from './compact.ts'
-import { codeRun, gateReason as reviewWait, gatedAction, KEEP_RUNS, reportFromText, reviewsFile, runType } from '../bin/cadence.mjs'
+import { codeRun, gateReason as reviewWait, KEEP_RUNS, mergesPr, reportFromText, reviewsFile } from '../bin/cadence.mjs'
 
 // The controller (bin/pane.mjs) does the iTerm work; this module only decides when to call it.
 // It runs through sh so the user's PATH finds `node`; the script path is passed as an argument,
@@ -96,7 +96,7 @@ Work the brief out with the person before editing any code. Don't wait to be ask
 
 ${BRIEF_SHAPE}
 
-Keep the solution and the outline the simplest way to reach the goal. Edit, Write and NotebookEdit calls on any other file are refused until the brief has a problem, a solution and at least one chunk, and the person has approved it. When it's complete, ask them to review it and press Approve in the desk's Plan tab. Never approve it yourself or write its approval file.
+Keep the solution and the outline the simplest way to reach the goal. Edit, Write and NotebookEdit calls on any other file are refused until the brief has a problem, a solution and at least one chunk, and the person has approved it. When it's complete, call the review_approach tool on it (a plan review: the cheapest time to change course), work its findings into the brief, then ask them to review it and press Approve in the desk's Plan tab. Never approve it yourself or write its approval file.
 
 While you work, keep the brief current: if the problem, the solution or the outline changes, update the brief right away.
 
@@ -105,16 +105,13 @@ Work through the chunks in order. When you finish one:
 2. When it's satisfactory, add two lines under the chunk's outline:
 Done: <a short happy-path summary: what changed and how it works end to end>
 Files: <comma-separated paths relative to the repo root>
-3. Review it before committing, and apply every finding:
-   a. Run /code-review --fix on the chunk's changes.
-   b. Call the review_approach tool. Besides the approach, it checks what /code-review's fixer did: that fixes landed, and whether each skip or "no change" is sound, reopening one that isn't. Apply each finding it raises or reopens and update the brief to match; if one shouldn't be applied, pass your reason in its notes. Call it again until it says nothing is open.
-   c. If applying those findings changed code, run /code-review --fix again and then review_approach, until a /code-review has seen the code as it is and nothing is open.
-   The plugin refuses git commit until both reviews have run since the last commit, the last /code-review saw the code as it is now, and nothing is open.
-4. Commit the chunk on its own: one commit per chunk, its message naming the chunk.
-5. Push the branch. After the first chunk's commit, also open a pull request for the branch, titled after the brief, with its Problem and Solution as the description and a Progress checklist of the chunks; tick each chunk as it lands, noting its reviews (for example "reviews: 3 findings, all applied"). Later pushes update it.
-6. Move straight on to the next chunk without waiting for the person, unless something needs their decision.
+3. Call the review_approach tool. Apply each finding and update the brief to match; if one shouldn't be applied, pass your reason in its notes. Call it once more to check them, at most two rounds; if something is still open after that, say so to the person.
+4. Run what the chunk built once for real (the command, the UI frame, the hook in a live session), not only its tests, and fix what that shows.
+5. Commit the chunk on its own: one commit per chunk, its message naming the chunk.
+6. Push the branch. After the first chunk's commit, also open a pull request for the branch, titled after the brief, with its Problem and Solution as the description and a Progress checklist of the chunks; tick each chunk as it lands, noting its approach review (for example "review: 2 findings, applied"). Later pushes update it.
+7. Move straight on to the next chunk without waiting for the person, unless something needs their decision.
 
-Before merging, which waits for the person to say so: run /code-review --fix over the whole branch (against the default branch) and then call review_approach with final: true, apply what they find, commit and push any fixes, and run both again until nothing is open. The plugin refuses gh pr merge until both have run after the last commit with nothing uncommitted.
+Before merging, which waits for the person to say so: run /code-review --fix over the whole branch (against the default branch) and commit and push its fixes. Then call review_approach with final: true: it also checks what the code review's fixer did (that fixes landed, and whether each skip or "no change" is sound). Apply what it finds, commit and push, and call it with final: true once more to check them: at most two rounds. If something is still open after that, list it in the PR and ask the person instead of looping. The plugin refuses gh pr merge until the code review has run since the last chunk's review, the final approach review has run after it on the last commit with nothing uncommitted, and nothing is open.
 
 At the end of the session, check the work against the brief's Problem and Solution.`
 
@@ -140,9 +137,9 @@ const gate = async ($: EngineInterface, tool: string, file: string) => {
 }
 
 // ── The review cadence (bin/cadence.mjs) ──────────────────────────────────────
-// On a branch with an approved brief, `git commit` waits for an approach review and a code review since the
-// last commit with nothing open, and `gh pr merge` for both after the last commit on a clean tree. The code
-// review is recorded from /code-review's final JSON block. A failure in the gate lets the command through.
+// On a branch with an approved brief, `gh pr merge` waits for a code review of the whole branch and a final
+// approach review, both after the last commit on a clean tree, with nothing open. Commits aren't gated. The
+// code review is recorded from /code-review's final JSON block. A failure in the gate lets the command through.
 type Run = Record<string, unknown> & { findings: unknown[] }
 const readRuns = async ($: EngineInterface, path: string): Promise<Run[]> => {
   try {
@@ -162,38 +159,23 @@ const isDirty = async ($: EngineInterface, cwd: string) => {
   const st = await $.process.run(['git', '-C', cwd, 'status', '--porcelain'], { timeoutMs: 10_000 })
   return st.exitCode !== 0 || st.stdout.trim() !== ''
 }
-// A fingerprint of the working tree (tracked and untracked, not ignored), or null: the tree `git add -A` would
-// write, built in a copy of the index so staging a file (or not) doesn't change it and the real index is untouched.
-const treeHash = async ($: EngineInterface, cwd: string) => {
-  const r = await $.process.run(
-    ['/bin/sh', '-c', 'i="$(git rev-parse --git-path index)" && t="$i.session-rail.$$" && { cp "$i" "$t" 2>/dev/null; GIT_INDEX_FILE="$t" git add -A && GIT_INDEX_FILE="$t" git write-tree; r=$?; rm -f "$t"; exit $r; }'],
-    { cwd, timeoutMs: 15_000 },
-  )
-  return r.exitCode === 0 && r.stdout.trim() ? r.stdout.trim() : null
-}
 // The branch's review record, beside its brief.
 const runsPath = (b: Brief) => reviewsFile(b.common, b.branch)
 // Without the tool (the engine refused it) Claude can't satisfy the gate, so it stands aside.
 let reviewToolReady = false
 const reviewGate = async ($: EngineInterface, command: string) => {
-  const action = gatedAction(command)
-  if (!action || !reviewToolReady) return null
+  if (!mergesPr(command) || !reviewToolReady) return null
   const b = await readBrief($)
   if (!b?.approval?.approvedAt) return null
-  const cwd = await $.session.cwd()
-  const [commit, runs] = await Promise.all([headCommit($, cwd), readRuns($, runsPath(b))])
-  if (!commit) return null
-  // Hashing the tree reads every file, so only when the newest code review has a fingerprint to compare.
-  const code = runs.find(r => !r.error && runType(r) === 'code')
-  const tree = code?.tree ? await treeHash($, cwd).catch(() => null) : null
-  return reviewWait(runs, { action, head: commit, tree })
+  const [commit, runs] = await Promise.all([headCommit($, await $.session.cwd()), readRuns($, runsPath(b))])
+  return commit ? reviewWait(runs, { head: commit }) : null
 }
 const recordCodeReview = async ($: EngineInterface, report: unknown) => {
   const b = await readBrief($)
   if (!b) return
   const cwd = await $.session.cwd()
-  const [commit, dirty, tree, earlier] = await Promise.all([headCommit($, cwd), isDirty($, cwd), treeHash($, cwd).catch(() => null), readRuns($, runsPath(b))])
-  const runs = [codeRun(report, { head: commit, dirty, tree, at: Date.now() }), ...earlier]
+  const [commit, dirty, earlier] = await Promise.all([headCommit($, cwd), isDirty($, cwd), readRuns($, runsPath(b))])
+  const runs = [codeRun(report, { head: commit, dirty, at: Date.now() }), ...earlier]
   // Written beside it and renamed over it, so the desk never reads half a file.
   const tmp = `${runsPath(b)}.${Date.now()}.tmp`
   await $.fs.write(tmp, JSON.stringify({ runs: runs.slice(0, KEEP_RUNS) }, null, 1))
@@ -233,7 +215,7 @@ const finishCodeReview = async ($: EngineInterface, answer: string) => {
 const REVIEW_TOOL = {
   name: 'review_approach',
   description:
-    "Runs the session-rail approach review: a staff engineer checks this branch's brief, its finished chunks and the changed files for a simpler, cheaper or more complete way to the goal, checks whether the earlier findings were applied, and checks what /code-review's fixer did about its findings. Call it before each chunk's commit, after the chunk's Done line and /code-review --fix, and again after applying its findings until nothing is open; call it with final: true before merging. Takes a minute or two.",
+    "Runs the session-rail approach review: a staff engineer checks this branch's brief, its finished chunks and the changed files for a simpler, cheaper or more complete way to the goal, checks whether the earlier findings were applied, and checks what /code-review's fixer did about its findings. Call it on the brief once it's complete (before asking for approval), after each chunk's Done line, and once more to check applied findings (at most two rounds); call it with final: true before merging, after /code-review --fix over the whole branch and its fixes are committed. Takes under a minute.",
   inputSchema: {
     type: 'object',
     properties: {
