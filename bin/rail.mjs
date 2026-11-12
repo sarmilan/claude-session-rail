@@ -38,7 +38,8 @@ const loaders = {
   async env() { data.env = await src.environment(cwd); },
   async sessions() { data.overview = await src.sessionsOverview(data.agents, data.current?.pid); },
   async account() { [data.account, data.usage] = await Promise.all([src.account(), src.usage()]); },
-  async prs() { data.prs = await src.prs(cwd); },
+  // The PRs and worktree cards only show on Git: off it, load them once and leave them (setTab refreshes on arrival).
+  async prs() { if (ui.tab !== 'git' && data.prs) return; data.prs = await src.prs(cwd); },
   async worktrees() { if (ui.tab !== 'git' && data.worktrees) return; data.worktrees = { ...(await src.worktrees(cwd)), at: Date.now() }; },
   async connectors() { data.connectors = await src.connectors(); },
 };
@@ -99,7 +100,7 @@ const setTab = (t) => {
   tabSwitched = true;
   showTab(t);
   saveTab(data.current?.sessionId);
-  // The worktree cards and PR checks refresh every 60s (the cards only on Git); arriving on Git brings them up to date (through the runner, so it
+  // The worktree cards and PR checks refresh every 60s, only on Git; arriving on Git brings them up to date (through the runner, so it
   // can't overlap a scheduled load).
   if (t === 'git' && !isFrame) { runners.worktrees(); runners.prs(); }
 };
