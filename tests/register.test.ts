@@ -69,3 +69,12 @@ test('session end closes both panels, but /clear keeps them', async ($, on) => {
   await $.session.end({ reason: 'prompt_input_exit', sessionId: 'a' })
   expect(calls).toEqual(['pane.mjs close rail', 'pane.mjs close desk'])
 })
+
+test('/start runs once per session, even when session.start runs again after a reload', async ($, on) => {
+  const calls = harness(on, 'opened', ['help', 'start'])
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await new Promise(r => setTimeout(r, 10))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await new Promise(r => setTimeout(r, 10))
+  expect(calls.filter(c => c === '/start').length).toBe(1)
+})
