@@ -21,7 +21,7 @@ const pinnedPid = Number(flag('--pid')) || null; // the Claude process this rail
 const taskIndex = new src.TaskIndex();
 
 // ── Data ───────────────────────────────────────────────────────────────────────
-const data = { env: null, account: null, usage: [], agents: [], overview: null, current: null, stats: null, connectors: null, prs: null, activity: null,
+const data = { env: null, account: null, usage: [], agents: [], overview: null, current: null, stats: null, connectors: null, prs: null, worktrees: null, activity: null,
   tasks: { running: [], finished: 0, done: [] } };
 
 const loaders = {
@@ -39,6 +39,7 @@ const loaders = {
   async sessions() { data.overview = await src.sessionsOverview(data.agents, data.current?.pid); },
   async account() { [data.account, data.usage] = await Promise.all([src.account(), src.usage()]); },
   async prs() { data.prs = await src.prs(cwd); },
+  async worktrees() { data.worktrees = await src.worktrees(cwd); },
   async connectors() { data.connectors = await src.connectors(); },
 };
 
@@ -98,6 +99,9 @@ const setTab = (t) => {
   if (t === ui.tab) return;
   showTab(t);
   saveTab(data.current?.sessionId);
+  // The worktree cards refresh every 60s; arriving on Git brings them up to date (through the runner, so it
+  // can't overlap a scheduled load).
+  if (t === 'git' && !isFrame) runners.worktrees();
 };
 const stepTab = (d) => setTab(TABS[(TABS.indexOf(ui.tab) + TABS.length + d) % TABS.length]);
 const otherTab = () => stepTab(1);
@@ -642,7 +646,7 @@ const refresh = (name) => {
   let busy = false;
   return async () => { if (busy) return; busy = true; try { await loaders[name](); } catch {} busy = false; draw(); };
 };
-const schedule = { fast: 1000, sessions: 3000, env: 5000, account: 5000, prs: 60_000, connectors: 300_000 };
+const schedule = { fast: 1000, sessions: 3000, env: 5000, account: 5000, prs: 60_000, worktrees: 60_000, connectors: 300_000 };
 const runners = Object.fromEntries(Object.keys(schedule).map((k) => [k, refresh(k)]));
 for (const [k, ms] of Object.entries(schedule)) { runners[k](); setInterval(runners[k], ms); }
 setInterval(() => { ui.tick++; draw(); }, 1000);
