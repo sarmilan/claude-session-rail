@@ -20,7 +20,7 @@ const pinnedPid = Number(flag('--pid')) || null; // the Claude process this rail
 const taskIndex = new src.TaskIndex();
 
 // ── Data ───────────────────────────────────────────────────────────────────────
-const data = { env: null, account: null, usage: [], agents: [], current: null, stats: null, connectors: null, prs: null,
+const data = { env: null, account: null, usage: [], agents: [], current: null, stats: null, connectors: null, prs: null, activity: null,
   tasks: { running: [], finished: 0, done: [] } };
 
 const loaders = {
@@ -31,6 +31,7 @@ const loaders = {
     await taskIndex.update(files.transcriptPath);
     data.stats = taskIndex.context();
     data.tasks = files.tasksDir ? await taskIndex.list(files.tasksDir) : { running: [], finished: 0, done: [] };
+    data.activity = await src.activity(data.current?.sessionId);
   },
   async env() { data.env = await src.environment(cwd); },
   async account() { [data.account, data.usage] = await Promise.all([src.account(), src.usage()]); },
@@ -67,7 +68,7 @@ const bar = (pct, n = 8) => {
 };
 
 // ── Actions ────────────────────────────────────────────────────────────────────
-const ui = { sel: null, open: { environment: true, context: false, connectors: false, more: false, settings: false }, scroll: 0, tick: 0,
+const ui = { sel: null, open: { environment: true, context: false, connectors: false, more: false, settings: false, others: false }, scroll: 0, tick: 0,
   overlay: null, toast: null };
 // Inline images only in a live iTerm2 pane; --frame output (and other terminals) get text octants.
 const iterm = process.env.TERM_PROGRAM === 'iTerm.app' || process.env.LC_TERMINAL === 'iTerm2';
@@ -288,31 +289,71 @@ function buildMain(W) {
   }
   rule();
 
-  // Background tasks
-  heading('Background tasks');
-  const { running, finished } = data.tasks;
-  if (!running.length && !finished) line(dim(data.current ? 'None yet' : 'No Claude session in this folder'));
-  for (const t of running) {
-    pair(`${t.kind === 'agent' ? '◆' : '◇'} ${t.label}`, `${ago(t.startedAt)}  ■`, item(`task:${t.id}`, () => viewLog(t)),
-      { leftStyle: (s) => fg(C.accent, s[0]) + s.slice(1), rightStyle: (s) => dim(s.slice(0, -1)) + s.slice(-1) });
+  // Now: who is doing what this second (hooks/activity.ts's feed, the desk's run, the session's background tasks)
+  heading('Now');
+  const act = data.activity, { running: tasks, finished } = data.tasks;
+  if (!data.current) line(dim('No Claude session in this folder'));
+  else {
+    const spin = (on) => (on ? fg(C.accent, ui.tick % 2 ? '●' : '◉') : dim('○'));
+    const rel = (p) => (p && p.startsWith(cwd + '/') ? p.slice(cwd.length + 1) : p ?? '');
+    const model = (m) => (m ?? '').replace(/^claude-/, '').replace(/-\d{8}$/, '');
+    // Claude itself, from the feed when there is one, else from the session's own status.
+    // Claude's own call in flight, leaving out Agent calls: those are its subagents, shown under it.
+    const main = act?.running?.filter((c) => !c.agent && c.tool !== 'Agent').at(-1);
+    const waitingOn = (act?.running ?? []).filter((c) => !c.agent && c.tool === 'Agent').length;
+    const [state, since, busy] = !act?.claude
+      ? [data.current.status === 'busy' ? 'working' : 'waiting for you', data.current.statusSince, data.current.status === 'busy']
+      : act.claude.state === 'waiting' ? ['waiting for you', act.claude.since, false]
+      : main ? [`${main.tool} ${clean(rel(main.arg))}`, main.since, true]
+      : waitingOn ? [`waiting on ${waitingOn} subagent${waitingOn === 1 ? '' : 's'}`, act.claude.since, true]
+      : [`thinking${act.claude.model ? ` · ${model(act.claude.model)}` : ''}`, act.claude.since, true];
+    const actor = (mark, name, what, at, opts = {}) => {
+      const right = at ? ago(at) : '', l = trunc(name ? `${name}  ${what}` : what, inner - width(mark) - 1 - (right ? width(right) + 1 : 0));
+      const gap = Math.max(right ? 1 : 0, inner - width(mark) - 1 - width(l) - width(right));
+      line(`${mark} ${bold(l.slice(0, name.length))}${l.slice(name.length)}${' '.repeat(gap)}${dim(right)}`, opts.id);
+    };
+    actor(spin(busy), 'Claude', state, since);
+    // Under Claude: subagents (its Agent calls, with what one is doing when only one runs) and background tasks.
+    const agents = (act?.running ?? []).filter((c) => !c.agent && c.tool === 'Agent');
+    const inside = (act?.running ?? []).filter((c) => c.agent).at(-1);
+    const kids = [
+      ...agents.map((c) => ({ mark: fg(C.accent, '◆'), what: clean(c.arg) + (agents.length === 1 && inside ? ` · ${inside.tool} ${clean(rel(inside.arg))}` : ''), at: c.since })),
+      ...tasks.map((t) => ({ mark: fg(C.accent, t.kind === 'agent' ? '◆' : '◇'), what: t.label, at: t.startedAt, id: item(`task:${t.id}`, () => viewLog(t)) })),
+    ];
+    kids.forEach((k, i) => actor(dim(i === kids.length - 1 ? '  └' : '  ├') + ' ' + k.mark, '', k.what, k.at, { id: k.id }));
+    if (act?.desk) actor(spin(true), 'Desk', act.desk.kind ?? 'running', act.desk.startedAt);
+    // The gate's refusal, while it's recent.
+    if (act?.gate && Date.now() - act.gate.at < 120_000) actor(fg(C.yellow, '⧗'), 'Gate', `held ${act.gate.tool} ${clean(rel(act.gate.file))}`, act.gate.at);
   }
-  if (finished) line(dim(`◇ ${finished} finished`), item('finished', finishedMenu));
   rule();
 
-  // Active agents
-  heading(`Active agents${data.agents.length ? dim(`  ${data.agents.length}`) : ''}`);
-  if (!data.agents.length) line(dim('No Claude sessions running'));
-  for (const a of data.agents) {
+  // Just now: the last finished calls, and the session's finished background tasks
+  const recent = (act?.recent ?? []).slice(0, 5);
+  if (recent.length || finished) {
+    heading('Just now');
+    const relp = (p) => (p && p.startsWith(cwd + '/') ? p.slice(cwd.length + 1) : p ?? '');
+    for (const r of recent) {
+      const right = ago(r.at), l = trunc(`${r.ok ? '✔' : '✗'} ${r.tool} ${clean(relp(r.arg))}`, inner - width(right) - 1);
+      line(fg(r.ok ? C.green : C.red, l[0]) + dim(l.slice(1)) + ' '.repeat(Math.max(1, inner - width(l) - width(right))) + dim(right));
+    }
+    if (finished) line(dim(`◇ ${finished} background task${finished === 1 ? '' : 's'} finished`), item('finished', finishedMenu));
+    rule();
+  }
+
+  // Other sessions: every other Claude on this Mac, folded into one row
+  const others = data.agents.filter((a) => a.pid !== data.current?.pid);
+  pair(`Other sessions ${caret(ui.open.others)}`, others.length ? String(others.length) : 'none',
+    item('others', () => { ui.open.others = !ui.open.others; }), { leftStyle: bold, rightStyle: dim });
+  if (ui.open.others) for (const a of others) {
     const id = item(`agent:${a.pid}`, () => agentMenu(a));
     const busy = a.status === 'busy';
     const dot = busy ? fg(C.accent, ui.tick % 2 ? '●' : '◉') : dim('○');
-    const isMe = a.pid === data.current?.pid;
     const surface = a.surface === 'desktop' ? 'app' : a.surface;
     const right = `${a.status}  ${surface}`;
     const l = trunc(a.name, inner - 2 - width(right) - 1);
     const gap = Math.max(1, inner - 2 - width(l) - width(right));
-    line(`${dot} ${isMe ? bold(l) : l}${' '.repeat(gap)}${busy ? fg(C.accent, a.status) : dim(a.status)}  ${dim(surface)}`, id);
-    pair(`  ${a.repo} · ${ago(a.statusSince)}${isMe ? ' · here' : ''}`, '', id, { leftStyle: dim });
+    line(`${dot} ${l}${' '.repeat(gap)}${busy ? fg(C.accent, a.status) : dim(a.status)}  ${dim(surface)}`, id);
+    pair(`  ${a.repo} · ${ago(a.statusSince)}`, '', id, { leftStyle: dim });
   }
   return { rows, items };
 }

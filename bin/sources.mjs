@@ -95,6 +95,18 @@ async function branchStore(cwd) {
 }
 export async function reviewsPath(cwd) { return (await branchStore(cwd))?.file('reviews', 'json') ?? null; }
 
+// ── Activity: what the session is doing right now (written by hooks/activity.ts and the desk) ─
+// null when the session has no feed yet (its hooks haven't loaded this plugin version). The desk's review
+// counts only while the desk that wrote it is alive.
+export async function activity(sessionId) {
+  if (!sessionId) return null;
+  const dir = join(CLAUDE, 'session-rail', 'activity');
+  const [feed, desk] = await Promise.all([readJson(join(dir, `${sessionId}.json`)), readJson(join(dir, `${sessionId}.desk.json`))]);
+  const review = desk?.review && desk.pid && alive(desk.pid) ? desk.review : null;
+  if (!feed?.claude) return review ? { claude: null, running: [], recent: [], desk: review } : null;
+  return { claude: feed.claude, running: feed.running ?? [], recent: feed.recent ?? [], gate: feed.gate ?? null, desk: review };
+}
+
 // ── Brief: the branch's goal, design and engineering chunks (see brief.mjs) ───
 export { parseBrief } from './brief.mjs';
 export async function readBrief(cwd) {
