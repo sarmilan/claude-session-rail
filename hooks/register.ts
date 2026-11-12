@@ -86,9 +86,16 @@ ${BRIEF_SHAPE}
 
 Keep the solution and the outline the simplest way to reach the goal. Edit, Write and NotebookEdit calls on any other file are refused until the brief has a problem, a solution and at least one chunk, and the person has approved it. When it's complete, ask them to review it and press Approve in the desk's Plan tab. Never approve it yourself or write its approval file.
 
-While you work, keep the brief current: if the problem, the solution or the outline changes, update the brief right away. When you finish a chunk, add two lines under its outline:
-Done: <one sentence: what changed and why>
+While you work, keep the brief current: if the problem, the solution or the outline changes, update the brief right away.
+
+Work through the chunks in order. When you finish one:
+1. Review it yourself against its outline and the brief's Problem and Solution: is it complete, is it the simplest way, and does it work (run the tests and checks)? Fix what falls short first. If the plan itself has to change, update the brief and say so.
+2. When it's satisfactory, add two lines under the chunk's outline:
+Done: <a short happy-path summary: what changed and how it works end to end>
 Files: <comma-separated paths relative to the repo root>
+3. Commit the chunk on its own: one commit per chunk, its message naming the chunk.
+4. Push the branch. After the first chunk's commit, also open a pull request for the branch, titled after the brief, with its Problem and Solution as the description; later pushes update it.
+5. Move straight on to the next chunk without waiting for the person, unless something needs their decision.
 
 At the end of the session, check the work against the brief's Problem and Solution.`
 

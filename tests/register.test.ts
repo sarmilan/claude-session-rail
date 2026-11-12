@@ -156,6 +156,8 @@ test('the system prompt explains the brief on a feature branch, not on main', as
   const { sections } = await $.prompt.compose(COMPOSE)
   const s = sections.find(x => x.id === 'session-rail-brief')
   expect(s?.text).toContain("Don't wait to be asked")
+  expect(s?.text).toContain('one commit per chunk')
+  expect(s?.text).toContain('Move straight on to the next chunk')
   expect(s?.scope).toBe('session')
 })
 
