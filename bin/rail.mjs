@@ -198,6 +198,19 @@ const fontMenu = () => {
   ui.overlay.font = true;
 };
 
+// Auto-compact (hooks/compact.ts reads the same file): on unless settings.json says autoCompact: false.
+const SETTINGS_FILE = join(homedir(), '.claude', 'session-rail', 'settings.json');
+const readSettings = () => { try { return JSON.parse(readFileSync(SETTINGS_FILE, 'utf8')) ?? {}; } catch { return {}; } };
+let autoCompact = readSettings().autoCompact !== false;
+const toggleAutoCompact = () => {
+  autoCompact = !autoCompact;
+  try {
+    mkdirSync(dirname(SETTINGS_FILE), { recursive: true });
+    writeFileSync(SETTINGS_FILE, JSON.stringify({ ...readSettings(), autoCompact }, null, 2));
+    toast(autoCompact ? 'Auto-compact on: after each merged branch' : 'Auto-compact off');
+  } catch { autoCompact = !autoCompact; toast("Couldn't save the setting"); }
+};
+
 const petMenu = () => menu('Pet', creatureNames.map((name, i) => ({
   label: name, hint: name === mascot.state.creature ? '✓' : '', run: () => saveCreature(mascot.pick(i)),
 })));
@@ -391,8 +404,13 @@ function buildMain(W) {
 
   // Just now: the last finished calls, and the session's finished background tasks
   const recent = (act?.recent ?? []).slice(0, 5);
-  if (recent.length || finished) {
+  const compacted = act?.compacted && Date.now() - act.compacted.at < 3600_000 ? act.compacted : null;
+  if (recent.length || finished || compacted) {
     heading('Just now');
+    if (compacted) {
+      const right = ago(compacted.at), l = trunc(`⟲ compacted after ${clean(compacted.after)}`, inner - width(right) - 1);
+      line(fg(C.accent, l) + ' '.repeat(Math.max(1, inner - width(l) - width(right))) + dim(right));
+    }
     const relp = (p) => (p && p.startsWith(cwd + '/') ? p.slice(cwd.length + 1) : p ?? '');
     for (const r of recent) {
       const right = ago(r.at), l = trunc(`${r.ok ? '✔' : '✗'} ${r.tool} ${clean(relp(r.arg))}`, inner - width(right) - 1);
@@ -453,6 +471,7 @@ function buildSettings() {
     const pt = font.size ?? font.base;
     rows.push({ id: 'font', activate: fontMenu, label: 'Aa Font size', value: pt ? `‹ ${pt}pt ›` : '—' });
     rows.push({ id: 'pet', activate: petMenu, label: '◐ Pet', value: `‹ ${mascot.state.creature} ›` });
+    rows.push({ id: 'compact', activate: toggleAutoCompact, label: '⟲ Auto-compact', value: `‹ ${autoCompact ? 'on' : 'off'} ›` });
   }
   const toggle = { id: 'settings', activate: () => { ui.open.settings = !ui.open.settings; }, label: '⚙ settings' };
   return { rows, toggle };
@@ -617,6 +636,7 @@ const handleKey = (k) => {
     if (ui.sel === 'font' && (k === '\x1b[C' || k === 'l')) return stepFont(1)();
     if (ui.sel === 'pet' && (k === '\x1b[D' || k === 'h')) return nextCreature(-1);
     if (ui.sel === 'pet' && (k === '\x1b[C' || k === 'l')) return nextCreature(1);
+    if (ui.sel === 'compact' && ['\x1b[D', 'h', '\x1b[C', 'l'].includes(k)) return toggleAutoCompact();
     const p = selectedPr();
     if (p && k === 'o') return launch('open', [p.url], `Opened #${p.number}`);
     if (p && k === 'y') return copy(p.url, `link to #${p.number}`);
