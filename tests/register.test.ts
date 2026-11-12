@@ -379,7 +379,7 @@ test('cadence: a code report maps outcomes to statuses, and only the newest code
   expect(fixed.findings.map(f => f.status)).toEqual(['applied', 'declined'])
   expect(cadence.openFindings([fixed, first]).code).toEqual([])
   expect(cadence.openFindings([first, fixed]).code.length).toBe(2)
-  expect(cadence.codeRun(report(['skipped']), { head: 'h', dirty: true, at: 7 }).findings[0]!.status).toBe('open')
+  expect(cadence.codeRun(report(['skipped']), { head: 'h', dirty: true, at: 7 }).findings[0]).toMatchObject({ status: 'declined', outcome: 'skipped' })
 })
 
 test('cadence: checks mark earlier findings; untracked findings never count', () => {
@@ -446,13 +446,59 @@ test('git commit is refused until both reviews ran since the last commit, then g
   expect(ran).toEqual([])
   await $.tool.call({ tool: 'Bash', command: 'git status' } as never)
   expect(ran).toEqual(['git status'])
-  // /code-review reports, then a clean approach review lands: the commit goes through.
-  await $.tool.call({ tool: 'ReportFindings', findings: [] } as never)
-  const saved = JSON.parse(files['/repo/.git/session-rail/reviews/feature%2Fx.json']!).runs
-  expect(saved[0]).toMatchObject({ type: 'code', head: 'h2', dirty: true, verdict: 'clean' })
-  files['/repo/.git/session-rail/reviews/feature%2Fx.json'] = JSON.stringify({ runs: [approachRun('h2', true), ...saved] })
+  // A clean code review and a clean approach review land: the commit goes through.
+  const code = cadence.codeRun(report([]), { head: 'h2', dirty: true, at: 9 })
+  files['/repo/.git/session-rail/reviews/feature%2Fx.json'] = JSON.stringify({ runs: [approachRun('h2', true), code] })
   await $.tool.call({ tool: 'Bash', command: 'git commit -m "chunk 1"' } as never)
   expect(ran).toContain('git commit -m "chunk 1"')
+})
+
+test('reportFromText takes the last JSON findings block', () => {
+  const text = 'Found:\n```json\n[{"summary":"a"}]\n```\nFixed:\n```json\n[{"summary":"a","outcome":"fixed"}]\n```\nDone.'
+  expect(cadence.reportFromText(text)).toEqual({ findings: [{ summary: 'a', outcome: 'fixed' }] })
+  expect(cadence.reportFromText('```json\n[]\n```')).toEqual({ findings: [] })
+  expect(cadence.reportFromText('```json\n{"x":1}\n```')).toBeNull()
+  expect(cadence.reportFromText('no block')).toBeNull()
+  // A fence quoted inside a finding's text doesn't end the block.
+  expect(cadence.reportFromText('```json\n[{"summary":"use ``` here","outcome":"fixed"}]\n```')).toEqual({ findings: [{ summary: 'use ``` here', outcome: 'fixed' }] })
+})
+
+test("/code-review's nested finders aren't its report, and a finding left without an outcome stays open", async ($, on) => {
+  const { files } = cadenceHarness(on)
+  on('skill.prompt', () => ({ text: 'Review the diff.' }))
+  on('turn.complete', () => ({ text: '' }))
+  on('agent.list', () => ({ value: [{ id: 'f1', description: '', type: 'fork', status: 'running' }, { id: 'n1', parentId: 'f1', description: '', type: 'Explore', status: 'completed' }] }))
+  await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
+  await $.skill.prompt({ skill: 'code-review', text: 'Review the diff.', frontmatter: {} } as never)
+  await $.turn.complete({ agentId: 'n1', answer: '```json\n[]\n```', durationMs: 1, isAborted: false, turnId: 'n', reason: 'answer' } as never)
+  expect(files['/repo/.git/session-rail/reviews/feature%2Fx.json']).toBe(JSON.stringify({ runs: [] }))
+  const answer = '```json\n[{"summary":"a","outcome":"fixed"},{"summary":"b"}]\n```'
+  await $.turn.complete({ agentId: 'f1', answer, durationMs: 1, isAborted: false, turnId: 'f', reason: 'answer' } as never)
+  const saved = JSON.parse(files['/repo/.git/session-rail/reviews/feature%2Fx.json']!).runs
+  expect(saved[0].findings.map((f: { status: string }) => f.status)).toEqual(['applied', 'open'])
+})
+
+test('/code-review on a gated branch asks for outcomes, and its forked answer is recorded', async ($, on) => {
+  const { files } = cadenceHarness(on)
+  on('skill.prompt', () => ({ text: 'Review the diff.' }))
+  on('turn.complete', () => ({ text: '' }))
+  await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
+  const other = await $.skill.prompt({ skill: 'simplify', text: 'Review the diff.', frontmatter: {} } as never)
+  expect(other.text).toBe('Review the diff.')
+  // An unrelated subagent's answer before /code-review is asked records nothing.
+  const answer = 'Fixed it.\n```json\n[{"summary":"off by one","outcome":"fixed"},{"summary":"docs","outcome":"skipped"}]\n```'
+  await $.turn.complete({ agentId: 'x', answer, durationMs: 1, isAborted: false, turnId: 't0', reason: 'answer' } as never)
+  expect(JSON.parse(files['/repo/.git/session-rail/reviews/feature%2Fx.json'] ?? '{"runs":[]}').runs).toEqual([])
+  const r = await $.skill.prompt({ skill: 'code-review', text: 'Review the diff.', frontmatter: {} } as never)
+  expect(r.text).toStartWith('Review the diff.')
+  expect(r.text).toContain('"outcome"')
+  // The first report, before fixing, has no outcomes: it waits for the one after --fix.
+  await $.turn.complete({ agentId: 'f1', answer: '```json\n[{"summary":"off by one"}]\n```', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' } as never)
+  expect(files['/repo/.git/session-rail/reviews/feature%2Fx.json']).toBe(JSON.stringify({ runs: [] }))
+  await $.turn.complete({ agentId: 'f1', answer, durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' } as never)
+  const saved = JSON.parse(files['/repo/.git/session-rail/reviews/feature%2Fx.json']!).runs
+  expect(saved[0]).toMatchObject({ type: 'code', head: 'h2', verdict: 'clean' })
+  expect(saved[0].findings.map((f: { status: string }) => f.status)).toEqual(['applied', 'declined'])
 })
 
 test('gh pr merge is refused after commit-time reviews alone', async ($, on) => {

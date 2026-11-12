@@ -1,5 +1,5 @@
 // The review cadence: before each chunk's commit an approach review (reviewer.mjs) and a code review
-// (/code-review, recorded from its ReportFindings call) run and every finding gets applied; before a merge
+// (/code-review, recorded from its final JSON block) run and every finding gets applied; before a merge
 // both run again over the whole branch. This module owns the rules over a branch's review record
 // (reviewer.mjs's store): finding statuses, what's still open, and why a commit or merge must wait.
 // Pure, no Node APIs: shared by the hooks, the reviewer and the desk.
@@ -28,23 +28,38 @@ export function openFindings(runs) {
   };
 }
 
-// A ReportFindings call as a code run. fixed → applied, no_change_needed → declined; skipped or no outcome
-// (the first report, before fixing) → open.
+// A /code-review report ({ findings } in ReportFindings' shape, from reportFromText) as a code run. fixed → applied; no_change_needed or skipped → declined (the fixer's
+// call is trusted: a skip is usually a false positive); no outcome (the first report, before fixing) → open.
+// The outcome is kept, so the desk can tell a skip from no change needed.
 export function codeRun(report, { head, dirty, at }) {
   const list = Array.isArray(report?.findings) ? report.findings : [];
   const findings = list.filter((f) => f && typeof f.summary === 'string').map((f, i) => {
-    const status = f.outcome === 'fixed' ? 'applied' : f.outcome === 'no_change_needed' ? 'declined' : 'open';
+    const status = f.outcome === 'fixed' ? 'applied' : f.outcome === 'no_change_needed' || f.outcome === 'skipped' ? 'declined' : 'open';
     return {
       id: `c${at.toString(36)}-${i}`, kind: typeof f.category === 'string' ? f.category : 'correctness',
       title: f.short_summary || f.summary, detail: [f.summary, f.failure_scenario].filter(Boolean).join(' '),
       severity: 'medium', file: typeof f.file === 'string' ? f.file : null, line: Number.isInteger(f.line) ? f.line : null,
-      status,
+      status, ...(typeof f.outcome === 'string' ? { outcome: f.outcome } : {}),
     };
   });
   const open = findings.filter((f) => f.status === 'open').length;
   return { type: 'code', startedAt: at, finishedAt: at, head, dirty, findings,
     verdict: open ? 'open-findings' : 'clean',
     summary: findings.length ? `${findings.length} finding${findings.length === 1 ? '' : 's'}, ${open} open` : 'No findings' };
+}
+
+// /code-review's report from its final text: the last ```json block holding a list of findings (each with a
+// summary), as { findings }, or null when there's none. Its findings carry `outcome` once --fix has applied them.
+export function reportFromText(text) {
+  // Fences open and close at a line's start, so a ``` inside a finding's text (JSON strings hold no newline) can't end one.
+  const blocks = [...String(text ?? '').matchAll(/^[ \t]*```json[^\n]*\n([\s\S]*?)^[ \t]*```/gm)].map((m) => m[1]);
+  for (const b of blocks.reverse()) {
+    try {
+      const list = JSON.parse(b);
+      if (Array.isArray(list) && list.every((f) => f && typeof f.summary === 'string')) return { findings: list };
+    } catch {}
+  }
+  return null;
 }
 
 // Ids for a new approach run's findings, open until a later review checks them.

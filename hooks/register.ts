@@ -3,7 +3,7 @@ import { approvalRecord, briefFile, briefStatus, NO_BRIEF_BRANCHES, parseBrief }
 import * as act from './activity.ts'
 import { goAhead } from './goahead.ts'
 import * as compact from './compact.ts'
-import { codeRun, gateReason as reviewWait, gatedAction, KEEP_RUNS, reviewsFile } from '../bin/cadence.mjs'
+import { codeRun, gateReason as reviewWait, gatedAction, KEEP_RUNS, reportFromText, reviewsFile } from '../bin/cadence.mjs'
 
 // The controller (bin/pane.mjs) does the iTerm work; this module only decides when to call it.
 // It runs through sh so the user's PATH finds `node`; the script path is passed as an argument,
@@ -107,7 +107,7 @@ Done: <a short happy-path summary: what changed and how it works end to end>
 Files: <comma-separated paths relative to the repo root>
 3. Review it before committing, and apply every finding:
    a. Call the review_approach tool. Apply each finding it raises and update the brief to match; if one shouldn't be applied, pass your reason in its notes. Call it again until it says nothing is open.
-   b. Run /code-review --fix on the chunk's changes, and fix anything it reports as still open.
+   b. Run /code-review --fix on the chunk's changes. A finding it skips counts as settled; if it leaves any open, fix them and run it again.
    The plugin refuses git commit until both reviews have run since the last commit with nothing open.
 4. Commit the chunk on its own: one commit per chunk, its message naming the chunk.
 5. Push the branch. After the first chunk's commit, also open a pull request for the branch, titled after the brief, with its Problem and Solution as the description and a Progress checklist of the chunks; tick each chunk as it lands, noting its reviews (for example "reviews: 3 findings, all applied"). Later pushes update it.
@@ -141,7 +141,7 @@ const gate = async ($: EngineInterface, tool: string, file: string) => {
 // ── The review cadence (bin/cadence.mjs) ──────────────────────────────────────
 // On a branch with an approved brief, `git commit` waits for an approach review and a code review since the
 // last commit with nothing open, and `gh pr merge` for both after the last commit on a clean tree. The code
-// review is recorded from ReportFindings calls (/code-review's, in its forked agent). A failure in the gate lets the command through.
+// review is recorded from /code-review's final JSON block. A failure in the gate lets the command through.
 type Run = Record<string, unknown> & { findings: unknown[] }
 const readRuns = async ($: EngineInterface, path: string): Promise<Run[]> => {
   try {
@@ -183,6 +183,25 @@ const recordCodeReview = async ($: EngineInterface, report: unknown) => {
   const tmp = `${runsPath(b)}.${Date.now()}.tmp`
   await $.fs.write(tmp, JSON.stringify({ runs: runs.slice(0, KEEP_RUNS) }, null, 1))
   await $.process.run(['mv', '-f', tmp, runsPath(b)], { timeoutMs: 5_000 })
+}
+
+const REPORT_OUTCOMES = "session-rail: this branch's commits wait for this review, recorded from the last ```json findings block in your final message. With --fix, end with that block again after applying the fixes, each finding given an \"outcome\": \"fixed\", \"skipped\" or \"no_change_needed\" (`[]` when there were none)."
+// When /code-review's prompt was composed on a gated branch; the next subagent answer with a findings block is its report.
+const CODE_REVIEW_ASKED = { plugin: 'session-rail', key: 'codeReviewAsked' } as const
+const CODE_REVIEW_WINDOW_MS = 60 * 60_000
+
+// A subagent's answer, once /code-review was asked on a gated branch: the first with a findings block is its report.
+const recordForkedReview = async ($: EngineInterface, agentId: string, answer: string) => {
+  const asked = (await $.state.get(CODE_REVIEW_ASKED)).value ?? null
+  const report = asked !== null && Date.now() - asked < CODE_REVIEW_WINDOW_MS ? reportFromText(answer) : null
+  // Only the report after --fix gives findings an outcome (one left without stays open), which also keeps
+  // another subagent's JSON out; an empty list is a clean report either way.
+  if (!report || (report.findings.length && !report.findings.some((f: { outcome?: unknown }) => typeof f.outcome === 'string'))) return
+  // /code-review's forked agent runs from the main loop; a finder or verifier it spawned (often answering `[]`) isn't its report.
+  const agent = (await $.agent.list().catch(() => [])).find(a => a.id === agentId)
+  if (agent?.parentId) return
+  await recordCodeReview($, report)
+  await $.state.set(CODE_REVIEW_ASKED, null)
 }
 
 // review_approach: the tool Claude calls before each commit (and with final before a merge). It runs the
@@ -388,8 +407,9 @@ export const register: Register = on => {
     }
     return next(e)
   })
-  on('turn.complete', ($, e, next) => {
+  on('turn.complete', async ($, e, next) => {
     if (!e.agentId) record($, a => act.turnEnded(a, Date.now()))
+    else if (!e.isAborted) await recordForkedReview($, e.agentId, e.answer).catch(() => {})
     return next(e)
   })
   on('turn.abort', ($, e, next) => {
@@ -430,11 +450,15 @@ export const register: Register = on => {
     const deny = await reviewGate($, e.command)
     return deny ? { deny } : next(e)
   }).catch(($, e, next) => next(e))
-  on('tool.call', { tool: 'ReportFindings' }, async ($, e, next) => {
+  // /code-review runs as a forked agent whose output contract is a JSON block, not ReportFindings: on a gated
+  // branch its prompt asks for outcomes in that block, and its answer (a subagent's turn.complete) is recorded.
+  on('skill.prompt', { skill: 'code-review' }, async ($, e, next) => {
     const r = await next(e)
-    // /code-review runs as a forked agent, so its calls carry an agentId; the newest report is the one that counts.
-    if (r.deny === undefined) await recordCodeReview($, e).catch(() => {})
-    return r
+    if (!reviewToolReady) return r // the gate stands aside, so nothing waits for this report
+    const b = await readBrief($).catch(() => null)
+    if (!b?.approval?.approvedAt) return r
+    await $.state.set(CODE_REVIEW_ASKED, Date.now())
+    return { text: `${r.text}\n\n${REPORT_OUTCOMES}` }
   })
 
   // Rate limits are per account, so one file serves every rail; the newest reading wins.

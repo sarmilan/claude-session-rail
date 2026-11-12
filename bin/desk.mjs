@@ -361,7 +361,7 @@ const when = (ms) => new Date(ms).toLocaleString('en-US', { month: 'short', day:
 // saved before the cadence shows its severity, or accepted.
 function statusLabel(f, code) {
   if (f.status === 'applied') return [code ? '✓ fixed' : '✓ applied', C.green];
-  if (f.status === 'declined') return [code ? '✓ no change' : '✗ declined', C.gray];
+  if (f.status === 'declined') return [code ? (f.outcome === 'skipped' ? '✓ skipped' : '✓ no change') : '✗ declined', C.gray];
   if (f.status === 'open') return ['● open', C.yellow];
   return f.acceptedAt ? ['✓ accepted', C.green] : [`● ${f.severity}`, SEV[f.severity] ?? C.gray];
 }

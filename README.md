@@ -87,7 +87,7 @@ Click a row, or use the arrow keys and Enter, to open it. A session jumps to its
 - **Review:** the branch's reviews and what became of each finding (see *Reviews before each commit* below).
   - **Approach:** a staff-engineer review in a separate, headless Claude. It reads the brief, each chunk's summary and files, and how much each file changed. It says whether this is the simplest, most elegant and least costly way to the goal: on track, a simpler path exists, or off the goal. Findings are things like a simpler design, work beyond the goal, avoidable cost, or part of the goal not covered.
   - **Code review:** the newest `/code-review`, finding by finding, with its file and line. `Enter` jumps to that line in the diff.
-  - Each finding shows ● open, ✓ applied (✓ fixed for code) or ✗ declined, and a declined one shows the reason. Older runs are listed one line each. Reviews are saved per branch inside `.git`.
+  - Each finding shows ● open, ✓ applied or ✗ declined (✓ fixed, ✓ no change or ✓ skipped for code), and a declined one shows the reason. Older runs are listed one line each. Reviews are saved per branch inside `.git`.
 
 The desk opens on Plan and stays on the tab you pick.
 
@@ -140,7 +140,7 @@ Once the brief is approved, the plugin holds Claude to a review cadence:
 
 - **Before each chunk's commit**, after its `Done:` line:
   1. Claude calls the plugin's `review_approach` tool, which runs the approach review. Claude applies every finding and calls the tool again until nothing is open. Each new review checks the earlier findings and marks each one **applied**, **declined** (Claude gave a reason not to, and the reviewer accepted it) or still **open**.
-  2. Claude then runs `/code-review --fix` on the chunk's changes. The fixed report marks each finding fixed, no change needed or skipped, and skipped counts as open.
+  2. Claude then runs `/code-review --fix` on the chunk's changes. The plugin asks it to end with its findings as a JSON block and records that. The fixed report marks each finding fixed, no change needed or skipped. A skip is the fixer's call (usually a false positive), so it counts as settled, and the desk shows it as ✓ skipped.
 - **Before merging** (still only when you say so), the same pair runs over the whole branch: `review_approach` with `final: true`, and `/code-review --fix` against the default branch. They run after the last commit, with nothing uncommitted.
 - **The gate:** the plugin refuses Claude's `git commit` until both reviews have run since the last commit and nothing is open. It refuses `gh pr merge` until both final reviews have run after the last commit. Claude is told which review is missing or which findings are open.
 - **The PR's Progress checklist** notes each chunk's reviews.
