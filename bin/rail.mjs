@@ -374,7 +374,7 @@ function buildMain(W) {
       spread(`${bold('This branch')} ${dim(label)}`, diff, env.branch ? item('branch', () => branchMenu(env)) : undefined);
       if (env.dirty) line(fg(C.yellow, '◌') + dim(` ${env.dirty} uncommitted`));
       for (const c of env.commits ?? []) {
-        const age = dim(ago(c.at)), tag = c.fork && env.base ? `  ${fg(C.blue, env.base)}` : '';
+        const age = dim(ago(c.at)), tag = c.fork && env.base ? `  ${fg(C.blue, trunc(clean(env.base), Math.floor(inner / 3)))}` : '';
         const subject = trunc(clean(c.subject), inner - 2 - width(c.sha) - 1 - width(tag) - width(age) - 1);
         if (c.fork && env.moreCommits) line(dim(`┆ ${env.moreCommits} more`));
         spread(`${c.fork ? fg(C.blue, '◆') : fg(C.accent, '●')} ${dim(c.sha)} ${subject}${tag}`, age);
