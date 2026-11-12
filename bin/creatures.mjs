@@ -5,9 +5,10 @@
 // `sideways` creatures (the crab) never turn round, they just walk the other way. `speed` is ticks per
 // frame (a tick is ~200ms); busy creatures go at one frame a tick. `habitat` names the foliage it walks
 // through (habitats.mjs).
-// `stages` (optional): four forms, hatchling → heavy, that the mascot grows through as the context
-// window fills; a stage form is drawn like a creature and may set `scale` (image pixels per sprite
-// pixel, default 4) and `rows` (terminal rows, default 3) to be drawn bigger.
+// `stages` (optional): four forms, hatchling → heavy, that the mascot grows through as the branch's
+// brief heads toward its compaction (stageFor in mascot.mjs); a stage form is drawn like a creature and
+// may set `scale` (image pixels per sprite pixel, default 4) and `rows` (terminal rows, default 3) to be
+// drawn bigger.
 export const SPR_W = 34, SPR_H = 16;
 
 function canvas(lift = 0) {
@@ -279,7 +280,7 @@ const turtleHeavy = {
 turtle.stages = [turtleHatchling, turtle, turtleAdult, turtleHeavy];
 
 // ── Crab ───────────────────────────────────────────────────────────────────────
-// Four stages as the context window fills (see `stages` below): hatchling, this one, adult, heavy.
+// Four stages as the brief heads toward its compaction (see `stages` below): hatchling, this one, adult, heavy.
 const crab = {
   speed: 2,
   name: 'Crab',

@@ -1,7 +1,8 @@
 // The rail's mascot: a little pixel creature (see creatures.mjs) wandering along a floor line at the
 // bottom of the rail. It walks, turns at the edges, blinks, hurries when Claude is busy, and falls asleep after a
-// minute of nothing happening. It grows through four stages as the context window fills (`setStage`),
-// moving faster and angrier at each: hopping from the adult on, shaking and fuming when heavy.
+// minute of nothing happening. It grows through four stages as the branch's brief heads toward its
+// compaction (`setStage`, `stageFor`), moving faster and angrier at each: hopping from the adult on,
+// shaking and fuming when heavy.
 //
 // Sprites are 34×16 pixel maps. In iTerm2 the creature and its floor are one inline PNG strip, three rows
 // tall (four for a stage drawn bigger) and as wide as the rail, so each sprite pixel is a ~2pt square and
@@ -45,9 +46,14 @@ const MOOD = [
   { dSpeed: -1, hopEvery: 16, hop: [1, 2, 2, 1] },
   { dSpeed: -9, hopEvery: 8, hop: [1, 2, 3, 3, 2, 1], shake: 0.12, rage: true },
 ];
-// Stage from how full the context window is (percent): a hatchling until the session's first reply
-// reports a reading (null), a juvenile from then on, then adult and heavy as the window fills.
-export const stageFor = (pct) => (pct == null ? 0 : pct < 40 ? 1 : pct < 60 ? 2 : 3);
+// Stage from the branch's brief (sources.readBrief): a hatchling until it's approved, a juvenile once it is,
+// an adult after its first Done chunk, and heavy when every chunk is Done (ready to merge and compact).
+// After the compaction the next branch has no approved brief, so the pet hatches again.
+export const stageFor = (brief) => {
+  if (!['approved', 'changed'].includes(brief?.status) || !brief.chunks?.length) return 0; // an edited plan keeps its growth
+  const done = brief.chunks.filter((c) => c.done).length;
+  return done === 0 ? 1 : done < brief.chunks.length ? 2 : 3;
+};
 const ANGER = ['.A.A.', 'AA.AA', '.....', 'AA.AA', '.A.A.']; // a popping vein, drawn up by a claw
 
 const xtermRgb = (n) => {

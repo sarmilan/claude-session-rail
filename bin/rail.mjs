@@ -20,7 +20,7 @@ const pinnedPid = Number(flag('--pid')) || null; // the Claude process this rail
 const taskIndex = new src.TaskIndex();
 
 // ── Data ───────────────────────────────────────────────────────────────────────
-const data = { env: null, account: null, usage: [], agents: [], overview: null, current: null, stats: null, connectors: null, prs: null, activity: null,
+const data = { env: null, brief: null, account: null, usage: [], agents: [], overview: null, current: null, stats: null, connectors: null, prs: null, activity: null,
   tasks: { running: [], finished: 0, done: [] } };
 
 const loaders = {
@@ -33,7 +33,10 @@ const loaders = {
     data.tasks = files.tasksDir ? await taskIndex.list(files.tasksDir) : { running: [], finished: 0, done: [] };
     data.activity = await src.activity(data.current?.sessionId);
   },
-  async env() { data.env = await src.environment(cwd); },
+  async env() {
+    const [env, brief] = await Promise.all([src.environment(cwd), src.readBrief(cwd)]);
+    data.env = env; data.brief = brief?.status ? { status: brief.status, chunks: brief.chunks } : null; // what the pet needs
+  },
   async sessions() { data.overview = await src.sessionsOverview(data.agents, data.current?.pid); },
   async account() { [data.account, data.usage] = await Promise.all([src.account(), src.usage()]); },
   async prs() { data.prs = await src.prs(cwd); },
@@ -85,10 +88,10 @@ const saveCreature = (name) => {
   try { mkdirSync(dirname(MASCOT_FILE), { recursive: true }); writeFileSync(MASCOT_FILE, JSON.stringify({ creature: name })); } catch {}
 };
 const nextCreature = (d = 1) => saveCreature(mascot.next(d));
-// The pet grows with the context window (--pet-stage N pins a stage for --frame).
+// The pet grows with the branch's brief (--pet-stage N pins a stage for --frame).
 const stageFlag = flag('--pet-stage');
 const pinned = stageFlag != null && /^[0-3]$/.test(stageFlag) ? +stageFlag : null;
-const petStage = () => pinned ?? stageFor(data.stats?.contextPct);
+const petStage = () => pinned ?? stageFor(data.brief);
 const claudeBusy = () => data.tasks.running.length > 0 || data.current?.status === 'busy';
 
 const toast = (text) => { ui.toast = { text, until: Date.now() + 2500 }; };
