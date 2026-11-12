@@ -27,14 +27,16 @@ export const tildify = (p) => (p && p.startsWith(HOME) ? '~' + p.slice(HOME.leng
 // ── Environment ────────────────────────────────────────────────────────────────
 export async function environment(cwd) {
   const top = (await run('git', ['rev-parse', '--show-toplevel'], { cwd }))?.trim();
-  const [branch, porcelain] = top
+  const [branch, porcelain, base] = top
     ? await Promise.all([
         run('git', ['branch', '--show-current'], { cwd }),
         run('git', ['status', '--porcelain'], { cwd }),
+        defaultBranch(cwd),
       ])
-    : [null, null];
+    : [null, null, null];
   const root = top || cwd;
-  const diff = top ? await branchDiff(cwd) : null;
+  const fork = base ? await forkPoint(cwd, base) : null;
+  const [diff, log] = fork ? await Promise.all([branchDiff(cwd, fork), branchCommits(cwd, fork)]) : [null, { commits: [], more: 0 }];
   return {
     computer: hostname().replace(/\.local$/, ''),
     root,
@@ -45,7 +47,27 @@ export async function environment(cwd) {
     isGit: Boolean(top),
     added: diff?.added ?? 0,
     removed: diff?.removed ?? 0,
+    base: base?.replace(/^origin\//, '') ?? null,
+    commits: log.commits,
+    moreCommits: log.more,
   };
+}
+
+// This branch's commits since it forked (newest first, up to max), then the fork commit itself, marked fork;
+// `more` counts the ones past max. On the default branch the fork is HEAD, so that's the only one.
+const LOG_FORMAT = '--format=%h%x1f%s%x1f%ct';
+const parseLog = (out) => (out ?? '').split('\n').filter(Boolean).map((l) => {
+  const [sha, subject, ct] = l.split('\x1f');
+  return { sha, subject, at: +ct * 1000 };
+});
+async function branchCommits(cwd, fork, max = 8) {
+  const [own, base, count] = await Promise.all([
+    run('git', ['log', '-n', String(max), LOG_FORMAT, `${fork}..HEAD`], { cwd }),
+    run('git', ['log', '-1', LOG_FORMAT, fork], { cwd }),
+    run('git', ['rev-list', '--count', `${fork}..HEAD`], { cwd }),
+  ]);
+  const mine = parseLog(own);
+  return { commits: [...mine, ...parseLog(base).map((c) => ({ ...c, fork: true }))], more: Math.max(0, (+count || 0) - mine.length) };
 }
 
 // The default branch: origin/HEAD, else the first of main/master that exists (remote, then local).
@@ -57,17 +79,15 @@ async function defaultBranch(cwd) {
 }
 
 // The commit this branch forked from the default branch. On the default branch itself that's HEAD, so
-// diffs against it show just the uncommitted changes.
-export async function forkPoint(cwd) {
-  const base = await defaultBranch(cwd);
+// diffs against it show just the uncommitted changes. `base` saves looking the default branch up again.
+export async function forkPoint(cwd, base) {
+  base ??= await defaultBranch(cwd);
   return base ? (await run('git', ['merge-base', 'HEAD', base], { cwd }))?.trim() || null : null;
 }
 
 // Lines added/removed on this branch: the working tree against the fork point, so committed and
 // uncommitted work both count (untracked files don't).
-async function branchDiff(cwd) {
-  const fork = await forkPoint(cwd);
-  if (!fork) return null;
+async function branchDiff(cwd, fork) {
   const stat = (await run('git', ['diff', '--shortstat', fork], { cwd })) ?? '';
   return { added: +(stat.match(/(\d+) insertion/)?.[1] ?? 0), removed: +(stat.match(/(\d+) deletion/)?.[1] ?? 0) };
 }
@@ -268,6 +288,47 @@ export async function newWorktree(cwd, problem) {
   return added == null ? { ok: false, message: "Couldn't add the worktree" } : { ok: true, dir, base };
 }
 
+// ── Worktrees: every checkout of this repo with its branch, ahead/behind the default branch, and dirt ───
+// A tip on the default branch's own first-parent line is where a branch with no commits yet was made: walking
+// the default branch's first parents down from its tip ends right on it. A merged tip is reached only through a merge.
+const branchedFrom = async (cwd, tip, base) =>
+  (await run('git', ['rev-list', '--first-parent', '--parents', `${tip}..${base}`], { cwd }))?.trim().split('\n').at(-1)?.split(' ')[1] === tip;
+// Cards for the rail's Git tab. `merged`: a named branch with nothing ahead whose tip is behind the default
+// branch and got there through a merge, not by being made there. The main checkout first, as git lists it;
+// `current` is the one at cwd.
+export async function worktrees(cwd) {
+  const [list, top, base] = await Promise.all([
+    run('git', ['worktree', 'list', '--porcelain'], { cwd }),
+    run('git', ['rev-parse', '--show-toplevel'], { cwd }),
+    defaultBranch(cwd),
+  ]);
+  if (list == null) return { ok: false, repo: null, base: null, items: [] };
+  const blocks = list.split('\n\n').map((block) =>
+    Object.fromEntries(block.split('\n').filter(Boolean).map((l) => [l.split(' ')[0], l.slice(l.indexOf(' ') + 1)])))
+    .filter((kv) => kv.worktree);
+  const entries = blocks.filter((kv) => !('bare' in kv) && !('prunable' in kv))
+    .map((kv) => ({ path: kv.worktree, head: kv.HEAD ?? null, branch: kv.branch?.replace(/^refs\/heads\//, '') ?? null }));
+  const baseName = base?.replace(/^origin\//, '') ?? null;
+  const items = await Promise.all(entries.map(async ({ head, ...w }) => {
+    const [counts, porcelain] = await Promise.all([
+      base ? run('git', ['rev-list', '--left-right', '--count', `${base}...HEAD`], { cwd: w.path }) : null,
+      run('git', ['status', '--porcelain'], { cwd: w.path }),
+    ]);
+    const [behind, ahead] = counts?.trim() ? counts.trim().split(/\s+/).map(Number) : [];
+    // nothing ahead: its tip is in the default branch (the default branch itself is just behind, not merged)
+    const merged = Boolean(w.branch) && w.branch !== baseName && ahead === 0 && behind > 0 && head != null
+      && !(await branchedFrom(w.path, head, base));
+    return {
+      ...w, sha: head?.slice(0, 7) ?? null, name: basename(w.path), current: w.path === top?.trim(),
+      ahead: Number.isFinite(ahead) ? ahead : null, behind: Number.isFinite(behind) ? behind : null,
+      dirty: porcelain == null ? null : porcelain.split('\n').filter(Boolean).length, // null: git couldn't tell
+      merged,
+    };
+  }));
+  // The repo is named after the main checkout, git's first entry, even when it's bare and has no card.
+  return { ok: true, repo: blocks[0] ? basename(blocks[0].worktree).replace(/\.git$/, '') : null, base: baseName, items };
+}
+
 // The session this rail belongs to: newest live CLI session in the rail's folder (or a parent/child of it).
 export function currentSession(list, cwd) {
   const related = (p) => p && (p === cwd || cwd.startsWith(p + '/') || p.startsWith(cwd + '/'));
@@ -319,9 +380,22 @@ export async function connectors() {
 // ── Changes: your open PRs in this repo ────────────────────────────────────────
 export async function prs(cwd, limit = 15) {
   const out = await run('gh', ['pr', 'list', '--author', '@me', '--state', 'open', '--limit', String(limit),
-    '--json', 'number,title,state,isDraft,url,headRefName,updatedAt'], { cwd, timeout: 15_000 });
+    '--json', 'number,title,state,isDraft,url,headRefName,updatedAt,statusCheckRollup'], { cwd, timeout: 15_000 });
   if (out == null) return { ok: false, items: [] };
-  try { return { ok: true, items: JSON.parse(out) }; } catch { return { ok: false, items: [] }; }
+  try {
+    return { ok: true, items: JSON.parse(out).map(({ statusCheckRollup, ...p }) => ({ ...p, checks: (statusCheckRollup ?? []).map(check) })) };
+  } catch { return { ok: false, items: [] }; }
+}
+
+// One entry of a PR's statusCheckRollup (a CheckRun or a commit StatusContext) as { name, state, url },
+// state pass, fail or pending.
+const PASS = ['SUCCESS', 'NEUTRAL', 'SKIPPED'];
+export function check(c) {
+  if (c?.__typename === 'StatusContext' || c?.context != null)
+    return { name: String(c.context ?? 'status'), url: c.targetUrl || null,
+      state: c.state === 'SUCCESS' ? 'pass' : c.state === 'FAILURE' || c.state === 'ERROR' ? 'fail' : 'pending' };
+  const state = c?.status && c.status !== 'COMPLETED' ? 'pending' : PASS.includes(c?.conclusion) ? 'pass' : c?.conclusion ? 'fail' : 'pending';
+  return { name: String(c?.name ?? c?.workflowName ?? 'check'), url: c?.detailsUrl || null, state };
 }
 
 // ── Todo: open issues of this repo in a Todo column on a GitHub project linked to it ─
