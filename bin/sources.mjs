@@ -3,6 +3,7 @@ import { execFile } from 'node:child_process';
 import { readFile, readdir, lstat, stat, open } from 'node:fs/promises';
 import { hostname, homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
+import { parseBrief, briefStatus, NO_BRIEF_BRANCHES } from './brief.mjs';
 
 const HOME = homedir();
 const CLAUDE = join(HOME, '.claude');
@@ -77,7 +78,7 @@ async function branchDiff(cwd) {
 // repo's dirs once and the branch is read from HEAD after that. A rebase reviews into the branch being
 // rebased; any other detached HEAD shares one "detached" file rather than starting a new one per commit.
 const gitDirs = new Map();
-export async function reviewsPath(cwd) {
+async function branchStore(cwd) {
   if (!gitDirs.has(cwd)) {
     const out = await run('git', ['rev-parse', '--path-format=absolute', '--git-dir', '--git-common-dir'], { cwd });
     const [dir, common] = out?.trim().split('\n') ?? [];
@@ -89,7 +90,22 @@ export async function reviewsPath(cwd) {
   const head = await read('HEAD'); // a detached HEAD holds a commit id, so only a "ref:" line names the branch
   const ref = head.startsWith('ref: ') ? head.slice(5) : (await read('rebase-merge/head-name')) || (await read('rebase-apply/head-name'));
   const branch = ref.startsWith('refs/heads/') ? ref.slice(11) : 'detached';
-  return join(common, 'session-rail', 'reviews', `${encodeURIComponent(branch)}.json`); // keeps feature/x and feature_x apart
+  // encodeURIComponent keeps feature/x and feature_x apart.
+  return { branch, file: (kind, ext) => join(common, 'session-rail', kind, `${encodeURIComponent(branch)}.${ext}`) };
+}
+export async function reviewsPath(cwd) { return (await branchStore(cwd))?.file('reviews', 'json') ?? null; }
+
+// ── Brief: the branch's goal, design and engineering chunks (see brief.mjs) ───
+export { parseBrief } from './brief.mjs';
+export async function readBrief(cwd) {
+  const store = await branchStore(cwd);
+  if (!store || NO_BRIEF_BRANCHES.includes(store.branch)) return null;
+  const path = store.file('briefs', 'md'), approvedPath = store.file('briefs', 'approved.json');
+  try {
+    const [text, st, approval] = await Promise.all([readFile(path, 'utf8'), stat(path), readJson(approvedPath)]);
+    const brief = parseBrief(text);
+    return { branch: store.branch, path, approvedPath, text, mtime: st.mtimeMs, approval, status: briefStatus(brief, approval), ...brief };
+  } catch { return { branch: store.branch, path, approvedPath, text: null }; }
 }
 
 // Every file changed since the fork point, plus untracked files (a file Claude just created isn't tracked
@@ -242,6 +258,28 @@ export async function prs(cwd, limit = 15) {
   try { return { ok: true, items: JSON.parse(out) }; } catch { return { ok: false, items: [] }; }
 }
 
+// ── Todo: open issues of this repo in a Todo column on a GitHub project linked to it ─
+const TODO_QUERY = `query($o: String!, $r: String!) { repository(owner: $o, name: $r) { projectsV2(first: 5) { nodes {
+  items(first: 100) { nodes { status: fieldValueByName(name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name } }
+    content { ... on Issue { number title url state body repository { nameWithOwner } } } } } } } } }`;
+const firstProse = (body) => ((body ?? '').split('\n').map((l) => l.trim()).find((l) => l && !l.startsWith('#')) ?? '')
+  .replace(/^([-*+]|\d+[.)])\s+/, '').replace(/\*\*|__|`/g, '');
+export async function todos(cwd) {
+  const repo = (await run('gh', ['repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner'], { cwd, timeout: 15_000 }))?.trim();
+  if (!repo) return [];
+  const [o, r] = repo.split('/');
+  const out = await run('gh', ['api', 'graphql', '-f', `query=${TODO_QUERY}`, '-f', `o=${o}`, '-f', `r=${r}`], { cwd, timeout: 15_000 });
+  const seen = new Map();
+  try {
+    for (const p of JSON.parse(out).data.repository.projectsV2.nodes) for (const it of p.items.nodes) {
+      const c = it.content;
+      if (it.status?.name !== 'Todo' || c?.state !== 'OPEN' || c.repository?.nameWithOwner !== repo || seen.has(c.number)) continue;
+      seen.set(c.number, { number: c.number, title: c.title, url: c.url, summary: firstProse(c.body) });
+    }
+  } catch {}
+  return [...seen.values()].sort((a, b) => a.number - b.number);
+}
+
 // ── Recent work: the last merged PRs, and the default branch's latest commits ─
 // Merge commits are left out of the commits: the PRs already stand for them.
 export async function recentWork(cwd, { prs = 5, commits = 8 } = {}) {
@@ -254,9 +292,7 @@ export async function recentWork(cwd, { prs = 5, commits = 8 } = {}) {
   try {
     items = JSON.parse(pr ?? '[]').map((p) => ({
       number: p.number, title: p.title, mergedAt: Date.parse(p.mergedAt),
-      // The body's first line of prose: no headings, no blank lines.
-      summary: ((p.body ?? '').split('\n').map((l) => l.trim()).find((l) => l && !l.startsWith('#')) ?? '')
-        .replace(/^([-*+]|\d+[.)])\s+/, '').replace(/\*\*|__|`/g, ''),
+      summary: firstProse(p.body), // the body's first line of prose: no headings, no blank lines
     }));
   } catch {}
   const list = (log ?? '').split('\n').filter(Boolean).map((l) => {
