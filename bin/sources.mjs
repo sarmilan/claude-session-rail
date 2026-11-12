@@ -36,7 +36,7 @@ export async function environment(cwd) {
     : [null, null, null];
   const root = top || cwd;
   const fork = base ? await forkPoint(cwd, base) : null;
-  const [diff, commits] = fork ? await Promise.all([branchDiff(cwd, fork), branchCommits(cwd, fork)]) : [null, []];
+  const [diff, log] = fork ? await Promise.all([branchDiff(cwd, fork), branchCommits(cwd, fork)]) : [null, { commits: [], more: 0 }];
   return {
     computer: hostname().replace(/\.local$/, ''),
     root,
@@ -48,23 +48,26 @@ export async function environment(cwd) {
     added: diff?.added ?? 0,
     removed: diff?.removed ?? 0,
     base: base?.replace(/^origin\//, '') ?? null,
-    commits,
+    commits: log.commits,
+    moreCommits: log.more,
   };
 }
 
-// This branch's commits since it forked (newest first, up to max), then the fork commit itself, marked fork.
-// On the default branch the fork is HEAD, so that's the only one.
+// This branch's commits since it forked (newest first, up to max), then the fork commit itself, marked fork;
+// `more` counts the ones past max. On the default branch the fork is HEAD, so that's the only one.
 const LOG_FORMAT = '--format=%h%x1f%s%x1f%ct';
 const parseLog = (out) => (out ?? '').split('\n').filter(Boolean).map((l) => {
   const [sha, subject, ct] = l.split('\x1f');
   return { sha, subject, at: +ct * 1000 };
 });
 async function branchCommits(cwd, fork, max = 8) {
-  const [own, base] = await Promise.all([
+  const [own, base, count] = await Promise.all([
     run('git', ['log', '-n', String(max), LOG_FORMAT, `${fork}..HEAD`], { cwd }),
     run('git', ['log', '-1', LOG_FORMAT, fork], { cwd }),
+    run('git', ['rev-list', '--count', `${fork}..HEAD`], { cwd }),
   ]);
-  return [...parseLog(own), ...parseLog(base).map((c) => ({ ...c, fork: true }))];
+  const mine = parseLog(own);
+  return { commits: [...mine, ...parseLog(base).map((c) => ({ ...c, fork: true }))], more: Math.max(0, (+count || 0) - mine.length) };
 }
 
 // The default branch: origin/HEAD, else the first of main/master that exists (remote, then local).

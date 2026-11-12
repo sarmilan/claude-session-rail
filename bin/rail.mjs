@@ -340,8 +340,9 @@ function buildMain(W) {
   const gitTab = () => {
     const wt = data.worktrees;
     // Header: the repo, its default branch, and how fresh the cards are.
-    const title = trunc(`${clean(wt?.repo ?? env?.repo ?? '…')}${wt?.base ? ` · ${wt.base}` : ''}`, inner - 6);
-    spread(title.replace(/ · (.*)$/, (m, b) => ' · ' + dim(b)), wt?.at ? dim(`↻ ${ago(wt.at)}`) : '');
+    const repo = trunc(clean(wt?.repo ?? env?.repo ?? '…'), inner - 6);
+    const baseName = wt?.base ? trunc(clean(wt.base), inner - 6 - width(repo) - 3) : '';
+    spread(repo + (baseName ? ' · ' + dim(baseName) : ''), wt?.at ? dim(`↻ ${ago(wt.at)}`) : '');
     rule();
 
     // Worktrees: this one first, then git's order.
@@ -375,6 +376,7 @@ function buildMain(W) {
       for (const c of env.commits ?? []) {
         const age = dim(ago(c.at)), tag = c.fork && env.base ? `  ${fg(C.blue, env.base)}` : '';
         const subject = trunc(clean(c.subject), inner - 2 - width(c.sha) - 1 - width(tag) - width(age) - 1);
+        if (c.fork && env.moreCommits) line(dim(`┆ ${env.moreCommits} more`));
         spread(`${c.fork ? fg(C.blue, '◆') : fg(C.accent, '●')} ${dim(c.sha)} ${subject}${tag}`, age);
       }
       rule();
