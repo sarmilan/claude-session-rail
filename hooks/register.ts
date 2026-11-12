@@ -3,6 +3,7 @@ import { approvalRecord, briefFile, briefStatus, NO_BRIEF_BRANCHES, parseBrief }
 import * as act from './activity.ts'
 import { goAhead } from './goahead.ts'
 import * as compact from './compact.ts'
+import { pickColour, pickName } from '../bin/names.mjs'
 import { codeRun, gateReason as reviewWait, keptRuns, mergesPr, reportFromText, reviewsFile } from '../bin/cadence.mjs'
 
 // The controller (bin/pane.mjs) does the iTerm work; this module only decides when to call it.
@@ -341,6 +342,8 @@ const watch = ($: EngineInterface) => {
 // coalesced: a burst of events while one write is in flight becomes one more write, never interleaved ones.
 let activity = act.fresh(Date.now())
 let callSeq = 0
+// Names picked for spawns still starting, with their colours (agent.spawn).
+const naming = new Map<string, number>()
 let saving: Promise<void> = Promise.resolve()
 let dirty = false
 const saveActivity = ($: EngineInterface) => {
@@ -405,21 +408,49 @@ export const register: Register = on => {
     return b ? { sections: [...composed.sections, { id: 'session-rail-brief', text: briefInstructions(b), scope: 'session' as const }] } : composed
   })
 
-  // Live activity: the main loop's turns, and every tool call (a subagent's carries its agentId).
+  // Every new subagent gets a name and colour (bin/names.mjs), and its task reads "Name: description", which is
+  // what the task list and its notification show. A resume keeps the name it had; a workflow agent's description
+  // can't be rewritten, so it's named on the rail only. Names and colours are held from the pick to the record,
+  // so spawns in parallel never share one.
+  on('agent.spawn', async ($, e, next) => {
+    const known = e.resume && activity.agents?.[e.resume.agentId]
+    if (known) {
+      const r = await next(e)
+      if (!r.deny) record($, a => act.agentStarted(a, e.resume!.agentId, { ...known, since: Date.now(), background: e.background === true, endedAt: undefined }))
+      return r
+    }
+    const agents = Object.values(activity.agents ?? {})
+    const name = pickName([...agents.map(g => g.name), ...naming.keys()])
+    const colour = pickColour([...agents.filter(g => !g.endedAt).map(g => g.colour), ...naming.values()])
+    const what = (e.description ?? '').trim()
+    naming.set(name, colour)
+    try {
+      const r = await next(e.workflow || e.resume ? e : { ...e, description: what ? `${name}: ${what}` : name })
+      if (!r.deny && r.agentId) record($, a => act.agentStarted(a, r.agentId!, { name, colour, what, since: Date.now(), background: e.background === true }))
+      return r
+    } finally {
+      naming.delete(name)
+    }
+  })
+
+  // Live activity: the main loop's turns, and every tool call (a subagent's carries its agentId). A subagent
+  // ends at its own turn's end, and a teammate woken for another turn is live again.
   on('turn.start', async ($, e, next) => {
     if (!e.agentId) {
       const model = await $.session.model().catch(() => undefined)
       record($, a => act.turnStarted(a, model, Date.now()))
-    }
+    } else if (activity.agents?.[e.agentId]?.endedAt) record($, a => act.agentStarted(a, e.agentId!, { ...a.agents![e.agentId!], endedAt: undefined }))
     return next(e)
   })
   on('turn.complete', async ($, e, next) => {
     if (!e.agentId) record($, a => act.turnEnded(a, Date.now()))
+    else record($, a => act.agentEnded(a, e.agentId!, Date.now()))
     if (!e.isAborted) await finishCodeReview($, e.answer).catch(() => {})
     return next(e)
   })
   on('turn.abort', ($, e, next) => {
-    if (!(e as { agentId?: string }).agentId) record($, a => act.turnEnded(a, Date.now())) // its type names no agentId yet
+    const agentId = (e as { agentId?: string }).agentId // its type names no agentId yet
+    record($, a => (agentId ? act.agentEnded(a, agentId, Date.now()) : act.turnEnded(a, Date.now())))
     return next(e)
   })
   on('tool.call', async ($, e, next) => {

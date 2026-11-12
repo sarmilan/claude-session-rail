@@ -10,9 +10,10 @@ import { openSync, readSync, fstatSync, closeSync, readFileSync, writeFileSync, 
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import * as src from './sources.mjs';
-import { ESC, fg, dim, bold, C, charWidth, width, trunc, wrap, clean } from './term.mjs';
+import { ESC, fg, dim, bold, C, charWidth, width, trunc, wrap, clean, tabBar } from './term.mjs';
 import { createMascot, creatureNames, stageFor, progressFor } from './mascot.mjs';
 import { isApproved } from './brief.mjs';
+import { NAMES, COLOURS } from './names.mjs';
 import * as fontsize from './fontsize.mjs';
 
 const args = process.argv.slice(2);
@@ -113,12 +114,9 @@ const setTab = (t) => {
 };
 const stepTab = (d) => setTab(TABS[(TABS.indexOf(ui.tab) + TABS.length + d) % TABS.length]);
 const otherTab = () => stepTab(1);
-// The tab under screen column x (1-based; column 1 is the frame's left pad, tabs are two spaces apart), else null.
-const tabAt = (x) => {
-  let from = 2;
-  for (const t of TABS) { const to = from + TAB_LABELS[t].length; if (x >= from && x < to) return t; from = to + 2; }
-  return null;
-};
+// The tab under screen column x (1-based; column 1 is the frame's left pad), from the spans the last frame drew, else null.
+let tabSpans = [];
+const tabAt = (x) => tabSpans.find((s) => x - 2 >= s.from && x - 2 < s.to)?.tab ?? null;
 // Inline images only in a live iTerm2 pane; --frame output (and other terminals) get text octants.
 const iterm = process.env.TERM_PROGRAM === 'iTerm.app' || process.env.LC_TERMINAL === 'iTerm2';
 // The chosen creature is remembered across rails; `c` cycles through them.
@@ -453,11 +451,12 @@ function buildMain(W) {
     rule();
   };
 
-  // Tabs: the active one bold and underlined in orange. Enter flips; a click picks by column (tabAt).
-  const labels = TABS.map((t) => [t, TAB_LABELS[t]]);
-  spread(labels.map(([t, l]) => (t === ui.tab ? bold(fg(C.accent, l)) : dim(l))).join('  '), dim('⇥'), item('tabs', otherTab));
-  const under = labels.map(([t, l]) => (t === ui.tab ? fg(C.accent, '━'.repeat(l.length)) : dim('─'.repeat(l.length)))).join(dim('──'));
-  line(under + dim('─'.repeat(Math.max(0, inner - width(labels.map(([, l]) => l).join('  '))))));
+  // Tabs, as the desk draws them: under a rule, the active one lit and underlined in orange. Enter flips; a click picks by column (tabAt).
+  const tabs = tabBar(TABS.map((t) => [t, TAB_LABELS[t]]), ui.tab, inner);
+  tabSpans = tabs.spans;
+  rule();
+  spread(tabs.bar.replace(/ $/, ''), dim('⇥'), item('tabs', otherTab));
+  line(tabs.under);
 
   if (ui.tab === 'git') { gitTab(); return { rows, items }; }
 
@@ -563,17 +562,28 @@ function buildMain(W) {
     const actor = (mark, name, what, at, opts = {}) => {
       const right = at ? ago(at) : '', l = trunc(name ? `${name}  ${what}` : what, inner - width(mark) - 1 - (right ? width(right) + 1 : 0));
       const gap = Math.max(right ? 1 : 0, inner - width(mark) - 1 - width(l) - width(right));
-      line(`${mark} ${bold(l.slice(0, name.length))}${l.slice(name.length)}${' '.repeat(gap)}${dim(right)}`, opts.id);
+      const who = bold(l.slice(0, name.length));
+      line(`${mark} ${opts.colour ? fg(opts.colour, who) : who}${l.slice(name.length)}${' '.repeat(gap)}${dim(right)}`, opts.id);
     };
     actor(spin(busy), 'Claude', state, since);
-    // Under Claude: subagents (its Agent calls, with what one is doing when only one runs) and background tasks.
-    const agents = (act?.running ?? []).filter((c) => !c.agent && c.tool === 'Agent');
-    const inside = (act?.running ?? []).filter((c) => c.agent).at(-1);
+    // Under Claude: its subagents, each by the name and colour it got at its spawn (hooks/register.ts), with its
+    // latest call in flight; then background shell tasks. A background agent's task row merges into its named row
+    // (which opens its log). Agent calls with no named agent (from before the plugin loaded) keep a plain row.
+    const named = Object.entries(act?.agents ?? {}).filter(([, g]) => !g.endedAt);
+    const calls = (act?.running ?? []).filter((c) => !c.agent && c.tool === 'Agent');
+    const inside = (id) => (act?.running ?? []).filter((c) => c.agent === id).at(-1);
+    const unnamed = calls.slice(named.filter(([, g]) => !g.background).length);
+    const loose = (act?.running ?? []).filter((c) => c.agent && !act.agents?.[c.agent]).at(-1);
     const kids = [
-      ...agents.map((c) => ({ mark: fg(C.accent, '◆'), what: clean(c.arg) + (agents.length === 1 && inside ? ` · ${inside.tool} ${clean(rel(inside.arg))}` : ''), at: c.since })),
-      ...tasks.map((t) => ({ mark: fg(C.accent, t.kind === 'agent' ? '◆' : '◇'), what: t.label, at: t.startedAt, id: item(`task:${t.id}`, () => viewLog(t)) })),
+      ...named.map(([id, g]) => {
+        const doing = inside(id), task = tasks.find((t) => t.id === id);
+        return { mark: fg(g.colour, '◆'), name: g.name, colour: g.colour, what: clean(g.what) + (doing ? ` · ${doing.tool} ${clean(rel(doing.arg))}` : ''),
+          at: g.since, id: task ? item(`task:${task.id}`, () => viewLog(task)) : undefined };
+      }),
+      ...unnamed.map((c) => ({ mark: fg(C.accent, '◆'), what: clean(c.arg) + (unnamed.length === 1 && loose ? ` · ${loose.tool} ${clean(rel(loose.arg))}` : ''), at: c.since })),
+      ...tasks.filter((t) => !named.some(([id]) => id === t.id)).map((t) => ({ mark: fg(C.accent, t.kind === 'agent' ? '◆' : '◇'), what: t.label, at: t.startedAt, id: item(`task:${t.id}`, () => viewLog(t)) })),
     ];
-    kids.forEach((k, i) => actor(dim(i === kids.length - 1 ? '  └' : '  ├') + ' ' + k.mark, '', k.what, k.at, { id: k.id }));
+    kids.forEach((k, i) => actor(dim(i === kids.length - 1 ? '  └' : '  ├') + ' ' + k.mark, k.name ?? '', k.what, k.at, { id: k.id, colour: k.colour }));
     if (act?.desk) actor(spin(true), 'Desk', act.desk.kind ?? 'running', act.desk.startedAt);
     // The gate's refusal, while it's recent.
     if (src.gateHeld(act)) actor(fg(C.yellow, '⧗'), 'Gate', `held ${act.gate.tool} ${clean(rel(act.gate.file))}`, act.gate.at);
@@ -591,8 +601,11 @@ function buildMain(W) {
     }
     const relp = (p) => (p && p.startsWith(cwd + '/') ? p.slice(cwd.length + 1) : p ?? '');
     for (const r of recent) {
-      const right = ago(r.at), l = trunc(`${r.ok ? '✔' : '✗'} ${r.tool} ${clean(relp(r.arg))}`, inner - width(right) - 1);
-      line(fg(r.ok ? C.green : C.red, l[0]) + dim(l.slice(1)) + ' '.repeat(Math.max(1, inner - width(l) - width(right))) + dim(right));
+      // A subagent's call starts with its name, in its colour.
+      const who = r.agent && act.agents?.[r.agent], name = who ? `${who.name} ` : '';
+      const right = ago(r.at), l = trunc(`${r.ok ? '✔' : '✗'} ${name}${r.tool} ${clean(relp(r.arg))}`, inner - width(right) - 1);
+      const rest = l.slice(2 + name.length), shown = l.slice(2, 2 + name.length);
+      line(fg(r.ok ? C.green : C.red, l[0]) + ' ' + (shown ? fg(who.colour, shown) : '') + dim(rest) + ' '.repeat(Math.max(1, inner - width(l) - width(right))) + dim(right));
     }
     if (finished) line(dim(`◇ ${finished} background task${finished === 1 ? '' : 's'} finished`), item('finished', finishedMenu));
     rule();
@@ -675,7 +688,8 @@ function frame(W, H) {
   const view = rows.slice(scroll, scroll + bodyH);
   const lines = view.map((r) => {
     const padded = ' ' + r.text + ' '.repeat(Math.max(0, W - 1 - width(r.text)));
-    return r.id && r.id === ui.sel ? `${ESC}48;5;237m${padded}${ESC}49m` : padded;
+    // A lit block inside the row (the active tab) ends its own background; the selection carries on past it.
+    return r.id && r.id === ui.sel ? `${ESC}48;5;237m${padded.replaceAll(`${ESC}49m`, `${ESC}48;5;237m`)}${ESC}49m` : padded;
   });
   while (lines.length < bodyH) lines.push('');
   const viewIds = view.map((r) => r.id);
@@ -725,6 +739,20 @@ if (args.includes('--frame')) {
   const W = +args[i + 1] || 42, H = +args[i + 2] || 60;
   for (const k of ['context', 'connectors', 'settings']) if (args.includes(`--open-${k}`)) ui.open[k] = true;
   await collect();
+  // --agents N: N sample named subagents in Now (each with a call in flight), and a finished call from the first in Just now.
+  const sampleAgents = numFlag('--agents');
+  if (sampleAgents && data.current) {
+    const t = Date.now(), a = data.activity ?? { running: [], recent: [], agents: {} };
+    const jobs = [['explore the hooks', 'Read', 'hooks/register.ts'], ['run the tests', 'Bash', 'claude plugin test .'], ['check the README', 'Grep', 'agent.spawn']];
+    const agents = {}, running = [...a.running], recent = [...a.recent];
+    for (let i = 0; i < sampleAgents; i++) {
+      const [what, tool, arg] = jobs[i % jobs.length], id = `sample${i}`;
+      agents[id] = { name: NAMES[(i * 37) % NAMES.length], colour: COLOURS[i % COLOURS.length], what, since: t - (i + 1) * 9000, background: false };
+      running.push({ id: `c${i}`, tool: 'Agent', arg: what, since: agents[id].since }, { id: `d${i}`, tool, arg, since: t - 2000, agent: id });
+    }
+    recent.unshift({ tool: 'Grep', arg: 'agent.spawn', ok: true, at: t - 3000, ms: 40, agent: 'sample0' });
+    data.activity = { ...a, claude: { state: 'tool', since: t - 20000 }, running, recent, agents: { ...a.agents, ...agents } };
+  }
   feedPet(W); mascot.setHeld(false);
   // let it walk to its spot on the road (at a past time, so no blink is left on the frame), then hold it there
   for (let n = 0, t = Date.now() - 1000; n < W * 2; n++) mascot.step(W, false, t);

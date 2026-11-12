@@ -45,3 +45,18 @@ export const clean = (s) => s
   .replace(/\x1b./g, '')
   .replace(/\t/g, '  ')
   .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '');
+// A tab bar for `w` columns: the active tab is a lit grey block in bold orange, the others are dim, one space
+// apart. `under` is the rule below it, orange under the active tab. `spans` are 0-based content columns.
+export const tabBar = (tabs, active, w) => {
+  let x = 0, bar = '', under = '';
+  const spans = tabs.map(([tab, label]) => {
+    const text = ` ${label} `, n = width(text), on = tab === active;
+    bar += (on ? `${ESC}48;5;237m${bold(fg(C.accent, text))}${ESC}49m` : dim(text)) + ' ';
+    under += on ? fg(C.accent, '━'.repeat(n)) : dim('─'.repeat(n));
+    const span = { tab, from: x, to: x + n };
+    x += n;
+    if (x < w) { under += dim('─'); x += 1; }
+    return span;
+  });
+  return { bar, under: under + dim('─'.repeat(Math.max(0, w - x))), spans };
+};

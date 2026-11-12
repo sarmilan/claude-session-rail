@@ -11,8 +11,9 @@ If you have a `/start` command of your own, it runs as soon as the session start
 
 ```
 ┌─ claude ──────────────────────────┬─ rail ───────────────────────────┐
-│                                   │ Session  Git                   ⇥ │
-│                                   │ ━━━━━━━───────────────────────── │
+│                                   │ ──────────────────────────────── │
+│                                   │  Session   Git                 ⇥ │
+│                                   │ ━━━━━━━━━─────────────────────── │
 │                                   │ Sessions 3                 + new │
 │                                   │ ▸ ◉ Fix login redirect loop busy │
 │                                   │     my-app · fix/42 · Edit redi… │
@@ -55,15 +56,16 @@ The rail has two tabs: **Session**, what Claude is doing, and **Git**, where all
 - **Connectors:** your MCP servers and whether they're connected
 - **Now:** who is doing what this second, and for how long:
   - **Claude:** thinking (with the model), the tool it's running and on what, waiting on its subagents, or waiting for you
-  - nested under it, its **subagents** (with what one is doing, when only one runs) and **background tasks**. Open a background task to see its output.
+  - nested under it, its **subagents** and **background tasks**. Every subagent gets a name and a colour when it starts (Wren, Otto, Juno… from `bin/names.mjs`), and its row shows what it was asked and the call it's running now. Its task and its completion notification read `Name: description`, so you can tell who a response is from. Open a background task or agent to see its output.
   - the **Desk** while it runs an approach review, and the **Gate** when it has just held an edit because the brief isn't approved
-- **Just now:** the last few finished tool calls, with ✔ or ✗, the session's finished background tasks, and `⟲ compacted after <branch>` for an hour after the session compacted itself
+- **Just now:** the last few finished tool calls, with ✔ or ✗ (a subagent's start with its name, in its colour), the session's finished background tasks, and `⟲ compacted after <branch>` for an hour after the session compacted itself
 
 ### Git
 
 ```
- Session  Git                      ⇥
- ─────────━━━───────────────────────
+ ───────────────────────────────────
+  Session   Git                    ⇥
+ ──────────━━━━━────────────────────
  my-app · main                  ↻ 4s
  Worktrees 3
  ▸ ● my-app-login         fix/42-lo…
@@ -222,7 +224,7 @@ It has these parts:
 1. **The rail** (`bin/rail.mjs`) draws the narrow panel in the terminal. It's plain Node with no dependencies.
 2. **The desk** (`bin/desk.mjs`) draws the wider panel. It reads the branch's brief (`bin/brief.mjs`), finds the plan file in the session's conversation log, asks `git` for the diff and `gh` for the board's Todo issues. Its reviewer (`bin/reviewer.mjs`) runs the approach review through `claude -p` with a JSON schema for the findings, read-only tools, no MCP servers and no saved session, and keeps each branch's reviews in `.git/session-rail/reviews/`. Claude runs the same reviewer through its CLI (`node bin/reviewer.mjs --run [--final] [--notes …]`), which the plugin's `review_approach` tool calls. `bin/cadence.mjs` holds the rules: finding statuses, what's open, and when a merge must wait.
 3. **The pane opener** (`bin/pane.mjs`) uses iTerm2's AppleScript support to fill the screen, split Claude's pane, run each panel (desk next to Claude, rail on the far right), size them in one pass, and hand focus back to Claude. The rail also uses it to bring another session's window to the front and to open the window for a new session.
-4. **The plugin** (`hooks/register.ts`) keeps a live record of what the session is doing (`hooks/activity.ts`: turns, every tool call, subagents, the brief gate) in `~/.claude/session-rail/activity/<session id>.json`, which the rail reads every second; the desk adds its running review beside it. It also opens both panels when a session starts, adds `/rail`, `/desk` and `/approve-brief`, and closes them when the session ends. On a feature branch it adds the brief's instructions to Claude's system prompt, refuses code edits until the brief is approved, watches for the approval (`hooks/goahead.ts`) to tell Claude to start, compacts the session after a finished, merged branch (`hooks/compact.ts`), serves `review_approach`, records each `/code-review` report in the branch's reviews, and refuses `gh pr merge` until the final reviews are in. Settings shared by the rail and the hooks (font size, auto-compact) live in `~/.claude/session-rail/settings.json`; each rail keeps its open tab in `<session id>.rail.json` beside the session's activity file.
+4. **The plugin** (`hooks/register.ts`) keeps a live record of what the session is doing (`hooks/activity.ts`: turns, every tool call, subagents with the names it gave them at `agent.spawn`, the brief gate) in `~/.claude/session-rail/activity/<session id>.json`, which the rail reads every second; the desk adds its running review beside it. It also opens both panels when a session starts, adds `/rail`, `/desk` and `/approve-brief`, and closes them when the session ends. On a feature branch it adds the brief's instructions to Claude's system prompt, refuses code edits until the brief is approved, watches for the approval (`hooks/goahead.ts`) to tell Claude to start, compacts the session after a finished, merged branch (`hooks/compact.ts`), serves `review_approach`, records each `/code-review` report in the branch's reviews, and refuses `gh pr merge` until the final reviews are in. Settings shared by the rail and the hooks (font size, auto-compact) live in `~/.claude/session-rail/settings.json`; each rail keeps its open tab in `<session id>.rail.json` beside the session's activity file.
 
 ## Good to know
 
