@@ -7,5 +7,6 @@
   "author": {
     "name": "Milan Somasundaram",
     "url": "https://github.com/sarmilan"
-  }
+  },
+  "types": "./types/index.d.ts"
 }
