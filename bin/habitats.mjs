@@ -53,7 +53,9 @@ const shell = (px, x, c) => {
 };
 
 // Specks below the floor line, the ground the creature walks on: sand, soil, mud.
-const specks = (colours) => (px, x, r) => px.push([x, -1 - Math.floor(r() * 3), colours[Math.floor(r() * colours.length)], 0]);
+// One colour draws no extra random number, so the beach's plants keep the spots they had before.
+const specks = (colours) => (px, x, r) =>
+  px.push([x, -1 - Math.floor(r() * 3), colours.length > 1 ? colours[Math.floor(r() * colours.length)] : colours[0], 0]);
 
 // Habitats: plants per 100 sprite pixels of width, placed at random (but seeded) spots.
 const HABITATS = {

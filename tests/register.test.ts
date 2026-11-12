@@ -1,6 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import { goAhead } from '../hooks/goahead.ts'
 import * as compact from '../hooks/compact.ts'
+import * as cadence from '../bin/cadence.mjs'
 
 // Each hook below stands for the engine. process.run records the controller action asked for.
 const harness = (on: Parameters<Parameters<typeof test>[1]>[1], reply = 'opened', commands = ['help']) => {
@@ -192,6 +193,9 @@ test('the system prompt explains the brief on a feature branch, not on main', as
   expect(s?.text).toContain("Don't wait to be asked")
   expect(s?.text).toContain('one commit per chunk')
   expect(s?.text).toContain('Move straight on to the next chunk')
+  expect(s?.text).toContain('Call the review_approach tool')
+  expect(s?.text).toContain('/code-review --fix')
+  expect(s?.text).toContain('final: true')
   expect(s?.scope).toBe('session')
 })
 
@@ -346,4 +350,207 @@ test('a compaction that keeps failing is tried 3 times, then dropped', async ($,
   repo.branch = 'main'
   for (let i = 0; i < 5; i++) await poll($)
   expect(compactions.length).toBe(3)
+})
+
+// ── The review cadence (bin/cadence.mjs) ──────────────────────────────────────
+const approachRun = (head: string, dirty: boolean, statuses: string[] = []) => ({
+  type: 'approach', startedAt: 1, finishedAt: 2, head, dirty, verdict: statuses.length ? 'simpler-path' : 'on-track', summary: '',
+  findings: statuses.map((status, i) => ({ id: `a-${i}`, kind: 'simpler', title: `finding ${i}`, detail: '', severity: 'medium', status })),
+})
+const report = (outcomes: (string | undefined)[]) => ({
+  findings: outcomes.map((outcome, i) => ({ file: 'a.ts', line: i + 1, summary: `bug ${i}`, failure_scenario: 'x', ...(outcome ? { outcome } : {}) })),
+})
+
+test('cadence: a code report maps outcomes to statuses, and only the newest code review counts', () => {
+  const first = cadence.codeRun(report([undefined, undefined]), { head: 'h', dirty: true, at: 5 })
+  expect(first.findings.map(f => f.status)).toEqual(['open', 'open'])
+  const fixed = cadence.codeRun(report(['fixed', 'no_change_needed']), { head: 'h', dirty: true, at: 6 })
+  expect(fixed.findings.map(f => f.status)).toEqual(['applied', 'declined'])
+  expect(cadence.openFindings([fixed, first]).code).toEqual([])
+  expect(cadence.openFindings([first, fixed]).code.length).toBe(2)
+  expect(cadence.codeRun(report(['skipped']), { head: 'h', dirty: true, at: 7 }).findings[0]).toMatchObject({ status: 'declined', outcome: 'skipped' })
+})
+
+test('cadence: checks mark earlier findings; untracked findings never count', () => {
+  const runs = [approachRun('h', true, ['open', 'open']), { ...approachRun('h', true), findings: [{ title: 'old', acceptedAt: null }] }]
+  expect(cadence.openFindings(runs).approach.length).toBe(2)
+  const checked = cadence.applyChecks(runs, [{ id: 'a-0', status: 'applied' }, { id: 'a-1', status: 'declined', note: 'runs once' }])
+  expect(cadence.openFindings(checked).approach).toEqual([])
+  expect(checked[0]!.findings[1]).toMatchObject({ status: 'declined', note: 'runs once' })
+})
+
+// A repo on feature/x with an approved brief; the review record and HEAD are the test's.
+const cadenceHarness = (on: Parameters<Parameters<typeof test>[1]>[1], runs: unknown[] = []) => {
+  const files: Record<string, string> = {
+    '/repo/.git/session-rail/briefs/feature%2Fx.md': COMPLETE,
+    '/repo/.git/session-rail/briefs/feature%2Fx.approved.json': '{"approvedAt":1}',
+    '/repo/.git/session-rail/reviews/feature%2Fx.json': JSON.stringify({ runs }),
+  }
+  const ran: string[] = []
+  const calls: string[] = []
+  on('session.cwd', () => ({ value: '/repo' }))
+  on('command.register', () => ({ value: { command: 'x' } }))
+  on('tool.register', () => ({ value: { tool: 'mcp__session-rail__review_approach' } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('process.run', (_, e) => {
+    const a = e.argv.join(' ')
+    if (e.argv[0] === 'mv') {
+      files[e.argv[3]!] = files[e.argv[2]!]!
+      delete files[e.argv[2]!]
+    }
+    calls.push(a)
+    const out = a.includes('--git-common-dir') ? '/repo/.git\nfeature/x\n' : a.endsWith('rev-parse HEAD') ? 'h2\n' : a.includes('status --porcelain') ? ' M a.ts\n' : a.includes('reviewer.mjs') ? 'Approach review: on-track.\n' : ''
+    return { value: { exitCode: 0, stdout: out, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('fs.read', (_, e) => (e.path in files ? { value: files[e.path]! } : { deny: 'ENOENT' }))
+  on('fs.write', (_, e) => {
+    files[e.path] = e.text
+    return { value: undefined }
+  })
+  on('tool.call', (_, e) => {
+    ran.push(e.tool === 'Bash' ? String((e as { command?: string }).command) : e.tool)
+    return { result: { ok: true } } as never
+  })
+  return { files, ran, calls }
+}
+
+test('reportFromText takes the last JSON findings block', () => {
+  const text = 'Found:\n```json\n[{"summary":"a"}]\n```\nFixed:\n```json\n[{"summary":"a","outcome":"fixed"}]\n```\nDone.'
+  expect(cadence.reportFromText(text)).toEqual({ findings: [{ summary: 'a', outcome: 'fixed' }], run: null })
+  expect(cadence.reportFromText('```json\n[]\n```')).toEqual({ findings: [], run: null })
+  expect(cadence.reportFromText('```json\n{"run":"cr-1","findings":[]}\n```')).toEqual({ findings: [], run: 'cr-1' })
+  expect(cadence.reportFromText('```json\n{"x":1}\n```')).toBeNull()
+  expect(cadence.reportFromText('no block')).toBeNull()
+  // A fence quoted inside a finding's text doesn't end the block.
+  expect(cadence.reportFromText('```json\n[{"summary":"use ``` here","outcome":"fixed"}]\n```')).toEqual({ findings: [{ summary: 'use ``` here', outcome: 'fixed' }], run: null })
+})
+
+// /code-review is armed by the Skill tool running it (or the person typing it); its prompt carries the token.
+const reviewHarness = (on: Parameters<Parameters<typeof test>[1]>[1]) => {
+  const h = cadenceHarness(on)
+  on('skill.prompt', () => ({ text: 'Review the diff.' }))
+  on('turn.complete', () => ({ text: '' }))
+  on('command.run', () => ({}))
+  return h
+}
+const RECORD = '/repo/.git/session-rail/reviews/feature%2Fx.json'
+const done = (agentId: string | undefined, answer: string, isAborted = false) =>
+  ({ ...(agentId ? { agentId } : {}), answer, durationMs: 1, isAborted, turnId: 't', reason: 'answer' }) as never
+const prompt = ($: Parameters<Parameters<typeof test>[1]>[0]) =>
+  $.skill.prompt({ skill: 'code-review', text: 'Review the diff.', frontmatter: {} } as never).then(r => r.text)
+const tokenOf = (text: string) => /"run": "([^"]+)"/.exec(text)?.[1] ?? ''
+const block = (run: string | null, findings: unknown[]) => 'Done.\n```json\n' + JSON.stringify(run === null ? findings : { run, findings }) + '\n```'
+const FINDINGS = [{ summary: 'off by one', outcome: 'fixed' }, { summary: 'docs', outcome: 'skipped' }, { summary: 'left' }]
+
+test('a /code-review run is recorded from the answer that carries its token, whoever gives it', async ($, on) => {
+  const { files } = reviewHarness(on)
+  await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
+  // Preloaded, not run: the prompt is left alone.
+  expect(await prompt($)).toBe('Review the diff.')
+  await $.tool.call({ tool: 'Skill', skill: 'code-review', args: '--fix' } as never)
+  const text = await prompt($), token = tokenOf(text)
+  expect(token).toMatch(/^cr-/)
+  expect(await prompt($)).toBe('Review the diff.') // only the run's first prompt
+  // A finder's bare list, another token, and a report before --fix (no outcomes) aren't it.
+  await $.turn.complete(done('n1', block(null, [])))
+  await $.turn.complete(done('x', block('cr-other', FINDINGS)))
+  await $.turn.complete(done('f1', block(token, [{ summary: 'left' }])))
+  expect(files[RECORD]).toBe(JSON.stringify({ runs: [] }))
+  await $.turn.complete(done('f1', block(token, FINDINGS)))
+  const saved = JSON.parse(files[RECORD]!).runs
+  expect(saved[0]).toMatchObject({ type: 'code', head: 'h2' })
+  expect(saved[0].findings.map((f: { status: string }) => f.status)).toEqual(['applied', 'declined', 'open'])
+  // Recorded once: the run is over.
+  await $.turn.complete(done('f1', block(token, [])))
+  expect(JSON.parse(files[RECORD]!).runs.length).toBe(1)
+})
+
+test('an inline or typed /code-review is read from the main loop, and an aborted answer records nothing', async ($, on) => {
+  const { files } = reviewHarness(on)
+  await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
+  await $.command.run({ command: 'code-review', args: '--fix' } as never)
+  const token = tokenOf(await prompt($))
+  await $.turn.complete(done(undefined, block(token, []), true))
+  expect(files[RECORD]).toBe(JSON.stringify({ runs: [] }))
+  await $.turn.complete(done(undefined, block(token, [])))
+  expect(JSON.parse(files[RECORD]!).runs[0]).toMatchObject({ type: 'code', verdict: 'clean' })
+})
+
+test('cadence: a check marks the finding checked, so a code finding is judged once', () => {
+  const code = cadence.codeRun(report(['skipped']), { head: 'h', dirty: true, at: 5 })
+  const id = code.findings[0]!.id
+  const [after] = cadence.applyChecks([code], [{ id, status: 'open', note: 'a real bug' }])
+  expect(after!.findings[0]).toMatchObject({ status: 'open', checked: true, note: 'a real bug' })
+  expect(cadence.staffCheck([after!]).map(f => f.id)).toEqual([id]) // reopened: checked again until fixed
+  const [ok] = cadence.applyChecks([code], [{ id, status: 'declined', note: 'docs only' }])
+  expect(cadence.staffCheck([ok!])).toEqual([])
+  expect(cadence.staffCheck([code]).map(f => f.id)).toEqual([id])
+})
+
+test('review_approach runs the reviewer\'s CLI with final and notes, and returns what it prints', async ($, on) => {
+  const { calls } = cadenceHarness(on)
+  const r = (await $.tool.call({ tool: 'mcp__session-rail__review_approach', final: true, notes: [{ id: 'a-0', note: 'runs once' }] } as never)) as { result?: string }
+  expect(r.result).toBe('Approach review: on-track.')
+  const run = calls.find(c => c.includes('reviewer.mjs'))!
+  expect(run).toContain('--run --final --notes [{"id":"a-0","note":"runs once"}]')
+})
+
+
+test('cadence: a code finding the approach review reopened outlives the next /code-review until it is settled', () => {
+  const first = cadence.codeRun(report(['skipped']), { head: 'h2', dirty: true, at: 5 })
+  const id = first.findings[0]!.id
+  const [reopened] = cadence.applyChecks([first], [{ id, status: 'open', note: 'a real bug' }])
+  const next = cadence.codeRun(report([]), { head: 'h2', dirty: true, at: 6 }) // the new run doesn't raise it again
+  expect(cadence.openFindings([next, reopened!]).code.map(f => f.id)).toEqual([id])
+  expect(cadence.staffCheck([next, reopened!]).map(f => f.id)).toEqual([id])
+  const settled = cadence.applyChecks([next, reopened!], [{ id, status: 'applied', note: 'fixed now' }])
+  expect(cadence.openFindings(settled).code).toEqual([])
+})
+
+test('cadence: trimming the record keeps an older run that still holds an open finding', () => {
+  const runs = Array.from({ length: cadence.KEEP_RUNS + 2 }, (_, i) => approachRun('h', false, i === cadence.KEEP_RUNS + 1 ? ['open'] : []))
+  expect(cadence.keptRuns(runs).length).toBe(cadence.KEEP_RUNS + 1)
+})
+
+test('cadence: only gh pr merge is gated', () => {
+  expect(cadence.mergesPr('gh pr merge 24 --merge && git checkout main')).toBe(true)
+  expect(cadence.mergesPr('(gh pr merge 24)')).toBe(true)
+  expect(cadence.mergesPr('git add -A && git commit -m "x"')).toBe(false)
+  expect(cadence.mergesPr('echo "then gh pr merge"')).toBe(false)
+})
+
+test('cadence: a merge needs a code review after the chunks, then a final approach review on the clean last commit, nothing open', () => {
+  const chunk = { ...approachRun('h1', true), startedAt: 5 }
+  const code = cadence.codeRun(report([]), { head: 'h1', dirty: true, at: 10 }) // its fixes were committed after it: h1 → h2
+  const final = { ...approachRun('h2', false), final: true, startedAt: 20 }
+  expect(cadence.gateReason([final, code, chunk], { head: 'h2' })).toBe(null)
+  // No code review since the last chunk's review.
+  expect(cadence.gateReason([final, { ...chunk, startedAt: 15 }, code], { head: 'h2' })).toContain("/code-review hasn't run")
+  // A final review before the code review, on an older commit, on a dirty tree, or not asked for as final doesn't count.
+  for (const f of [{ ...final, startedAt: 8 }, { ...final, head: 'h1' }, { ...final, dirty: true }])
+    expect(cadence.gateReason([f, code, chunk].sort((x, y) => y.startedAt - x.startedAt), { head: 'h2' })).toContain('final: true')
+  // A non-final approach review after the code review is a chunk's review: the code review is stale again.
+  expect(cadence.gateReason([{ ...final, final: false }, code, chunk], { head: 'h2' })).toContain("/code-review hasn't run")
+  // One run from the desk on demand isn't a chunk's review.
+  expect(cadence.gateReason([{ ...final, final: false, manual: true, startedAt: 25 }, final, code, chunk], { head: 'h2' })).toBe(null)
+  // Open findings block it, with the two-round cap in the message.
+  const r = cadence.gateReason([{ ...approachRun('h2', false, ['open']), final: true, startedAt: 20 }, code, chunk], { head: 'h2' })
+  expect(r).toContain('1 open finding ("finding 0")')
+  expect(r).toContain('at most two rounds')
+  // So does a fixer's verdict the approach review hasn't judged.
+  const fixed = cadence.codeRun(report(['fixed']), { head: 'h1', dirty: true, at: 10 })
+  expect(cadence.gateReason([final, fixed, chunk], { head: 'h2' })).toContain("hasn't checked what /code-review's fixer did")
+})
+
+test('commits go through; gh pr merge waits for the final reviews; without the tool nothing is gated', async ($, on) => {
+  const { ran } = cadenceHarness(on)
+  await $.tool.call({ tool: 'Bash', command: 'gh pr merge 25 --merge' } as never) // the tool was never registered
+  expect(ran).toEqual(['gh pr merge 25 --merge'])
+  await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
+  const commit = ['git', 'commit', '-m', '"chunk 1"'].join(' ')
+  await $.tool.call({ tool: 'Bash', command: commit } as never)
+  expect(ran).toContain(commit)
+  const r = (await $.tool.call({ tool: 'Bash', command: 'gh pr merge 25 --merge' } as never)) as { deny?: string }
+  expect(r.deny).toContain('merge after a final review of the whole branch')
+  expect(ran.filter(c => c.startsWith('gh pr merge')).length).toBe(1)
 })
