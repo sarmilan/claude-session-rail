@@ -1,5 +1,5 @@
-// The rail's mascot: a little pixel creature (see creatures.mjs) wandering along a floor line under the
-// legend. It walks, turns at the edges, blinks, hurries when Claude is busy, and falls asleep after a
+// The rail's mascot: a little pixel creature (see creatures.mjs) wandering along a floor line at the
+// bottom of the rail. It walks, turns at the edges, blinks, hurries when Claude is busy, and falls asleep after a
 // minute of nothing happening. It grows through four stages as the context window fills (`setStage`),
 // moving faster and angrier at each: hopping from the adult on, shaking and fuming when heavy.
 //
@@ -163,8 +163,10 @@ export function createMascot({ images = false, creature = 0, now = Date.now() } 
     get index() { return index; },
     get name() { return CREATURES[index].name; },
 
-    // Switch to the next creature; returns its name.
-    next() { index = (index + 1) % CREATURES.length; s.phase = 0; return CREATURES[index].name; },
+    // Switch to the next creature (or the previous one, d = -1); returns its name.
+    next(d = 1) { index = (index + d + CREATURES.length) % CREATURES.length; s.phase = 0; return CREATURES[index].name; },
+    // Switch to creature i; returns its name.
+    pick(i) { index = ((i % CREATURES.length) + CREATURES.length) % CREATURES.length; s.phase = 0; return CREATURES[index].name; },
 
     // The terminal's cell size, so the strip's pixels come out square.
     setCellAspect(r) { if (r > 0.2 && r < 1.5) { aspect = r; cache.clear(); } },

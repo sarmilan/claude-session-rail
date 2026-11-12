@@ -35,7 +35,7 @@ If you have a `/start` command of your own, it runs as soon as the session start
 │                                   │ ○ Write release notes  idle  app │
 │                                   │   docs · 12m                     │
 │                                   │                                  │
-│  >                                │ ↑↓ move · ⏎ open · q quit        │
+│  >                                │                                  │
 └───────────────────────────────────┴──────────────────────────────────┘
 ```
 
@@ -54,7 +54,7 @@ Click a row, or use the arrow keys and Enter, to open it. Pull requests open in 
 
 ```
 ┌─ desk ───────────────────────────────────────────────────────────────────────┐
-│  Plan   Diff +134 −6   Review 2                               follows Claude │
+│  Plan   Diff +134 −6   Review 2                                              │
 │ ──────────────────────────────────────────────────────────────────────────── │
 │ 4 files since the branch forked  +134 −6                                     │
 │                                                                              │
@@ -69,14 +69,13 @@ Click a row, or use the arrow keys and Enter, to open it. Pull requests open in 
 - **Diff:** every file changed since the branch forked from the default branch, the same base as the rail's `+N −N`. Untracked files are included, marked `new`. Open a file to see its diff.
 - **Review:** click **Run review** to run the `code-review` skill (the same review `/end` expects) on those changes in a separate, headless Claude. Each finding shows its severity, file and line. Click **accept** on one, or **Accept all**, to hand them to Claude to fix. Accepted findings stay in the list, ticked. Reviews are saved per branch inside `.git`, so the tab keeps a record of earlier runs and what you accepted. Open a finding to jump to that line in the diff.
 
-The desk follows Claude: a new or changed plan brings up Plan, changed files bring up Diff, and a finished review brings up Review. Pick a tab yourself and it stops following until you press `a`.
+The desk opens on Plan and stays on the tab you pick.
 
 Keys:
 
 | Key | Does |
 |---|---|
-| `Tab`, `1` `2` `3`, or click | switch tabs |
-| `a` | follow Claude again |
+| `Tab` / `Shift-Tab`, `1` `2` `3`, or click | switch tabs |
 | `↑` `↓`, `j` `k`, mouse wheel | move or scroll |
 | `Space` / `b`, `PgDn` / `PgUp`, `g` / `G` | page, top, bottom |
 | `Enter` | open a file (Diff) or go to a finding's line (Review) |
@@ -112,7 +111,8 @@ If macOS asks whether to allow controlling iTerm2, allow it. That's how the pane
 - The rail and the desk open by themselves when you start `claude`.
 - `/rail` hides or shows the rail, and `/desk` the desk.
 - They close when you quit Claude.
-- Keys: `↑` `↓` to move, `Enter` to open, `Esc` to go back, `c` to change creature, `[` `]` to preview its growth stages (for 10 seconds), `q` to close the rail.
+- Keys: `↑` `↓` to move, `Enter` to open, `Esc` to go back, `c` to change creature, `q` to close the rail.
+- **⚙ settings**, in the rail's bottom-right corner, opens two rows under the creature: `←` `→` on **Font size** makes the Claude pane, the desk and the rail bigger or smaller together (`Enter` for Reset), and `←` `→` on **Pet** picks the creature. The font size is remembered and comes back with the next session. It works by switching the panes to iTerm profiles it generates (`session-rail 15pt` and so on), which show up in iTerm's Profiles menu.
 - A little pixel creature wanders along the bottom: Claudey the snail, a turtle or a crab. It walks through its own habitat (woodland for the snail, a pond for the turtle, a beach for the crab) with plants swaying gently behind it in iTerm2. It hurries while Claude is busy and falls asleep when things go quiet. Your pick is remembered.
 - The creature grows as the session's context window fills: hatchling until the session's first reply, then juvenile, adult from 40% (faster, hopping), and heavy from 60% (bigger, shaking, fuming). Each creature has a drawing for each stage, from a pale little hatchling to a spiked, scowling heavy.
 
