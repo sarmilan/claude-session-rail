@@ -15,6 +15,7 @@ A Claude Code plugin (repo root = plugin = marketplace) that opens a Claude-desk
 - `bin/habitats.mjs`: the foliage behind the mascot (woodland, pond, beach), picked by each creature's `habitat`
 - `bin/pane.mjs`: iTerm2 split controller (`open|close|toggle|status [rail|desk]`, plus `focus <tty>` and `window <tty> <command>` for the rail's Sessions; prints one JSON line, always exits 0). Layout: Claude │ desk │ rail
 - `hooks/register.ts`: plugin hooks (session.start opens the rail then the desk, `/rail`, `/desk`, session.end closes both; `/start` once per session, skipped when the rail's **+ new** set `SESSION_RAIL_STARTED`; on a feature branch the brief: a system prompt section, `/approve-brief`, and a gate on Edit/Write/NotebookEdit until it's approved)
+- `hooks/goahead.ts`: when to tell Claude the brief was approved (pure). register.ts polls the approval every 2s, keeps the last one seen in `$.state`, and sends the go-ahead with `$.prompt.submit`
 - `hooks/activity.ts`: the session's live activity (pure state changes) that register.ts writes to `~/.claude/session-rail/activity/<session id>.json` for the rail's Now section; the desk writes `<session id>.desk.json` beside it
 - `tests/register.test.ts`: plugin tests
 

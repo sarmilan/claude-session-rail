@@ -1,6 +1,7 @@
 import type { EngineInterface, Register } from 'claude-code'
 import { approvalRecord, briefFile, briefStatus, NO_BRIEF_BRANCHES, parseBrief } from '../bin/brief.mjs'
 import * as act from './activity.ts'
+import { goAhead } from './goahead.ts'
 
 // The controller (bin/pane.mjs) does the iTerm work; this module only decides when to call it.
 // It runs through sh so the user's PATH finds `node`; the script path is passed as an argument,
@@ -132,7 +133,37 @@ const approveCommand = async ($: EngineInterface) => {
   if (brief.missing.length) return `Can't approve yet: the brief is missing ${brief.missing.join(', ')}.\n${b.path}`
   if (briefStatus(brief, b.approval) === 'approved') return `The brief for ${b.branch} is already approved.`
   await $.fs.write(b.approvedPath, approvalRecord(brief, Date.now()))
-  return `Brief approved. Claude can edit code on ${b.branch}.`
+  return `Brief approved. Claude can edit code on ${b.branch} and will be told to go ahead in a moment.`
+}
+
+// ── The go-ahead (goahead.ts) ─────────────────────────────────────────────────
+// Approving the brief (the desk's button or A, or /approve-brief) only writes the approval file, so the hooks
+// look for a new approval every 2 seconds and tell Claude to start (or, after a change, to carry on). One
+// sender for every way to approve; $.prompt.submit waits until Claude is idle and never types over the person.
+const APPROVAL_SEEN = { plugin: 'session-rail', key: 'approvalSeen' } as const
+let polling = false
+const checkApproval = async ($: EngineInterface) => {
+  if (polling) return
+  polling = true
+  try {
+    const b = await readBrief($)
+    if (!b) return
+    const now = { branch: b.branch, approvedAt: typeof b.approval?.approvedAt === 'number' ? b.approval.approvedAt : null }
+    const prev = (await $.state.get(APPROVAL_SEEN)).value ?? null
+    if (prev?.branch === now.branch && prev.approvedAt === now.approvedAt) return
+    await $.state.set(APPROVAL_SEEN, now)
+    const text = goAhead(prev, now, b.text ? parseBrief(b.text).chunks[0]?.name : undefined)
+    if (text) await $.prompt.submit({ text })
+  } catch {
+  } finally {
+    polling = false
+  }
+}
+let poller: { cancel: () => void } | null = null
+const watchApproval = ($: EngineInterface) => {
+  poller?.cancel()
+  void checkApproval($)
+  poller = $.clock.every(2_000, () => void checkApproval($))
 }
 
 // ── Live activity for the rail's Now section (activity.ts) ────────────────────
@@ -187,6 +218,7 @@ export const register: Register = on => {
       void pane($, 'layout')
       void runStart($)
     }
+    if (e.isInteractive) watchApproval($)
     return next(e)
   })
 

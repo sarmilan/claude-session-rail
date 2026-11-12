@@ -1,4 +1,5 @@
 import { expect, test } from 'claude-code/testing'
+import { goAhead } from '../hooks/goahead.ts'
 
 // Each hook below stands for the engine. process.run records the controller action asked for.
 const harness = (on: Parameters<Parameters<typeof test>[1]>[1], reply = 'opened', commands = ['help']) => {
@@ -148,6 +149,38 @@ test('a complete brief asks for approval; once approved, edits go through and st
   expect((await approve($)).text).toContain('Brief approved') // approving again after a change
   await $.tool.call(edit('/repo/src/b.ts'))
   expect(edits).toEqual(['/repo/src/a.ts', '/repo/src/b.ts'])
+})
+
+// ── The go-ahead (hooks/goahead.ts) ──────────────────────────────────────────
+test('goAhead: a new approval starts chunk 1, a newer one carries on, an old or other-branch one says nothing', () => {
+  const b = 'feature/x'
+  expect(goAhead({ branch: b, approvedAt: null }, { branch: b, approvedAt: 5 }, 'Build it')).toContain('Start on chunk 1 (Build it)')
+  expect(goAhead({ branch: b, approvedAt: 5 }, { branch: b, approvedAt: 9 })).toContain('change to the brief for feature/x is approved')
+  expect(goAhead(null, { branch: b, approvedAt: 5 })).toBe(null) // approved before the session started
+  expect(goAhead({ branch: 'other', approvedAt: null }, { branch: b, approvedAt: 5 })).toBe(null) // just switched branch
+  expect(goAhead({ branch: b, approvedAt: 5 }, { branch: b, approvedAt: 5 })).toBe(null)
+  expect(goAhead({ branch: b, approvedAt: 5 }, { branch: b, approvedAt: null })).toBe(null) // approval removed
+})
+
+test('approving the brief tells Claude to start, once', async ($, on) => {
+  briefHarness(on, { brief: COMPLETE })
+  const sent: string[] = []
+  on('prompt.submit', (_, e) => {
+    sent.push(e.text)
+    return { text: e.text }
+  })
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  let periods = 0
+  on('clock.every', () => (++periods <= 6 ? { value: undefined } : { deny: 'enough' }))
+  await $.session.start({ cwd: '/repo', surface: null, isInteractive: true })
+  await new Promise(r => setTimeout(r, 20))
+  expect(sent).toEqual([]) // nothing approved yet
+  await approve($)
+  periods = 0
+  await $.session.start({ cwd: '/repo', surface: null, isInteractive: true }) // a reload: polls again from the saved state
+  await new Promise(r => setTimeout(r, 30))
+  expect(sent.length).toBe(1)
+  expect(sent[0]).toContain('The brief for feature/x is approved. Start on chunk 1')
 })
 
 test('the system prompt explains the brief on a feature branch, not on main', async ($, on) => {

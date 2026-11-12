@@ -107,7 +107,8 @@ Files: src/a.ts, src/b.ts
 
 - As you talk the problem through, Claude says when it's scoped out and writes the brief. You don't need to ask.
 - Claude can't edit code (Edit, Write, NotebookEdit) until the brief has a problem, a solution and at least one chunk, and you've pressed **Approve** in the Plan tab (or `A`, or `/approve-brief` when the desk isn't open). Writes Claude makes through the shell aren't covered.
-- Once approved, nothing blocks again. If the problem, solution or outline changes later, the Plan tab says "changed since" and offers **Approve again**.
+- Approving is the go-ahead: within a couple of seconds the plugin sends Claude a message to start on chunk 1, so you never have to type "go". It waits until Claude is idle and doesn't type over what you're writing.
+- Once approved, nothing blocks again. If the problem, solution or outline changes later, the Plan tab says "changed since" and offers **Approve again**, which tells Claude the change is approved so it carries on.
 - Claude works through the chunks in order. As each one is finished, it reviews it against the plan (running the tests), adds a short `Done:` summary and its `Files:`, commits it on its own and pushes, opening the pull request after the first chunk, then moves straight on to the next chunk unless something needs your decision.
 - The approach review runs by itself at milestones: when a chunk gets its `Done:` line, and when the plan changes after approval, once the brief has been still for 20 seconds. **Run review** runs it any time, before approval too. Each run is one `claude -p` call.
 
@@ -166,7 +167,7 @@ It has these parts:
 1. **The rail** (`bin/rail.mjs`) draws the narrow panel in the terminal. It's plain Node with no dependencies.
 2. **The desk** (`bin/desk.mjs`) draws the wider panel. It reads the branch's brief (`bin/brief.mjs`), finds the plan file in the session's conversation log, asks `git` for the diff and `gh` for the board's Todo issues. Its reviewer (`bin/reviewer.mjs`) runs the approach review through `claude -p` with a JSON schema for the findings, read-only tools, no MCP servers and no saved session, and keeps each branch's reviews in `.git/session-rail/reviews/`.
 3. **The pane opener** (`bin/pane.mjs`) uses iTerm2's AppleScript support to fill the screen, split Claude's pane, run each panel (desk next to Claude, rail on the far right), size them in one pass, and hand focus back to Claude. The rail also uses it to bring another session's window to the front and to open the window for a new session.
-4. **The plugin** (`hooks/register.ts`) keeps a live record of what the session is doing (`hooks/activity.ts`: turns, every tool call, subagents, the brief gate) in `~/.claude/session-rail/activity/<session id>.json`, which the rail reads every second; the desk adds its running review beside it. It also opens both panels when a session starts, adds `/rail`, `/desk` and `/approve-brief`, and closes them when the session ends. On a feature branch it adds the brief's instructions to Claude's system prompt and refuses code edits until the brief is approved.
+4. **The plugin** (`hooks/register.ts`) keeps a live record of what the session is doing (`hooks/activity.ts`: turns, every tool call, subagents, the brief gate) in `~/.claude/session-rail/activity/<session id>.json`, which the rail reads every second; the desk adds its running review beside it. It also opens both panels when a session starts, adds `/rail`, `/desk` and `/approve-brief`, and closes them when the session ends. On a feature branch it adds the brief's instructions to Claude's system prompt, refuses code edits until the brief is approved, and watches for the approval (`hooks/goahead.ts`) to tell Claude to start.
 
 ## Good to know
 
