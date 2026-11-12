@@ -90,7 +90,7 @@ const restoreTab = (sid) => {
   if (tabRestored || !sid) return;
   tabRestored = true;
   if (tabSwitched) return saveTab(sid); // a switch before the session was known wins over the saved tab, and is kept
-  try { const t = JSON.parse(readFileSync(railFile(sid), 'utf8')).tab; if (TABS.includes(t)) showTab(t); } catch {}
+  try { const t = JSON.parse(readFileSync(railFile(sid), 'utf8')).tab; if (TABS.includes(t) && t !== ui.tab) showTab(t); } catch {}
 };
 const ui = { sel: null, open: { environment: true, context: false, connectors: false, more: false, settings: false }, scroll: 0, tick: 0,
   overlay: null, toast: null, input: null, tab: TABS.includes(startTab) ? startTab : 'session' };
