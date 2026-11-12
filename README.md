@@ -58,18 +58,43 @@ Click a row, or use the arrow keys and Enter, to open it. Pull requests open in 
 │ ──────────────────────────────────────────────────────────────────────────── │
 │ 4 files since the branch forked  +134 −6                                     │
 │                                                                              │
-│ new bin/desk.mjs                                                     +37 −0  │
-│     bin/rail.mjs                                                      +8 −2  │
-│     bin/sources.mjs                                                  +87 −2  │
-│     README.md                                                         +2 −2  │
+│ Chunk 1: Show the date and time in the header                       +95 −2   │
+│ ✔ Added date and time state, pulled from the clock API once a minute         │
+│       src/header.tsx                                                 +58 −2  │
+│   new src/useClock.ts                                                +37 −0  │
+│                                                                              │
+│ Not in a chunk yet                                                  +39 −4   │
+│       README.md                                                       +2 −2  │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Plan:** the plan Claude writes in plan mode, shown as it's written.
-- **Diff:** every file changed since the branch forked from the default branch, the same base as the rail's `+N −N`. Untracked files are included, marked `new`. Open a file to see its diff.
-- **Review:** click **Run review** to run the `code-review` skill (the same review `/end` expects) on those changes in a separate, headless Claude. Each finding shows its severity, file and line. Click **accept** on one, or **Accept all**, to hand them to Claude to fix. Accepted findings stay in the list, ticked. Reviews are saved per branch inside `.git`, so the tab keeps a record of earlier runs and what you accepted. Open a finding to jump to that line in the diff.
+- **Plan:** the branch's **brief** (see below), live, with an **Approve** button when it's ready. Until the branch has a brief, and on `main`, it lists the **Todo** issues on the repo's GitHub project board first, so you can pick one up, then the plan Claude writes in plan mode, or the latest merged PRs and commits.
+- **Diff:** every file changed since the branch forked from the default branch, the same base as the rail's `+N −N`, grouped under the brief's chunks with each chunk's summary. Untracked files are included, marked `new`. Open a file to see its diff.
+- **Review:** a staff-engineer review of the approach, run in a separate, headless Claude. It reads the brief, each chunk's summary and files, and how much each file changed, and says whether this is the simplest, most elegant and least costly way to the goal: on track, a simpler path exists, or off the goal, with findings such as a simpler design, work beyond the goal, avoidable cost, or part of the goal not covered. It doesn't review code line by line; that's the code review in `/end`. Click **accept** on a finding, or **Accept all**, to hand it to Claude, who acts on it and updates the brief. Reviews are saved per branch inside `.git`.
 
 The desk opens on Plan and stays on the tab you pick.
+
+### The session brief
+
+On any branch but `main` or `master`, Claude keeps a brief for the branch: what the session sets out to do, and what the work is checked against at the end. It lives inside `.git` (`.git/session-rail/briefs/`), so it's never committed.
+
+```
+# <title>
+## Problem       Currently it's A; we need B to solve A
+## Solution      As an X, I should be able to Y so I can Z
+## Design        UI/UX decisions
+## Mockups       ASCII mockups
+## Engineering
+### Chunk 1: <name>
+<outline>
+Done: <summary>             ← added as each chunk is finished
+Files: src/a.ts, src/b.ts
+```
+
+- As you talk the problem through, Claude says when it's scoped out and writes the brief. You don't need to ask.
+- Claude can't edit code (Edit, Write, NotebookEdit) until the brief has a problem, a solution and at least one chunk, and you've pressed **Approve** in the Plan tab (or `A`, or `/brief approve`). Writes Claude makes through the shell aren't covered.
+- Once approved, nothing blocks again. If the problem, solution or outline changes later, the Plan tab says "changed since" and offers **Approve again**.
+- The approach review runs by itself at milestones: when a chunk gets its `Done:` line, and when the plan changes after approval, once the brief has been still for 20 seconds. **Run review** runs it any time, before approval too. Each run is one `claude -p` call.
 
 Keys:
 
@@ -78,14 +103,15 @@ Keys:
 | `Tab` / `Shift-Tab`, `1` `2` `3`, or click | switch tabs |
 | `↑` `↓`, `j` `k`, mouse wheel | move or scroll |
 | `Space` / `b`, `PgDn` / `PgUp`, `g` / `G` | page, top, bottom |
-| `Enter` | open a file (Diff) or go to a finding's line (Review) |
+| `Enter` | open a file (Diff) |
 | `n` `p`, `Esc` | next/previous file, back to the list |
+| `A` | approve the brief (Plan) |
 | `r` | run a review (Review), refresh (other tabs) |
 | `y`, `A` | accept the selected finding, accept all (Review) |
 | `x` | cancel a running review |
 | `q` | close the desk |
 
-A review takes a minute or more and uses your Claude account like any other `claude -p` run. Nothing is sent to Claude until you accept it.
+A review takes under a minute and uses your Claude account like any other `claude -p` run. Nothing is sent to Claude until you accept it.
 
 ## What you need
 
@@ -123,9 +149,9 @@ The rail only reads files Claude Code already keeps on your Mac: the list of run
 It has these parts:
 
 1. **The rail** (`bin/rail.mjs`) draws the narrow panel in the terminal. It's plain Node with no dependencies.
-2. **The desk** (`bin/desk.mjs`) draws the wider panel. It finds the plan file in the session's conversation log and asks `git` for the diff. Its reviewer (`bin/reviewer.mjs`) runs the `code-review` skill through `claude -p` with a JSON schema for the findings, no MCP servers and no saved session, and keeps each branch's reviews in `.git/session-rail/reviews/`.
+2. **The desk** (`bin/desk.mjs`) draws the wider panel. It reads the branch's brief (`bin/brief.mjs`), finds the plan file in the session's conversation log, asks `git` for the diff and `gh` for the board's Todo issues. Its reviewer (`bin/reviewer.mjs`) runs the approach review through `claude -p` with a JSON schema for the findings, read-only tools, no MCP servers and no saved session, and keeps each branch's reviews in `.git/session-rail/reviews/`.
 3. **The pane opener** (`bin/pane.mjs`) uses iTerm2's AppleScript support to fill the screen, split Claude's pane, run each panel (desk next to Claude, rail on the far right), size them in one pass, and hand focus back to Claude.
-4. **The plugin** (`hooks/register.ts`) opens both panels when a session starts, adds `/rail` and `/desk`, and closes them when the session ends.
+4. **The plugin** (`hooks/register.ts`) opens both panels when a session starts, adds `/rail`, `/desk` and `/brief`, and closes them when the session ends. On a feature branch it adds the brief's instructions to Claude's system prompt and refuses code edits until the brief is approved.
 
 ## Good to know
 

@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 // The desk: a wider iTerm panel between Claude and the rail, with tabs for the work itself.
-//   Plan  the plan plan mode is writing (live, from the session's transcript)
-//   Diff  every file changed since the branch forked from the default branch, and each file's diff
-//   Review  runs the code-review skill on those changes, keeps its findings per branch, and hands the ones
-//           you accept to Claude to fix
+//   Plan  the branch's brief (brief.mjs) with its Approve button; without one, the board's Todo issues, then
+//         the plan plan mode is writing (live, from the session's transcript) or recent work
+//   Diff  every file changed since the branch forked from the default branch, grouped by the brief's chunks,
+//         and each file's diff
+//   Review  a staff-engineer review of the approach (reviewer.mjs), run at the brief's milestones or on demand;
+//           findings you accept go to Claude
 // It opens on Plan; tabs change only when you switch them (Tab, 1 2 3, or a click).
 //   node desk.mjs                                   interactive panel
 //   node desk.mjs --json                            print the collected state once
@@ -12,9 +14,11 @@
 //   --cwd DIR / --pid PID                           the folder and Claude process this desk belongs to
 import { execFile } from 'node:child_process';
 import * as src from './sources.mjs';
-import { reviewBranch, loadReviews, saveReviews } from './reviewer.mjs';
+import { reviewApproach, reviewedState, loadReviews, saveReviews } from './reviewer.mjs';
 import { ESC, fg, dim, bold, C, charWidth, width, trunc, clean } from './term.mjs';
 import { applySaved } from './fontsize.mjs';
+import { approvalRecord } from './brief.mjs';
+import { writeFile } from 'node:fs/promises';
 
 const args = process.argv.slice(2);
 const flag = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
@@ -23,7 +27,7 @@ const pinnedPid = Number(flag('--pid')) || null;
 const taskIndex = new src.TaskIndex();
 
 // ── Data ───────────────────────────────────────────────────────────────────────
-const data = { plan: null, recent: null, root: null, files: [], diff: null, claude: null, // diff: { path, lines } of the open file
+const data = { plan: null, brief: null, recent: null, todos: null, root: null, files: [], diff: null, claude: null, // diff: { path, lines } of the open file
   review: { running: null, runs: [], path: undefined } };                    // runs: the branch's saved reviews, newest first
 const TABS = ['plan', 'diff', 'review'];
 const ui = { tab: 'plan', scroll: { plan: 0, diff: 0, review: 0 }, sel: 0, open: null, toast: null,
@@ -47,16 +51,21 @@ const loaders = {
     const current = (pinnedPid && agents.find((a) => a.pid === pinnedPid)) || src.currentSession(agents, cwd);
     data.claude = current;
     await taskIndex.update((await src.sessionFiles(current)).transcriptPath);
-    data.plan = await src.readPlan(taskIndex.planPath);
-    if (changed('plan', data.plan ? `${data.plan.path}:${data.plan.mtime}` : '')) {
+    [data.plan, data.brief] = await Promise.all([src.readPlan(taskIndex.planPath), src.readBrief(cwd)]);
+    if (changed('plan', `${data.plan ? `${data.plan.path}:${data.plan.mtime}` : ''}|${data.brief?.mtime ?? ''}`)) {
       ui.scroll.plan = 0;
     }
   },
   // What landed lately, for the Plan tab before there's a plan. gh is slow, so this refreshes rarely.
-  async recent() { if (!data.plan || !data.recent) data.recent = await src.recentWork(cwd); },
+  // And the Todo issues on the repo's board, shown until the branch has a brief.
+  async recent() {
+    if (!data.plan || !data.recent) data.recent = await src.recentWork(cwd);
+    if (!data.brief?.text || !data.todos) data.todos = await src.todos(cwd);
+  },
   async diff() {
     ({ root: data.root, files: data.files } = await src.branchFiles(cwd));
-    ui.sel = Math.min(ui.sel, Math.max(0, data.files.length - 1));
+    // Until the person moves it, the selection starts on the first file shown (the list is grouped by chunk).
+    if (!ui.picked || !data.files[ui.sel]) ui.sel = diffOrder()[0] ?? 0;
     if (ui.open) await loadFile(ui.open);
   },
   // The branch's review record, read again when the branch changes (a running review keeps running and
@@ -69,8 +78,7 @@ const loaders = {
   },
 };
 
-// ── Review ─────────────────────────────────────────────────────────────────────
-const diffSig = () => JSON.stringify(data.files);
+// ── Review: the staff-engineer approach review of the brief and its finished chunks ─
 // The tab shows the newest successful review. A failed run is only kept as the newest entry, to say why it
 // failed: it never hides the review before it, and failures can't push real reviews out of the history.
 const latest = () => data.review.runs.find((r) => !r.error) ?? null;
@@ -81,15 +89,15 @@ const record = (run, runs) => [run, ...runs.filter((r) => !r.error)];
 function startReview() {
   if (data.review.running) return 'A review is already running';
   if (!data.root) return 'Not a git repository';
-  if (!data.files.length) return 'Nothing to review';
+  if (!data.brief?.text) return 'No brief to review yet';
+  if (data.brief.status === 'draft') return `The brief is missing ${data.brief.missing.join(', ')}`;
   if (!data.review.path) return 'Still loading this branch’s reviews';
-  const controller = new AbortController(), sig = diffSig(), path = data.review.path;
+  const controller = new AbortController(), path = data.review.path;
   data.review.running = { controller, startedAt: Date.now() };
-  reviewBranch(cwd, { signal: controller.signal }).then(async (run) => {
+  reviewApproach(cwd, { brief: data.brief, files: data.files, signal: controller.signal }).then(async (run) => {
     data.review.running = null;
     // A cancelled run leaves the record alone; a failed one is kept so the tab says why.
     if (run.error !== 'Review cancelled') {
-      run = { ...run, sig };
       if (path === data.review.path) {
         data.review.runs = record(run, data.review.runs);
         await saveReviews(path, data.review.runs);
@@ -101,6 +109,19 @@ function startReview() {
   return null;
 }
 const cancelReview = () => data.review.running?.controller.abort();
+
+// Once the brief is approved, a review runs on its own at each milestone: a chunk gets its Done line, or the
+// goal or plan changes after approval. It waits until the brief has been still for AUTO_SETTLE_MS (Claude may
+// be mid-edit), and never repeats a review of what the latest one already covered.
+const AUTO_SETTLE_MS = 20_000;
+function autoReview() {
+  const b = data.brief;
+  if (!b?.text || !b.approval?.approvedAt || data.review.running || !data.review.path) return;
+  if (Date.now() - b.mtime < AUTO_SETTLE_MS) return;
+  const now = reviewedState(b), last = data.review.runs[0];
+  const milestone = now.done > (last?.done ?? 0) || (b.status === 'changed' && now.core !== last?.core);
+  if (milestone && !(last?.error && last.core === now.core && last.done === now.done)) startReview();
+}
 
 // Hand the latest review's findings at `indices` to Claude; once they're delivered, mark them accepted.
 // Findings on their way are held in `sending`, so a second press during the send can't paste them twice.
@@ -149,8 +170,8 @@ end run`;
 function sendFindings(findings, onDone) {
   const pid = data.claude?.pid;
   if (!pid) { toast("Couldn't find this desk's Claude session"); return onDone(false); }
-  const text = ['Code review findings on this branch, accepted. Fix each one:',
-    ...findings.map((f, i) => `${i + 1}. [${f.severity}] ${f.file ?? ''}${f.line ? `:${f.line}` : ''} ${f.title}${f.detail ? `\n   ${f.detail}` : ''}`)].join('\n');
+  const text = ["Staff-engineer review of this branch's approach, accepted. Act on each one, and update the brief to match:",
+    ...findings.map((f, i) => `${i + 1}. [${f.severity}] ${f.chunk ? `chunk ${f.chunk} · ` : ''}${f.kind}: ${f.title}${f.detail ? `\n   ${f.detail}` : ''}`)].join('\n');
   execFile('ps', ['-o', 'tty=', '-p', String(pid)], (err, tty) => {
     tty = tty?.toString().trim();
     if (err || !tty || tty === '??') { toast("Claude's pane isn't a terminal"); return onDone(false); }
@@ -228,15 +249,44 @@ function recentLines(w) {
   }
   return out;
 }
+// The Plan tab: the branch's brief when it has one, else plan mode's plan, else recent work.
 function planLines(w) {
-  if (!data.plan) return recentLines(w);
-  const out = [dim(src.tildify(data.plan.path))], src_ = data.plan.text.split('\n');
-  out.push('');
+  const b = data.brief;
+  if (b?.text != null) {
+    const status = {
+      draft: fg(C.yellow, `draft · missing: ${b.missing.join(', ')}`),
+      ready: fg(C.accent, 'ready for your approval'),
+      approved: fg(C.green, 'approved'),
+      changed: fg(C.yellow, 'approved · changed since'),
+    }[b.status];
+    const approve = ['ready', 'changed'].includes(b.status) ? [button(b.status === 'ready' ? 'Approve' : 'Approve again', C.green) + dim('  or A'), ''] : [];
+    return [bold('Brief') + dim(' · ') + status, ...approve, dim(trunc(src.tildify(b.path), w)), '', ...markdownLines(b.text, w, { brief: true })];
+  }
+  const note = [...(b ? [dim(trunc(`No brief for ${clean(b.branch)} yet: Claude writes one before editing code.`, w)), ''] : []), ...todoLines(w)];
+  if (!data.plan) return [...note, ...recentLines(w)];
+  return [...note, dim(src.tildify(data.plan.path)), '', ...markdownLines(data.plan.text, w)];
+}
+// Todo issues from the repo's project board, first thing at the start of a session.
+function todoLines(w) {
+  if (!data.todos?.length) return [];
+  const out = [bold(fg(C.accent, 'Todo')) + dim(`  ${data.todos.length} · tell Claude which to take`), ''];
+  for (const t of data.todos) {
+    out.push(trunc(`${dim(`#${t.number}`)} ${clean(t.title)}`, w + 20));
+    if (t.summary) out.push(dim('    ' + trunc(clean(t.summary), w - 4)));
+  }
+  return [...out, ''];
+}
+// Markdown as terminal lines. In a brief, code blocks (the mockups) keep full colour, a chunk's "Done:"
+// line gets a tick and its "Files:" line is dimmed.
+function markdownLines(text, w, { brief = false } = {}) {
+  const out = [];
   let fence = false;
-  for (const raw of src_) {
+  for (const raw of text.split('\n')) {
     const line = clean(raw);
     if (/^\s*```/.test(line)) { fence = !fence; continue; }
-    if (fence) { out.push(dim('  ' + trunc(line, w - 2))); continue; }
+    if (fence) { out.push((brief ? (s) => s : dim)('  ' + trunc(line, w - 2))); continue; }
+    if (brief && /^Done:\s*/i.test(line)) { out.push(...wrapRuns(runs(line.replace(/^Done:\s*/i, '')), w, fg(C.green, '✔ '), '  ')); continue; }
+    if (brief && /^Files:\s*/i.test(line)) { out.push(dim(trunc('  ' + line, w))); continue; }
     const head = /^(#{1,6})\s+(.*)$/.exec(line);
     if (head) { out.push(...wrapRuns(runs(head[2], 'head'), w, head[1].length <= 2 ? '' : ' ')); continue; }
     if (/^\s*\|/.test(line)) { out.push(trunc(line, w)); continue; } // tables: keep the grid, cut at the edge
@@ -259,22 +309,67 @@ function planLines(w) {
 const totals = () => data.files.reduce((t, f) => ({ a: t.a + f.added, r: t.r + f.removed }), { a: 0, r: 0 });
 const counts = (a, r) => fg(C.green, `+${a}`) + ' ' + fg(C.red, `−${r}`);
 
+// The changed files grouped by the brief's chunks, in chunk order, then "Not in a chunk yet". A file is
+// selectable under the first chunk whose Files line lists it; a later chunk that lists it too shows it dimmed
+// (`shared`), so every chunk stays visible. With no brief (or no chunk listing a changed file), one group of
+// every file, as before. `files` and `shared` hold indices into data.files.
+function diffGroups() {
+  const placed = new Map(), groups = []; // file index → the chunk it's selectable under
+  for (const c of data.brief?.text ? data.brief.chunks : []) {
+    const listed = data.files.map((f, i) => (c.files.includes(f.path) ? i : -1)).filter((i) => i >= 0);
+    if (!listed.length) continue;
+    const files = listed.filter((i) => !placed.has(i)), shared = listed.filter((i) => placed.has(i));
+    files.forEach((i) => placed.set(i, c.n));
+    groups.push({ chunk: c, files, shared, placed });
+  }
+  const rest = data.files.map((_, i) => i).filter((i) => !placed.has(i));
+  if (rest.length) groups.push({ chunk: null, files: rest, shared: [], placed });
+  return groups;
+}
+// The files in the order the list shows them, for moving the selection.
+const diffOrder = () => diffGroups().flatMap((g) => g.files);
+const stepFile = (d) => { ui.picked = true; const o = diffOrder(), at = o.indexOf(ui.sel); return o[Math.max(0, Math.min(o.length - 1, (at < 0 ? 0 : at) + d))] ?? 0; };
+
 function listLines(w) {
   if (!data.root) return { lines: [dim('Not a git repository.')], ids: [] };
   if (!data.files.length) return { lines: [dim('No changes since this branch forked.')], ids: [] };
   const { a, r } = totals();
   const lines = [dim(`${data.files.length} file${data.files.length === 1 ? '' : 's'} since the branch forked  `) + counts(a, r), ''];
   const ids = [null, null];
-  data.files.forEach((f, i) => {
+  const groups = diffGroups(), grouped = groups.some((g) => g.chunk);
+  const fileRow = (i, indent, seeChunk) => {
+    const f = data.files[i];
     const tag = f.status === 'new' ? fg(C.blue, 'new ') : f.status === 'binary' ? dim('bin ') : '    ';
+    if (seeChunk) { // listed here too, selectable under an earlier chunk
+      const right = `in chunk ${seeChunk}`, name = trunc(clean(f.path), w - 2 - indent - width(tag) - width(right));
+      lines.push(dim(' '.repeat(indent) + tag + name + ' '.repeat(Math.max(1, w - indent - width(tag) - width(name) - width(right))) + right));
+      ids.push(null);
+      return;
+    }
     const right = f.status === 'binary' ? dim('binary') : counts(f.added, f.removed);
     const path = clean(f.path), slash = path.lastIndexOf('/');
-    const room = w - 2 - width(tag) - width(right);
+    const room = w - 2 - indent - width(tag) - width(right);
     const name = trunc(path, room);
     const styled = slash >= 0 && name === path ? dim(path.slice(0, slash + 1)) + path.slice(slash + 1) : name;
-    lines.push(tag + styled + ' '.repeat(Math.max(1, room - width(name) + 2)) + right);
+    lines.push(' '.repeat(indent) + tag + styled + ' '.repeat(Math.max(1, room - width(name) + 2)) + right);
     ids.push(i);
-  });
+  };
+  for (const g of groups) {
+    if (grouped) {
+      // The chunk's heading with its lines changed, then its Done summary.
+      // Lines changed in the files selectable here; a shared file counts once, under its first chunk.
+      const sum = g.files.reduce((t, i) => ({ a: t.a + data.files[i].added, r: t.r + data.files[i].removed }), { a: 0, r: 0 });
+      const right = g.files.length ? counts(sum.a, sum.r) : '', title = g.chunk ? `Chunk ${g.chunk.n}: ${clean(g.chunk.name)}` : 'Not in a chunk yet';
+      const head = trunc(title, w - width(right) - 2);
+      lines.push((g.chunk ? bold(fg(C.accent, head)) : bold(dim(head))) + ' '.repeat(Math.max(2, w - width(head) - width(right))) + right);
+      ids.push(null);
+      if (g.chunk?.done) for (const l of wrapRuns(runs(g.chunk.done), w, fg(C.green, '✔ '), '  ')) { lines.push(dim(l)); ids.push(null); }
+      else if (g.chunk) { lines.push(dim('  in progress')); ids.push(null); }
+    }
+    for (const i of g.files) fileRow(i, grouped ? 2 : 0);
+    for (const i of g.shared) fileRow(i, 2, g.placed.get(i));
+    if (grouped) { lines.push(''); ids.push(null); }
+  }
   return { lines, ids };
 }
 
@@ -332,20 +427,28 @@ function reviewLines(w) {
   ];
   // Where the latest review stands, only when it fits whole: the buttons matter more.
   const used = parts.reduce((n, p) => n + (p.action ? width(p.label) + 2 : width(p.text)), 0);
-  const status = [run && `reviewed ${ago(run.finishedAt)}`, run && run.sig !== diffSig() && 'changed since'].filter(Boolean);
+  const changed = run && data.brief?.text && JSON.stringify(reviewedState(data.brief)) !== JSON.stringify({ core: run.core, done: run.done });
+  const status = [run && `reviewed ${ago(run.finishedAt)}`, changed && 'brief changed since'].filter(Boolean);
   while (status.length && used + 2 + width(status.join(' · ')) > w) status.pop();
   if (status.length && !running) parts.push({ text: '  ' + dim(status.join(' · ')), plain: '  ' + status.join(' · ') });
   row(parts);
   push('');
   if (fail) { for (const l of wrapRuns([{ t: `✗ The last review failed: ${clean(fail.error)}`, s: 'text' }], w)) push(fg(C.red, l)); if (run) push(''); }
   if (!run && !fail) {
-    const text = data.files.length ? "No review on this branch yet. Run one to check this branch's changes with the code-review skill (a minute or more)." : 'Nothing to review yet.';
+    const text = data.brief?.text
+      ? 'No approach review yet. A staff-engineer review of the brief runs on its own when a chunk is done or the plan changes after approval. Run review checks the plan now (a minute or so).'
+      : 'The approach review checks the branch\'s brief: whether its plan, and the chunks as they get done, are the simplest way to the goal. This branch has no brief yet.';
     for (const l of wrapRuns([{ t: text, s: 'text' }], w)) push(dim(l));
   }
-  else if (run && !run.findings.length) push(fg(C.green, '✓ No problems found'));
+  if (run) {
+    const [label, colour] = { 'on-track': ['✓ On track', C.green], 'simpler-path': ['◆ A simpler path exists', C.yellow], 'off-goal': ['✗ Off the goal', C.red] }[run.verdict] ?? ['◆ Reviewed', C.gray];
+    push(bold(fg(colour, label)));
+    if (run.summary) for (const l of wrapRuns([{ t: clean(run.summary), s: 'text' }], w)) push(l);
+    push('');
+  }
 
   (run?.findings ?? []).forEach((f, i) => {
-    const where = f.file ? clean(f.file) + (f.line ? `:${f.line}` : '') : '';
+    const where = `${f.chunk ? `chunk ${f.chunk} · ` : 'whole plan · '}${f.kind}`;
     if (f.acceptedAt) {
       push(`${fg(C.green, '✓ accepted')}  ${dim(trunc(where, w - 14))}`, i);
       for (const l of wrapRuns([{ t: clean(f.title), s: 'text' }], w, '    ')) push(dim(l), i);
@@ -390,7 +493,11 @@ function frame(W, H) {
   });
 
   let body, ids = [], buttons = [], target = -1;
-  if (ui.tab === 'plan') body = planLines(w);
+  if (ui.tab === 'plan') {
+    body = planLines(w);
+    // The Approve button, when the brief has one: the second line, at the left edge.
+    if (['ready', 'changed'].includes(data.brief?.status)) buttons = [{ row: 1, from: 0, to: data.brief.status === 'ready' ? 9 : 15, action: 'approve' }];
+  }
   else if (ui.tab === 'review') ({ lines: body, ids, buttons } = reviewLines(w));
   else if (ui.open) ({ lines: body, target } = fileLines(w));
   else ({ lines: body, ids } = listLines(w));
@@ -429,7 +536,8 @@ function frame(W, H) {
 // ── Modes ──────────────────────────────────────────────────────────────────────
 if (args.includes('--json')) {
   const d = await collect();
-  console.log(JSON.stringify({ ...d, plan: d.plan && { ...d.plan, text: `${d.plan.text.slice(0, 200)}…` } }, null, 2));
+  const cut = (x) => x?.text && { ...x, text: `${x.text.slice(0, 200)}…` };
+  console.log(JSON.stringify({ ...d, plan: cut(d.plan) ?? d.plan, brief: cut(d.brief) ?? d.brief }, null, 2));
   process.exit(0);
 }
 
@@ -437,7 +545,7 @@ const pick = (tab) => { if (TABS.includes(tab)) ui.tab = tab; };
 const openFile = async (i) => {
   const f = data.files[i];
   if (!f) return;
-  ui.sel = i; ui.open = f.path; ui.scroll.file = 0;
+  ui.sel = i; ui.picked = true; ui.open = f.path; ui.scroll.file = 0;
   await loadFile(f.path);
 };
 
@@ -492,6 +600,7 @@ const refresh = (name) => {
   return async () => { if (busy) return; busy = true; try { await loaders[name](); } catch {} busy = false; draw(); };
 };
 const schedule = { plan: 1000, diff: 3000, reviews: 3000, recent: 60_000 };
+setInterval(autoReview, 5000); // interactive only: --frame and --json never start a review
 const runners = Object.fromEntries(Object.keys(schedule).map((k) => [k, refresh(k)]));
 // The desk opens on Plan (recent work until there's a plan); after the first load, changes take over.
 // Recent work asks gh, which can take seconds, so it arrives after the first draw.
@@ -522,10 +631,21 @@ const scrollBy = (d) => { const key = ui.tab === 'diff' && ui.open ? 'file' : ui
 const move = (d) => {
   const n = latest()?.findings?.length ?? 0;
   if (ui.tab === 'review') { if (n) ui.rsel = Math.max(0, Math.min(n - 1, ui.rsel + d)); else scrollBy(d); return; }
-  if (ui.tab === 'diff' && !ui.open && data.files.length) ui.sel = Math.max(0, Math.min(data.files.length - 1, ui.sel + d));
+  if (ui.tab === 'diff' && !ui.open && data.files.length) ui.sel = stepFile(d);
   else scrollBy(d);
 };
 const page = () => Math.max(1, (layout.bodyH ?? 10) - 2);
+
+// A on the Plan tab: the same as /brief approve. Approval opens code edits on this branch (see hooks/register.ts).
+const approveBrief = async () => {
+  const b = data.brief;
+  if (!b?.text) return toast('No brief to approve');
+  if (b.status === 'draft') return toast(`Can't approve yet: missing ${b.missing.join(', ')}`);
+  if (b.status === 'approved') return toast('Already approved');
+  try { await writeFile(b.approvedPath, approvalRecord(b, Date.now())); } catch { return toast("Couldn't save the approval"); }
+  await runners.plan();
+  toast('Brief approved: Claude can edit code');
+};
 
 const handleKey = async (k) => {
   if (k === '\x03' || k === 'q') return quit();
@@ -538,20 +658,21 @@ const handleKey = async (k) => {
     if (k === 'x') return review('cancel');
     if (k === 'y') return review(`accept:${ui.rsel}`);
     if (k === 'A') return review('acceptAll');
-    if ((k === '\r' || k === 'l' || k === '\x1b[C') && findings.length) return jumpTo(ui.rsel);
+    if ((k === '\r' || k === 'l' || k === '\x1b[C') && findings[ui.rsel]?.file) return jumpTo(ui.rsel);
   }
+  if (ui.tab === 'plan' && k === 'A') return approveBrief();
   if (k === 'r') { Object.values(runners).forEach((f) => f()); return toast('Refreshing…'); }
   if (k === '\x1b[A' || k === 'k') return move(-1);
   if (k === '\x1b[B' || k === 'j') return move(1);
   if (k === '\x1b[5~' || k === 'b') return scrollBy(-page());
   if (k === '\x1b[6~' || k === ' ') return scrollBy(page());
-  if (k === 'g') { const key = ui.tab === 'diff' && ui.open ? 'file' : ui.tab; ui.scroll[key] = 0; if (!ui.open) ui.sel = 0; return; }
-  if (k === 'G') { const key = ui.tab === 'diff' && ui.open ? 'file' : ui.tab; ui.scroll[key] = 1e9; if (!ui.open) ui.sel = Math.max(0, data.files.length - 1); return; }
+  if (k === 'g') { const key = ui.tab === 'diff' && ui.open ? 'file' : ui.tab; ui.scroll[key] = 0; if (!ui.open) ui.sel = diffOrder()[0] ?? 0; return; }
+  if (k === 'G') { const key = ui.tab === 'diff' && ui.open ? 'file' : ui.tab; ui.scroll[key] = 1e9; if (!ui.open) ui.sel = diffOrder().at(-1) ?? 0; return; }
   if (ui.tab !== 'diff') return;
   if (ui.open) {
     if (k === '\x1b' || k === 'h' || k === '\x1b[D') { ui.open = null; ui.jump = null; data.diff = null; return; }
-    if (k === 'n') return openFile(Math.min(data.files.length - 1, ui.sel + 1));
-    if (k === 'p') return openFile(Math.max(0, ui.sel - 1));
+    if (k === 'n') return openFile(stepFile(1));
+    if (k === 'p') return openFile(stepFile(-1));
   } else if (k === '\r' || k === 'l' || k === '\x1b[C') return openFile(ui.sel);
 };
 
@@ -562,10 +683,11 @@ const handleMouse = async (b, x, y) => {
   if (y === layout.tabRow) { const t = layout.tabs.find((s) => x - 1 >= s.from && x - 1 < s.to); if (t) manual(t.tab); return; }
   const i = layout.ids[y - 1 - layout.body];
   if (ui.tab === 'diff' && !ui.open && i != null) return openFile(i);
+  if (ui.tab === 'plan' && layout.buttons.some((s) => s.row === y - 1 - layout.body && x - 2 >= s.from && x - 2 < s.to)) return approveBrief();
   if (ui.tab === 'review') {
     const b = layout.buttons.find((s) => s.row === y - 1 - layout.body && x - 2 >= s.from && x - 2 < s.to);
     if (b) return review(b.action);
-    if (i != null) { if (ui.rsel === i) return jumpTo(i); ui.rsel = i; }
+    if (i != null) { if (ui.rsel === i && latest()?.findings[i]?.file) return jumpTo(i); ui.rsel = i; }
   }
 };
 
