@@ -34,7 +34,7 @@ function canvas(lift = 0) {
   return { set, span, vline, ell, eye, mirror, rows: () => g.map((r) => r.join('')) };
 }
 
-// ── Claudey the snail ──────────────────────────────────────────────────────────
+// ── Snail ────────────────────────────────────────────────────────────────────────
 const SHELL = [[6, 11], [4, 13], [3, 14], [2, 15], [2, 16], [1, 16], [1, 16], [1, 16], [1, 16], [2, 15], [2, 15], [3, 14]];
 const SPIRAL = { 3: [8, 9, 10, 11], 4: [6, 7, 12, 13], 5: [5, 9, 10, 14], 6: [5, 8, 11, 14], 7: [5, 8, 10, 14],
   8: [6, 9, 13], 9: [7, 8, 11, 12], 10: [9, 10] };
@@ -42,7 +42,7 @@ const SHINE = { 1: [6, 7], 2: [6], 4: [3], 5: [2] };
 
 const snail = {
   speed: 3,
-  name: 'Claudey the snail',
+  name: 'snail',
   habitat: 'woodland',
   palette: { S: 71, D: 28, W: 157, B: 114, E: 231, P: 233 },
   advance: [true, false], // stretch forward, then the shell catches up
@@ -153,9 +153,9 @@ snail.stages = [snailHatchling, snail, snailAdult, snailHeavy];
 // ── Turtle ─────────────────────────────────────────────────────────────────────
 const turtle = {
   speed: 4,
-  name: 'Turtle',
+  name: 'turtle',
   habitat: 'pond',
-  palette: { S: 65, H: 22, R: 58, W: 108, L: 149, l: 106, K: 22, E: 231, P: 233 },
+  palette: { S: 77, H: 28, R: 64, W: 193, L: 149, l: 106, K: 22, E: 231, P: 233 },
   advance: [true, false],
   zAt: [[24, 7], [28, 1]],
   draw({ frame, blink, sleep }) {
@@ -199,7 +199,7 @@ const turtleLegs = ({ set, span, vline }, far, near, thick, claw) => {
 
 const turtleHatchling = {
   speed: 5,
-  palette: { S: 108, H: 65, R: 143, W: 151, L: 193, l: 150, K: 65, E: 231, P: 233 },
+  palette: { S: 120, H: 71, R: 107, W: 194, L: 193, l: 150, K: 65, E: 231, P: 233 },
   advance: [true, false],
   zAt: [[20, 5], [25, 0]],
   draw({ frame, blink, sleep }) {
@@ -223,7 +223,7 @@ const turtleHatchling = {
 
 const turtleAdult = {
   speed: 2,
-  palette: { S: 29, H: 23, R: 94, W: 72, L: 112, l: 70, K: 22, E: 231, P: 233 },
+  palette: { S: 34, H: 22, R: 136, W: 120, L: 112, l: 70, K: 22, E: 231, P: 233 },
   advance: [true, false],
   zAt: [[25, 6], [29, 0]],
   draw({ frame, blink, sleep }) {
@@ -252,7 +252,7 @@ const turtleAdult = {
 const turtleHeavy = {
   speed: 1,
   scale: 5, rows: 4, // drawn bigger, a row taller
-  palette: { S: 94, H: 52, R: 130, X: 223, W: 137, L: 101, l: 59, K: 52, E: 231, P: 160 },
+  palette: { S: 172, H: 94, R: 130, X: 223, W: 221, L: 101, l: 59, K: 52, E: 231, P: 160 },
   advance: [true, false],
   zAt: [[25, 6], [29, 0]],
   draw({ frame, blink, sleep }) {
@@ -283,7 +283,7 @@ turtle.stages = [turtleHatchling, turtle, turtleAdult, turtleHeavy];
 // Four stages as the brief heads toward its compaction (see `stages` below): hatchling, this one, adult, heavy.
 const crab = {
   speed: 2,
-  name: 'Crab',
+  name: 'crab',
   habitat: 'beach',
   palette: { C: 209, D: 166, K: 88, E: 231, P: 233 },
   advance: [true, true],

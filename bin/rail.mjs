@@ -80,7 +80,8 @@ const iterm = process.env.TERM_PROGRAM === 'iTerm.app' || process.env.LC_TERMINA
 // The chosen creature is remembered across rails; `c` cycles through them.
 const MASCOT_FILE = join(homedir(), '.claude', 'session-rail', 'mascot.json');
 const savedCreature = (() => {
-  try { return Math.max(0, creatureNames.indexOf(JSON.parse(readFileSync(MASCOT_FILE, 'utf8')).creature)); } catch { return 0; }
+  // By the name's last word, so a pick saved under an old name ("Claudey the snail", "Turtle") still loads.
+  try { return Math.max(0, creatureNames.indexOf(String(JSON.parse(readFileSync(MASCOT_FILE, 'utf8')).creature).split(' ').pop().toLowerCase())); } catch { return 0; }
 })();
 const mascot = createMascot({ images: iterm && !args.includes('--frame') && Boolean(process.stdout.isTTY), creature: savedCreature });
 const showMascot = (W, H) => H >= 24 && W >= mascot.width + 4;
