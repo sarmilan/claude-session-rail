@@ -10,7 +10,7 @@ import { openSync, readSync, fstatSync, closeSync, readFileSync, writeFileSync, 
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import * as src from './sources.mjs';
-import { ESC, fg, dim, bold, C, charWidth, width, trunc, wrap, clean } from './term.mjs';
+import { ESC, fg, dim, bold, C, charWidth, width, trunc, wrap, clean, tabBar } from './term.mjs';
 import { createMascot, creatureNames, stageFor, progressFor } from './mascot.mjs';
 import { isApproved } from './brief.mjs';
 import * as fontsize from './fontsize.mjs';
@@ -113,12 +113,9 @@ const setTab = (t) => {
 };
 const stepTab = (d) => setTab(TABS[(TABS.indexOf(ui.tab) + TABS.length + d) % TABS.length]);
 const otherTab = () => stepTab(1);
-// The tab under screen column x (1-based; column 1 is the frame's left pad, tabs are two spaces apart), else null.
-const tabAt = (x) => {
-  let from = 2;
-  for (const t of TABS) { const to = from + TAB_LABELS[t].length; if (x >= from && x < to) return t; from = to + 2; }
-  return null;
-};
+// The tab under screen column x (1-based; column 1 is the frame's left pad), from the spans the last frame drew, else null.
+let tabSpans = [];
+const tabAt = (x) => tabSpans.find((s) => x - 2 >= s.from && x - 2 < s.to)?.tab ?? null;
 // Inline images only in a live iTerm2 pane; --frame output (and other terminals) get text octants.
 const iterm = process.env.TERM_PROGRAM === 'iTerm.app' || process.env.LC_TERMINAL === 'iTerm2';
 // The chosen creature is remembered across rails; `c` cycles through them.
@@ -453,11 +450,12 @@ function buildMain(W) {
     rule();
   };
 
-  // Tabs: the active one bold and underlined in orange. Enter flips; a click picks by column (tabAt).
-  const labels = TABS.map((t) => [t, TAB_LABELS[t]]);
-  spread(labels.map(([t, l]) => (t === ui.tab ? bold(fg(C.accent, l)) : dim(l))).join('  '), dim('⇥'), item('tabs', otherTab));
-  const under = labels.map(([t, l]) => (t === ui.tab ? fg(C.accent, '━'.repeat(l.length)) : dim('─'.repeat(l.length)))).join(dim('──'));
-  line(under + dim('─'.repeat(Math.max(0, inner - width(labels.map(([, l]) => l).join('  '))))));
+  // Tabs, as the desk draws them: under a rule, the active one lit and underlined in orange. Enter flips; a click picks by column (tabAt).
+  const tabs = tabBar(TABS.map((t) => [t, TAB_LABELS[t]]), ui.tab, inner);
+  tabSpans = tabs.spans;
+  rule();
+  spread(tabs.bar.replace(/ $/, ''), dim('⇥'), item('tabs', otherTab));
+  line(tabs.under);
 
   if (ui.tab === 'git') { gitTab(); return { rows, items }; }
 
@@ -675,7 +673,8 @@ function frame(W, H) {
   const view = rows.slice(scroll, scroll + bodyH);
   const lines = view.map((r) => {
     const padded = ' ' + r.text + ' '.repeat(Math.max(0, W - 1 - width(r.text)));
-    return r.id && r.id === ui.sel ? `${ESC}48;5;237m${padded}${ESC}49m` : padded;
+    // A lit block inside the row (the active tab) ends its own background; the selection carries on past it.
+    return r.id && r.id === ui.sel ? `${ESC}48;5;237m${padded.replaceAll(`${ESC}49m`, `${ESC}48;5;237m`)}${ESC}49m` : padded;
   });
   while (lines.length < bodyH) lines.push('');
   const viewIds = view.map((r) => r.id);

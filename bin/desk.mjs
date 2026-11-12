@@ -14,7 +14,7 @@
 //   --cwd DIR / --pid PID                           the folder and Claude process this desk belongs to
 import * as src from './sources.mjs';
 import { reviewAndSave, loadReviews } from './reviewer.mjs';
-import { ESC, fg, dim, bold, C, charWidth, width, trunc, clean } from './term.mjs';
+import { ESC, fg, dim, bold, C, charWidth, width, trunc, clean, tabBar } from './term.mjs';
 import { applySaved } from './fontsize.mjs';
 import { approvalRecord } from './brief.mjs';
 import { codeFindings, runType } from './cadence.mjs';
@@ -449,19 +449,12 @@ function reviewLines(w) {
 let layout = { tabs: [], tabRow: 2, body: 3, ids: [], scroll: 0 };
 function frame(W, H) {
   const w = W - 2, bodyH = H - 4;
-  // Tab bar, between two rules: each tab's span is remembered for mouse clicks.
+  // Tab bar under a rule, underlined in orange beneath the active tab; its spans are kept for mouse clicks.
   const { a, r } = totals();
   const nf = listedAll().filter((f) => f.status === 'open').length;
   const labels = { plan: 'Plan', diff: `Diff ${data.files.length ? `+${a} −${r}` : ''}`.trim(),
     review: `Review${nf ? ` ${nf}` : ''}${data.review.running ? ' ◌' : ''}` };
-  let x = 1, bar = '';
-  const tabs = TABS.map((t) => {
-    const text = ` ${labels[t]} `;
-    const span = { tab: t, from: x, to: x + width(text) };
-    bar += (t === ui.tab ? `${ESC}48;5;237m` + bold(fg(C.accent, text)) + `${ESC}49m` : dim(text)) + ' ';
-    x += width(text) + 1;
-    return span;
-  });
+  const { bar, under, spans: tabs } = tabBar(TABS.map((t) => [t, labels[t]]), ui.tab, w);
 
   let body, ids = [], buttons = [], target = -1;
   if (ui.tab === 'plan') {
@@ -501,7 +494,7 @@ function frame(W, H) {
   layout = { tabs, tabRow: 2, body: 3, ids: ids.slice(scroll, scroll + bodyH), scroll, bodyH,
     buttons: buttons.filter((b) => b.row >= scroll && b.row < scroll + bodyH).map((b) => ({ ...b, row: b.row - scroll })) };
   const rule = ' ' + dim('─'.repeat(w));
-  return [rule, ' ' + bar, rule, ...view, footer];
+  return [rule, ' ' + bar, ' ' + under, ...view, footer];
 }
 
 // ── Modes ──────────────────────────────────────────────────────────────────────
@@ -649,7 +642,7 @@ const handleMouse = async (b, x, y) => {
   if (b === 64) return move(-3);
   if (b === 65) return move(3);
   if (b !== 0) return;
-  if (y === layout.tabRow) { const t = layout.tabs.find((s) => x - 1 >= s.from && x - 1 < s.to); if (t) manual(t.tab); return; }
+  if (y === layout.tabRow) { const t = layout.tabs.find((s) => x - 2 >= s.from && x - 2 < s.to); if (t) manual(t.tab); return; }
   const i = layout.ids[y - 1 - layout.body];
   if (ui.tab === 'diff' && !ui.open && i != null) return openFile(i);
   if (ui.tab === 'plan' && layout.buttons.some((s) => s.row === y - 1 - layout.body && x - 2 >= s.from && x - 2 < s.to)) return approveBrief();

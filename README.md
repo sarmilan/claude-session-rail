@@ -11,8 +11,9 @@ If you have a `/start` command of your own, it runs as soon as the session start
 
 ```
 ┌─ claude ──────────────────────────┬─ rail ───────────────────────────┐
-│                                   │ Session  Git                   ⇥ │
-│                                   │ ━━━━━━━───────────────────────── │
+│                                   │ ──────────────────────────────── │
+│                                   │  Session   Git                 ⇥ │
+│                                   │ ━━━━━━━━━─────────────────────── │
 │                                   │ Sessions 3                 + new │
 │                                   │ ▸ ◉ Fix login redirect loop busy │
 │                                   │     my-app · fix/42 · Edit redi… │
@@ -62,8 +63,9 @@ The rail has two tabs: **Session**, what Claude is doing, and **Git**, where all
 ### Git
 
 ```
- Session  Git                      ⇥
- ─────────━━━───────────────────────
+ ───────────────────────────────────
+  Session   Git                    ⇥
+ ──────────━━━━━────────────────────
  my-app · main                  ↻ 4s
  Worktrees 3
  ▸ ● my-app-login         fix/42-lo…
