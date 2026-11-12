@@ -105,9 +105,15 @@ Work through the chunks in order. When you finish one:
 2. When it's satisfactory, add two lines under the chunk's outline:
 Done: <a short happy-path summary: what changed and how it works end to end>
 Files: <comma-separated paths relative to the repo root>
-3. Commit the chunk on its own: one commit per chunk, its message naming the chunk.
-4. Push the branch. After the first chunk's commit, also open a pull request for the branch, titled after the brief, with its Problem and Solution as the description; later pushes update it.
-5. Move straight on to the next chunk without waiting for the person, unless something needs their decision.
+3. Review it before committing, and apply every finding:
+   a. Call the review_approach tool. Apply each finding it raises and update the brief to match; if one shouldn't be applied, pass your reason in its notes. Call it again until it says nothing is open.
+   b. Run /code-review --fix on the chunk's changes, and fix anything it reports as still open.
+   The plugin refuses git commit until both reviews have run since the last commit with nothing open.
+4. Commit the chunk on its own: one commit per chunk, its message naming the chunk.
+5. Push the branch. After the first chunk's commit, also open a pull request for the branch, titled after the brief, with its Problem and Solution as the description and a Progress checklist of the chunks; tick each chunk as it lands, noting its reviews (for example "reviews: 3 findings, all applied"). Later pushes update it.
+6. Move straight on to the next chunk without waiting for the person, unless something needs their decision.
+
+Before merging, which waits for the person to say so: call review_approach with final: true and run /code-review --fix over the whole branch (against the default branch), apply what they find, commit and push any fixes, and run both again until nothing is open. The plugin refuses gh pr merge until both have run after the last commit with nothing uncommitted.
 
 At the end of the session, check the work against the brief's Problem and Solution.`
 
@@ -155,9 +161,11 @@ const isDirty = async ($: EngineInterface, cwd: string) =>
   (await $.process.run(['git', '-C', cwd, 'status', '--porcelain'], { timeoutMs: 10_000 })).stdout.trim() !== ''
 // The branch's review record, beside its brief.
 const runsPath = (b: Brief) => reviewsFile(b.common, b.branch)
+// Without the tool (the engine refused it) Claude can't satisfy the gate, so it stands aside.
+let reviewToolReady = false
 const reviewGate = async ($: EngineInterface, command: string) => {
   const action = gatedAction(command)
-  if (!action) return null
+  if (!action || !reviewToolReady) return null
   const b = await readBrief($)
   if (!b?.approval?.approvedAt) return null
   const commit = await headCommit($, await $.session.cwd())
@@ -173,6 +181,38 @@ const recordCodeReview = async ($: EngineInterface, report: unknown) => {
   const tmp = `${runsPath(b)}.${Date.now()}.tmp`
   await $.fs.write(tmp, JSON.stringify({ runs: runs.slice(0, KEEP_RUNS) }, null, 1))
   await $.process.run(['mv', '-f', tmp, runsPath(b)], { timeoutMs: 5_000 })
+}
+
+// review_approach: the tool Claude calls before each commit (and with final before a merge). It runs the
+// desk's reviewer through its CLI, which saves the run in the branch's record and prints what Claude reads.
+const REVIEW_TOOL = {
+  name: 'review_approach',
+  description:
+    "Runs the session-rail approach review: a staff engineer checks this branch's brief, its finished chunks and the changed files for a simpler, cheaper or more complete way to the goal, and checks whether the earlier findings were applied. Call it before each chunk's commit, after the chunk's Done line, and again after applying its findings until nothing is open; call it with final: true before merging. Takes a minute or two.",
+  inputSchema: {
+    type: 'object',
+    properties: {
+      final: { type: 'boolean', description: 'The final review of the whole branch before merging' },
+      notes: {
+        type: 'array',
+        description: "Your reply to an earlier finding you chose not to apply: its id and why. The review decides whether to accept it.",
+        items: { type: 'object', properties: { id: { type: 'string' }, note: { type: 'string' } }, required: ['id', 'note'] },
+      },
+    },
+  },
+  isDeferred: false,
+}
+const runReview = async ($: EngineInterface, input: { final?: unknown; notes?: unknown }) => {
+  const args = ['--run', ...(input.final === true ? ['--final'] : []), ...(Array.isArray(input.notes) ? ['--notes', JSON.stringify(input.notes)] : [])]
+  try {
+    const r = await $.process.run(['/bin/sh', '-c', 'exec node "$@"', 'sh', `${$.plugin.root}/bin/reviewer.mjs`, ...args], {
+      cwd: await $.session.cwd(),
+      timeoutMs: 600_000,
+    })
+    return r.stdout.trim() || `The approach review printed nothing${r.stderr.trim() ? `: ${r.stderr.trim().split('\n').pop()}` : ''}.`
+  } catch (err) {
+    return `The approach review didn't finish: ${err instanceof Error ? err.message : String(err)}`
+  }
 }
 
 // /approve-brief: the same as Approve in the desk, for when the desk isn't open. It approves a complete brief
@@ -315,6 +355,7 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     // Each on its own: a name the engine refuses (one Claude Code has since taken) must not stop the panels opening.
     for (const command of COMMANDS) await $.command.register(command).catch(() => {})
+    reviewToolReady = await $.tool.register(REVIEW_TOOL).then(() => true, () => false)
     // Interactive terminal sessions only, and never block startup on iTerm. One call fills the screen, opens
     // both panels and sizes them once, so the window doesn't jump between steps. Then /start, if there is one.
     if (e.isInteractive && e.surface === 'terminal') {
@@ -382,6 +423,7 @@ export const register: Register = on => {
   }).catch(($, e, next) => next(e))
 
   // The review cadence: commits and merges wait for the reviews, and /code-review's report is recorded.
+  on('tool.call', { tool: 'mcp__session-rail__review_approach' }, async ($, e) => ({ result: await runReview($, e as never) }) as never)
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const deny = await reviewGate($, e.command)
     return deny ? { deny } : next(e)

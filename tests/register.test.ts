@@ -193,6 +193,9 @@ test('the system prompt explains the brief on a feature branch, not on main', as
   expect(s?.text).toContain("Don't wait to be asked")
   expect(s?.text).toContain('one commit per chunk')
   expect(s?.text).toContain('Move straight on to the next chunk')
+  expect(s?.text).toContain('Call the review_approach tool')
+  expect(s?.text).toContain('/code-review --fix')
+  expect(s?.text).toContain('final: true')
   expect(s?.scope).toBe('session')
 })
 
@@ -396,7 +399,8 @@ test('cadence: a commit needs both reviews since the last commit with nothing op
   // A merge wants them after the last commit, on a clean tree.
   expect(cadence.gateReason([clean, approachRun('h2', true)], { action: 'merge', head: 'h2' })).toContain('final: true')
   const final = cadence.codeRun(report([]), { head: 'h2', dirty: false, at: 10 })
-  expect(cadence.gateReason([final, approachRun('h2', false), clean], { action: 'merge', head: 'h2' })).toBe(null)
+  expect(cadence.gateReason([final, approachRun('h2', false), clean], { action: 'merge', head: 'h2' })).toContain('final: true')
+  expect(cadence.gateReason([final, { ...approachRun('h2', false), final: true }, clean], { action: 'merge', head: 'h2' })).toBe(null)
 })
 
 // A repo on feature/x with an approved brief; the review record and HEAD are the test's.
@@ -407,14 +411,19 @@ const cadenceHarness = (on: Parameters<Parameters<typeof test>[1]>[1], runs: unk
     '/repo/.git/session-rail/reviews/feature%2Fx.json': JSON.stringify({ runs }),
   }
   const ran: string[] = []
+  const calls: string[] = []
   on('session.cwd', () => ({ value: '/repo' }))
+  on('command.register', () => ({ value: { command: 'x' } }))
+  on('tool.register', () => ({ value: { tool: 'mcp__session-rail__review_approach' } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('process.run', (_, e) => {
     const a = e.argv.join(' ')
     if (e.argv[0] === 'mv') {
       files[e.argv[3]!] = files[e.argv[2]!]!
       delete files[e.argv[2]!]
     }
-    const out = a.includes('--git-common-dir') ? '/repo/.git\nfeature/x\n' : a.endsWith('rev-parse HEAD') ? 'h2\n' : a.includes('status --porcelain') ? ' M a.ts\n' : ''
+    calls.push(a)
+    const out = a.includes('--git-common-dir') ? '/repo/.git\nfeature/x\n' : a.endsWith('rev-parse HEAD') ? 'h2\n' : a.includes('status --porcelain') ? ' M a.ts\n' : a.includes('reviewer.mjs') ? 'Approach review: on-track.\n' : ''
     return { value: { exitCode: 0, stdout: out, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('fs.read', (_, e) => (e.path in files ? { value: files[e.path]! } : { deny: 'ENOENT' }))
@@ -426,11 +435,12 @@ const cadenceHarness = (on: Parameters<Parameters<typeof test>[1]>[1], runs: unk
     ran.push(e.tool === 'Bash' ? String((e as { command?: string }).command) : e.tool)
     return { result: { ok: true } } as never
   })
-  return { files, ran }
+  return { files, ran, calls }
 }
 
 test('git commit is refused until both reviews ran since the last commit, then goes through', async ($, on) => {
   const { files, ran } = cadenceHarness(on)
+  await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
   const r = (await $.tool.call({ tool: 'Bash', command: 'git commit -m "chunk 1"' } as never)) as { deny?: string }
   expect(r.deny).toContain("approach review hasn't run since the last commit")
   expect(ran).toEqual([])
@@ -448,7 +458,22 @@ test('git commit is refused until both reviews ran since the last commit, then g
 test('gh pr merge is refused after commit-time reviews alone', async ($, on) => {
   const code = cadence.codeRun(report([]), { head: 'h2', dirty: true, at: 9 })
   const { ran } = cadenceHarness(on, [code, approachRun('h2', true)])
+  await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
   const r = (await $.tool.call({ tool: 'Bash', command: 'gh pr merge 25 --merge' } as never)) as { deny?: string }
   expect(r.deny).toContain('merge after a final review')
   expect(ran).toEqual([])
+})
+
+test('review_approach runs the reviewer\'s CLI with final and notes, and returns what it prints', async ($, on) => {
+  const { calls } = cadenceHarness(on)
+  const r = (await $.tool.call({ tool: 'mcp__session-rail__review_approach', final: true, notes: [{ id: 'a-0', note: 'runs once' }] } as never)) as { result?: string }
+  expect(r.result).toBe('Approach review: on-track.')
+  const run = calls.find(c => c.includes('reviewer.mjs'))!
+  expect(run).toContain('--run --final --notes [{"id":"a-0","note":"runs once"}]')
+})
+
+test('if the engine refuses review_approach, commits are not gated', async ($, on) => {
+  const { ran } = cadenceHarness(on)
+  await $.tool.call({ tool: 'Bash', command: 'git commit -m "x"' } as never) // no session.start: the tool was never registered
+  expect(ran).toEqual(['git commit -m "x"'])
 })

@@ -14,7 +14,7 @@
 //   --cwd DIR / --pid PID                           the folder and Claude process this desk belongs to
 import { execFile } from 'node:child_process';
 import * as src from './sources.mjs';
-import { reviewApproach, reviewedState, loadReviews, saveReviews } from './reviewer.mjs';
+import { reviewAndSave, reviewedState, loadReviews, saveReviews } from './reviewer.mjs';
 import { ESC, fg, dim, bold, C, charWidth, width, trunc, clean } from './term.mjs';
 import { applySaved } from './fontsize.mjs';
 import { approvalRecord } from './brief.mjs';
@@ -88,7 +88,6 @@ const approachRuns = () => data.review.runs.filter((r) => r.type !== 'code');
 const latest = () => approachRuns().find((r) => !r.error) ?? null;
 const failed = () => (approachRuns()[0]?.error ? approachRuns()[0] : null);
 const pending = () => (latest()?.findings ?? []).map((f, i) => (f.acceptedAt ? -1 : i)).filter((i) => i >= 0);
-const record = (run, runs) => [run, ...runs.filter((r) => !r.error)];
 // Returns why it couldn't start, or null when it started.
 function startReview() {
   if (data.review.running) return 'A review is already running';
@@ -99,16 +98,12 @@ function startReview() {
   const controller = new AbortController(), path = data.review.path;
   data.review.running = { controller, startedAt: Date.now() };
   void reportDesk({ kind: 'approach review', startedAt: data.review.running.startedAt });
-  reviewApproach(cwd, { brief: data.brief, files: data.files, signal: controller.signal }).then(async (run) => {
+  reviewAndSave(cwd, { brief: data.brief, files: data.files, signal: controller.signal }).then((run) => {
     data.review.running = null;
     void reportDesk(null);
-    // A cancelled run leaves the record alone; a failed one is kept so the tab says why.
-    if (run.error !== 'Review cancelled') {
-      // Read the file again first: the hooks add code reviews to it, and the branch may have changed meanwhile.
-      const runs = record(run, await loadReviews(path));
-      await saveReviews(path, runs);
-      if (path === data.review.path) { data.review.runs = runs; ui.rsel = 0; ui.scroll.review = 0; }
-    }
+    // A cancelled run leaves the record alone; a saved one (failed too, so the tab says why) is shown if the
+    // branch is still the one it reviewed.
+    if (run.runs && path === data.review.path) { data.review.runs = run.runs; ui.rsel = 0; ui.scroll.review = 0; }
     draw();
   });
   return null;
@@ -127,18 +122,6 @@ async function reportDesk(review) {
   } catch {}
 }
 
-// Once the brief is approved, a review runs on its own at each milestone: a chunk gets its Done line, or the
-// goal or plan changes after approval. It waits until the brief has been still for AUTO_SETTLE_MS (Claude may
-// be mid-edit), and never repeats a review of what the latest one already covered.
-const AUTO_SETTLE_MS = 20_000;
-function autoReview() {
-  const b = data.brief;
-  if (!b?.text || !b.approval?.approvedAt || data.review.running || !data.review.path) return;
-  if (Date.now() - b.mtime < AUTO_SETTLE_MS) return;
-  const now = reviewedState(b), last = approachRuns()[0];
-  const milestone = now.done > (last?.done ?? 0) || (b.status === 'changed' && now.core !== last?.core);
-  if (milestone && !(last?.error && last.core === now.core && last.done === now.done)) startReview();
-}
 
 // Hand the latest review's findings at `indices` to Claude; once they're delivered, mark them accepted.
 // Findings on their way are held in `sending`, so a second press during the send can't paste them twice.
@@ -618,7 +601,6 @@ const refresh = (name) => {
   return async () => { if (busy) return; busy = true; try { await loaders[name](); } catch {} busy = false; draw(); };
 };
 const schedule = { plan: 1000, diff: 3000, reviews: 3000, recent: 60_000 };
-setInterval(autoReview, 5000); // interactive only: --frame and --json never start a review
 const runners = Object.fromEntries(Object.keys(schedule).map((k) => [k, refresh(k)]));
 // The desk opens on Plan (recent work until there's a plan); after the first load, changes take over.
 // Recent work asks gh, which can take seconds, so it arrives after the first draw.

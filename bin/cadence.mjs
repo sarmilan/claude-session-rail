@@ -4,7 +4,7 @@
 // (reviewer.mjs's store): finding statuses, what's still open, and why a commit or merge must wait.
 // Pure, no Node APIs: shared by the hooks, the reviewer and the desk.
 //
-// A run: { type: 'approach' | 'code', startedAt, finishedAt, head, dirty, verdict, summary, error?, findings }.
+// A run: { type: 'approach' | 'code', startedAt, finishedAt, head, dirty, final?, verdict, summary, error?, findings }.
 // `head` is the commit it reviewed and `dirty` whether there were uncommitted changes. Runs from before the
 // cadence have no type (an approach review) and no head.
 // A finding: { id, kind, title, detail, severity, chunk?, file?, line?, status, note? }, `status` one of
@@ -65,7 +65,9 @@ export function applyChecks(runs, checks) {
 // reviews since the last commit; a merge needs both after the last commit with nothing uncommitted (so they
 // covered the whole branch as it will merge). Either way nothing may be open.
 export function gateReason(runs, { action, head }) {
-  const ok = runs.filter((r) => !r.error && r.head === head && (action === 'commit' || r.dirty === false));
+  // A merge counts only an approach review asked for as final (the whole branch, as finished).
+  const ok = runs.filter((r) => !r.error && r.head === head
+    && (action === 'commit' || (r.dirty === false && (runType(r) === 'code' || r.final === true))));
   const since = action === 'commit' ? 'since the last commit' : 'after the last commit with nothing uncommitted';
   const missing = [];
   if (!ok.some((r) => runType(r) === 'approach')) missing.push(`The approach review hasn't run ${since}: call review_approach${action === 'merge' ? ' with final: true' : ''}.`);
