@@ -7,8 +7,9 @@ A Claude Code plugin (repo root = plugin = marketplace) that opens a Claude-desk
 - `bin/desk.mjs`: the wider Plan / Diff / Review panel (modes: interactive, `--json`, `--frame W H [--tab plan|diff|review] [--file N] [--review-json F --select N --jump N]`)
 - `bin/reviewer.mjs`: runs the `code-review` skill headless (`claude -p --json-schema`) for the desk's Review tab, and keeps each branch's reviews in `.git/session-rail/reviews/`
 - `bin/term.mjs`: drawing helpers shared by the rail and the desk (colours, display width, wrap, `clean()`)
+- `bin/fontsize.mjs`: one font size for the Claude, desk and rail panes (Settings in the rail). Writes generated iTerm profiles to `~/Library/Application Support/iTerm2/DynamicProfiles/session-rail.json` and switches each pane with `OSC 1337;SetProfile`
 - `bin/sources.mjs`: data sources. Every export resolves to plain JSON and never throws.
-- `bin/mascot.mjs`: the mascot under the legend: movement, inline PNG in iTerm2, Unicode octants in `--frame`/elsewhere
+- `bin/mascot.mjs`: the mascot at the bottom of the rail: movement, inline PNG in iTerm2, Unicode octants in `--frame`/elsewhere
 - `bin/creatures.mjs`: the mascot sprites (34×16 pixel drawings, palette, gait). Add a creature by appending to `CREATURES`.
 - `bin/habitats.mjs`: the foliage behind the mascot (woodland, pond, beach), picked by each creature's `habitat`
 - `bin/pane.mjs`: iTerm2 split controller (`open|close|toggle|status [rail|desk]`, prints one JSON line, always exits 0). Layout: Claude │ desk │ rail

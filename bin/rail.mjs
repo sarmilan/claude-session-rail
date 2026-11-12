@@ -11,6 +11,7 @@ import { join, dirname } from 'node:path';
 import * as src from './sources.mjs';
 import { ESC, fg, dim, bold, C, charWidth, width, trunc, wrap, clean } from './term.mjs';
 import { createMascot, creatureNames, stageFor } from './mascot.mjs';
+import * as fontsize from './fontsize.mjs';
 
 const args = process.argv.slice(2);
 const flag = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
@@ -66,7 +67,7 @@ const bar = (pct, n = 8) => {
 };
 
 // ── Actions ────────────────────────────────────────────────────────────────────
-const ui = { sel: null, open: { environment: true, context: false, connectors: false, more: false }, scroll: 0, tick: 0,
+const ui = { sel: null, open: { environment: true, context: false, connectors: false, more: false, settings: false }, scroll: 0, tick: 0,
   overlay: null, toast: null };
 // Inline images only in a live iTerm2 pane; --frame output (and other terminals) get text octants.
 const iterm = process.env.TERM_PROGRAM === 'iTerm.app' || process.env.LC_TERMINAL === 'iTerm2';
@@ -77,30 +78,14 @@ const savedCreature = (() => {
 })();
 const mascot = createMascot({ images: iterm && !args.includes('--frame') && Boolean(process.stdout.isTTY), creature: savedCreature });
 const showMascot = (W, H) => H >= 24 && W >= mascot.width + 4;
-const nextCreature = () => {
-  const name = mascot.next();
+const saveCreature = (name) => {
   try { mkdirSync(dirname(MASCOT_FILE), { recursive: true }); writeFileSync(MASCOT_FILE, JSON.stringify({ creature: name })); } catch {}
 };
-// The pet grows with the context window. [ ] preview the other stages for PREVIEW_MS, then it goes
-// back to following the context (--pet-stage N pins one for --frame).
-const STAGE_NAMES = ['Hatchling', 'Juvenile', 'Adult', 'Heavy'];
-const PREVIEW_MS = 10_000;
+const nextCreature = (d = 1) => saveCreature(mascot.next(d));
+// The pet grows with the context window (--pet-stage N pins a stage for --frame).
 const stageFlag = flag('--pet-stage');
 const pinned = stageFlag != null && /^[0-3]$/.test(stageFlag) ? +stageFlag : null;
-const preview = { stage: pinned, until: pinned != null ? Infinity : 0 };
-const contextStage = () => stageFor(data.stats?.contextPct);
-const petStage = () => {
-  if (preview.stage != null && Date.now() >= preview.until) {
-    preview.stage = null;
-    toast(`Back to context: ${STAGE_NAMES[contextStage()]}`);
-  }
-  return preview.stage ?? contextStage();
-};
-const previewStage = (delta) => {
-  const n = Math.max(0, Math.min(STAGE_NAMES.length - 1, (preview.stage ?? contextStage()) + delta)); // from the stage on screen
-  Object.assign(preview, { stage: n, until: Date.now() + PREVIEW_MS });
-  toast(`${STAGE_NAMES[n]} (preview)`);
-};
+const petStage = () => pinned ?? stageFor(data.stats?.contextPct);
 const claudeBusy = () => data.tasks.running.length > 0 || data.current?.status === 'busy';
 
 const toast = (text) => { ui.toast = { text, until: Date.now() + 2500 }; };
@@ -147,6 +132,33 @@ const agentMenu = (a) => {
     { label: 'Copy session ID', run: () => copy(a.sessionId, 'session ID') },
   ], info);
 };
+
+// Font size for all three panes. `font.size` is what's on screen (null until known), `font.base` the profile's own size.
+const font = { size: fontsize.saved(), base: null, busy: false };
+const fontInfo = () => [`Claude, desk and rail · ${font.size ? `${font.size}pt` : 'profile size'}`];
+const setFont = async (size) => {
+  if (font.busy || !size) return;
+  font.busy = true; toast(`Font size ${size}pt…`); draw();
+  const r = await fontsize.apply(pinnedPid, size);
+  font.busy = false;
+  if (r.ok) font.size = r.size;
+  toast(r.ok ? `Font size ${r.size}pt` : r.message);
+  if (ui.overlay?.kind === 'menu' && ui.overlay.font) ui.overlay.info = fontInfo();
+  draw();
+};
+const stepFont = (d) => () => { const now = font.size ?? font.base; if (now) setFont(now + d); };
+const fontMenu = () => {
+  menu('Font size', [
+    { label: 'Larger', key: '+', keep: true, run: stepFont(1) },
+    { label: 'Smaller', key: '-', keep: true, run: stepFont(-1) },
+    { label: `Reset${font.base ? ` to ${font.base}pt` : ''}`, key: '0', keep: true, run: () => setFont(font.base) },
+  ], fontInfo());
+  ui.overlay.font = true;
+};
+
+const petMenu = () => menu('Pet', creatureNames.map((name, i) => ({
+  label: name, hint: name === mascot.state.creature ? '✓' : '', run: () => saveCreature(mascot.pick(i)),
+})));
 
 const finishedMenu = () => menu(`${data.tasks.finished} finished`, data.tasks.done.map((t) => ({
   label: `${t.state === 'completed' ? '✔' : '✗'} ${t.label}`, hint: ago(t.startedAt), keep: true, run: () => viewLog(t),
@@ -345,10 +357,25 @@ function buildOverlay(W, bodyH) {
   return { rows, items };
 }
 
+// Settings: an orange selector on the bottom line, right-aligned where the old key legend was. Opened, its rows sit
+// between the mascot and that line. ←/→ on Font size and Pet change them without opening their menus.
+function buildSettings() {
+  const rows = [];
+  if (ui.open.settings) {
+    const pt = font.size ?? font.base;
+    rows.push({ id: 'font', activate: fontMenu, label: 'Aa Font size', value: pt ? `‹ ${pt}pt ›` : '—' });
+    rows.push({ id: 'pet', activate: petMenu, label: '◐ Pet', value: `‹ ${mascot.state.creature} ›` });
+  }
+  const toggle = { id: 'settings', activate: () => { ui.open.settings = !ui.open.settings; }, label: '⚙ settings' };
+  return { rows, toggle };
+}
+
 function frame(W, H) {
   const withMascot = showMascot(W, H);
-  const bodyH = H - 1 - (withMascot ? mascot.rows : 0);
+  const settings = ui.overlay ? null : buildSettings();
+  const bodyH = H - 1 - (withMascot ? mascot.rows : 0) - (settings?.rows.length ?? 0);
   const { rows, items } = ui.overlay ? buildOverlay(W, bodyH) : buildMain(W);
+  if (settings) items.push(...settings.rows, settings.toggle);
   if (!items.some((i) => i.id === ui.sel)) ui.sel = items[ui.overlay?.kind === 'menu' && items.length > 1 ? 1 : 0]?.id ?? null;
   const scroll = ui.overlay ? 0 : (() => {
     const first = rows.findIndex((r) => r.id === ui.sel);
@@ -365,11 +392,11 @@ function frame(W, H) {
     return r.id && r.id === ui.sel ? `${ESC}48;5;237m${padded}${ESC}49m` : padded;
   });
   while (lines.length < bodyH) lines.push('');
-  const hints = ui.overlay?.kind === 'log' ? '↑↓ scroll · esc back'
-    : ui.overlay ? '↑↓ move · ⏎ select · esc back'
-    : `${rows.length > scroll + bodyH ? '↓ more · ' : ''}↑↓ move · ⏎ open · c pet · q quit`;
-  const footer = ui.toast && ui.toast.until > Date.now() ? fg(C.green, ` ${ui.toast.text}`) : dim(` ${hints}`);
-  // The mascot sits between the list and the legend, which stays on the bottom line.
+  const viewIds = view.map((r) => r.id);
+  while (viewIds.length < bodyH) viewIds.push(null);
+  const sel = (id, s) => (id === ui.sel ? `${ESC}48;5;237m${s}${ESC}49m` : s);
+  const right = (text, id) => ' '.repeat(Math.max(0, W - 1 - width(text))) + sel(id, text) + ' ';
+  // The mascot sits between the list and the bottom line.
   let image = null;
   if (withMascot) {
     const m = mascot.render(W);
@@ -378,9 +405,16 @@ function frame(W, H) {
       image = { at, rows: m.image.rows, seq: `${ESC}${at + 1};${m.image.col + 1}H${m.image.data}` };
     }
     lines.push(...m.lines);
+    viewIds.push(...m.lines.map(() => null));
   }
-  lines.push(trunc(footer, W + 20));
-  return { lines, items, viewIds: view.map((r) => r.id), image };
+  for (const r of settings?.rows ?? []) { lines.push(right(`${r.label}  ${dim(r.value)}`, r.id)); viewIds.push(r.id); }
+  // The bottom line: a toast on the left, the settings selector on the right. It also keeps the mascot's
+  // image off the last row: drawing an image moves the cursor below it, which would scroll the screen there.
+  const label = settings ? fg(C.accent, settings.toggle.label) : '';
+  const toastText = ui.toast && ui.toast.until > Date.now() ? trunc(` ${ui.toast.text}`, W - width(label) - 2) : '';
+  lines.push(fg(C.green, toastText) + (label ? right(label, 'settings').slice(width(toastText)) : ''));
+  viewIds.push(settings ? 'settings' : null);
+  return { lines, items, viewIds, image };
 }
 
 // ── Modes ──────────────────────────────────────────────────────────────────────
@@ -394,7 +428,7 @@ let draw = () => {};
 if (args.includes('--frame')) {
   const i = args.indexOf('--frame');
   const W = +args[i + 1] || 42, H = +args[i + 2] || 60;
-  for (const k of ['context', 'connectors']) if (args.includes(`--open-${k}`)) ui.open[k] = true;
+  for (const k of ['context', 'connectors', 'settings']) if (args.includes(`--open-${k}`)) ui.open[k] = true;
   await collect();
   mascot.setStage(petStage());
   // e.g. --activate pr:8  or  --activate finished,opt:0  (a chain of clicks)
@@ -440,6 +474,9 @@ const schedule = { fast: 1000, env: 5000, account: 5000, prs: 60_000, connectors
 const runners = Object.fromEntries(Object.keys(schedule).map((k) => [k, refresh(k)]));
 for (const [k, ms] of Object.entries(schedule)) { runners[k](); setInterval(runners[k], ms); }
 setInterval(() => { ui.tick++; draw(); }, 1000);
+fontsize.baseSize(pinnedPid).then((b) => { font.base = b; draw(); });
+// Put the panes on the saved font size once the layout has settled (pane.mjs sizes the splits after opening them).
+if (font.size) setTimeout(() => setFont(font.size), 3000);
 setInterval(() => { mascot.setStage(petStage()); mascot.step(out.columns || 40, claudeBusy()); draw(); }, 200);
 draw();
 
@@ -473,13 +510,15 @@ const handleKey = (k) => {
       if (k === 'G') ui.overlay.scroll = 0;
     }
     const opt = ui.overlay.kind === 'menu' && ui.overlay.options.find((o) => o.key === k);
-    if (opt) { closeOverlay(); return opt.run(); }
+    if (opt) { if (!opt.keep) closeOverlay(); return opt.run(); }
   } else {
     if (k === 'q') return quit();
     if (k === 'r') { Object.values(runners).forEach((f) => f()); return toast('Refreshing…'); }
     if (k === 'c') return nextCreature();
-    if (k === '[') return previewStage(-1);
-    if (k === ']') return previewStage(1);
+    if (ui.sel === 'font' && (k === '\x1b[D' || k === 'h')) return stepFont(-1)();
+    if (ui.sel === 'font' && (k === '\x1b[C' || k === 'l')) return stepFont(1)();
+    if (ui.sel === 'pet' && (k === '\x1b[D' || k === 'h')) return nextCreature(-1);
+    if (ui.sel === 'pet' && (k === '\x1b[C' || k === 'l')) return nextCreature(1);
     const p = selectedPr();
     if (p && k === 'o') return launch('open', [p.url], `Opened #${p.number}`);
     if (p && k === 'y') return copy(p.url, `link to #${p.number}`);

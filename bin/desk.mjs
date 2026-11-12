@@ -4,9 +4,7 @@
 //   Diff  every file changed since the branch forked from the default branch, and each file's diff
 //   Review  runs the code-review skill on those changes, keeps its findings per branch, and hands the ones
 //           you accept to Claude to fix
-// It follows what Claude is doing: a new or edited plan brings up Plan, changed files bring up Diff, a
-// finished review brings up Review.
-// Switching tabs yourself turns that off until you press `a`.
+// It opens on Plan; tabs change only when you switch them (Tab, 1 2 3, or a click).
 //   node desk.mjs                                   interactive panel
 //   node desk.mjs --json                            print the collected state once
 //   node desk.mjs --frame [W H] [--tab plan|diff|review] [--file N]   print one rendered frame (no TTY needed)
@@ -16,6 +14,7 @@ import { execFile } from 'node:child_process';
 import * as src from './sources.mjs';
 import { reviewBranch, loadReviews, saveReviews } from './reviewer.mjs';
 import { ESC, fg, dim, bold, C, charWidth, width, trunc, clean } from './term.mjs';
+import { applySaved } from './fontsize.mjs';
 
 const args = process.argv.slice(2);
 const flag = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
@@ -27,7 +26,7 @@ const taskIndex = new src.TaskIndex();
 const data = { plan: null, recent: null, root: null, files: [], diff: null, claude: null, // diff: { path, lines } of the open file
   review: { running: null, runs: [], path: undefined } };                    // runs: the branch's saved reviews, newest first
 const TABS = ['plan', 'diff', 'review'];
-const ui = { tab: 'plan', auto: true, scroll: { plan: 0, diff: 0, review: 0 }, sel: 0, open: null, toast: null,
+const ui = { tab: 'plan', scroll: { plan: 0, diff: 0, review: 0 }, sel: 0, open: null, toast: null,
   jump: null, rsel: 0 };
 const seen = { plan: undefined, diff: undefined }; // last signatures, to notice changes
 const toast = (text) => { ui.toast = { text, until: Date.now() + 2500 }; };
@@ -39,7 +38,6 @@ const changed = (tab, sig) => {
   seen[tab] = sig;
   return c;
 };
-let planChangedAt = 0;
 
 // A changed plan brings up Plan and changed files bring up Diff, unless the person picked a tab themselves.
 // Plan wins a near-tie, so a file save right after the plan doesn't pull the view away from it.
@@ -51,16 +49,13 @@ const loaders = {
     await taskIndex.update((await src.sessionFiles(current)).transcriptPath);
     data.plan = await src.readPlan(taskIndex.planPath);
     if (changed('plan', data.plan ? `${data.plan.path}:${data.plan.mtime}` : '')) {
-      planChangedAt = Date.now();
       ui.scroll.plan = 0;
-      if (ui.auto) ui.tab = 'plan';
     }
   },
   // What landed lately, for the Plan tab before there's a plan. gh is slow, so this refreshes rarely.
   async recent() { if (!data.plan || !data.recent) data.recent = await src.recentWork(cwd); },
   async diff() {
     ({ root: data.root, files: data.files } = await src.branchFiles(cwd));
-    if (changed('diff', JSON.stringify(data.files)) && ui.auto && Date.now() - planChangedAt > 3000) ui.tab = 'diff';
     ui.sel = Math.min(ui.sel, Math.max(0, data.files.length - 1));
     if (ui.open) await loadFile(ui.open);
   },
@@ -99,7 +94,6 @@ function startReview() {
         data.review.runs = record(run, data.review.runs);
         await saveReviews(path, data.review.runs);
         ui.rsel = 0; ui.scroll.review = 0;
-        if (ui.auto) ui.tab = 'review';
       } else await saveReviews(path, record(run, await loadReviews(path))); // the branch changed meanwhile
     }
     draw();
@@ -394,10 +388,6 @@ function frame(W, H) {
     x += width(text) + 1;
     return span;
   });
-  // The auto-switch state on the right, shortened (then dropped) when the panel is narrow.
-  const mode = [ui.auto ? dim('follows Claude') : fg(C.yellow, 'auto off'), ui.auto ? dim('auto') : fg(C.yellow, 'off')]
-    .find((m) => width(bar) + width(m) <= w);
-  if (mode) bar += ' '.repeat(w - width(bar) - width(mode)) + mode;
 
   let body, ids = [], buttons = [], target = -1;
   if (ui.tab === 'plan') body = planLines(w);
@@ -423,13 +413,13 @@ function frame(W, H) {
   });
   while (view.length < bodyH) view.push('');
 
-  const more = body.length > scroll + bodyH ? '↓ more · ' : '';
-  const hints = ui.tab === 'plan' ? `${more}↑↓ scroll · tab switch · a auto · q quit`
-    : ui.tab === 'review' ? `${more}↑↓ move · ⏎ go to line · y accept · A accept all · r run review · x cancel`
-    : ui.open ? `${more}↑↓ scroll · n/p file · esc back · q quit`
-    : `↑↓ move · ⏎ open · tab switch · a auto · q quit`;
-  // Cut the plain text before styling: a line past the last column would scroll the screen.
-  const footer = ui.toast && ui.toast.until > Date.now() ? fg(C.green, trunc(` ${ui.toast.text}`, W - 1)) : dim(trunc(` ${hints}`, W - 1));
+  // The bottom line: a toast on the left, how to get around on the right (iTerm's own pane keys, and the
+  // tab keys), dropped when the toast needs the room. Cut the plain text before styling: a line past the
+  // last column would scroll the screen.
+  const keys = '⌘[ ⌘] panels · tab or 1 2 3 tabs';
+  const toastText = ui.toast && ui.toast.until > Date.now() ? trunc(` ${ui.toast.text}`, W - 1) : '';
+  const room = W - 1 - width(toastText) - width(keys);
+  const footer = fg(C.green, toastText) + (room >= (toastText ? 2 : 0) ? ' '.repeat(room) + dim(keys) : '');
   layout = { tabs, tabRow: 2, body: 3, ids: ids.slice(scroll, scroll + bodyH), scroll, bodyH,
     buttons: buttons.filter((b) => b.row >= scroll && b.row < scroll + bodyH).map((b) => ({ ...b, row: b.row - scroll })) };
   const rule = ' ' + dim('─'.repeat(w));
@@ -494,6 +484,8 @@ process.on('SIGTERM', () => quit());
 process.on('uncaughtException', (e) => { restore(); console.error(e); process.exit(1); });
 out.write(`${ESC}?1049h${ESC}?25l${MOUSE_ON}`);
 out.on('resize', draw);
+// A desk opened after a font size was chosen in the rail joins it (after pane.mjs has sized the splits).
+setTimeout(() => applySaved(pinnedPid), 3000);
 
 const refresh = (name) => {
   let busy = false;
@@ -525,7 +517,7 @@ const review = (action) => {
   if (action === 'acceptAll') return acceptFindings(pending());
   if (action.startsWith('accept:')) { ui.rsel = +action.slice(7); return acceptFindings([ui.rsel]); }
 };
-const manual = (tab) => { if (tab !== ui.tab) { ui.tab = tab; if (ui.auto) { ui.auto = false; toast('Auto-switch off · a to turn it back on'); } } };
+const manual = (tab) => { ui.tab = tab; };
 const scrollBy = (d) => { const key = ui.tab === 'diff' && ui.open ? 'file' : ui.tab; ui.scroll[key] = (ui.scroll[key] ?? 0) + d; };
 const move = (d) => {
   const n = latest()?.findings?.length ?? 0;
@@ -548,7 +540,6 @@ const handleKey = async (k) => {
     if (k === 'A') return review('acceptAll');
     if ((k === '\r' || k === 'l' || k === '\x1b[C') && findings.length) return jumpTo(ui.rsel);
   }
-  if (k === 'a') { ui.auto = !ui.auto; return toast(ui.auto ? 'Following Claude again' : 'Auto-switch off'); }
   if (k === 'r') { Object.values(runners).forEach((f) => f()); return toast('Refreshing…'); }
   if (k === '\x1b[A' || k === 'k') return move(-1);
   if (k === '\x1b[B' || k === 'j') return move(1);
