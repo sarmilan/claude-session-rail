@@ -39,7 +39,7 @@ const loaders = {
   async sessions() { data.overview = await src.sessionsOverview(data.agents, data.current?.pid); },
   async account() { [data.account, data.usage] = await Promise.all([src.account(), src.usage()]); },
   async prs() { data.prs = await src.prs(cwd); },
-  async worktrees() { data.worktrees = await src.worktrees(cwd); },
+  async worktrees() { data.worktrees = { ...(await src.worktrees(cwd)), at: Date.now() }; },
   async connectors() { data.connectors = await src.connectors(); },
 };
 
@@ -183,9 +183,29 @@ const startSession = async (problem) => {
   const wt = await src.newWorktree(cwd, problem);
   if (!wt.ok) { toast(wt.message); return draw(); }
   const command = `cd ${sq(wt.dir)} && SESSION_RAIL_STARTED=1 claude ${sq(`/start ${problem}`)}`;
-  const here = data.overview?.find((s) => s.current)?.tty ?? 'none';
-  pane(['window', here, command], (state) => toast(state === 'opened' ? `Started in ${src.tildify(wt.dir)}` : "Couldn't open a window"));
+  openWindow(command, `Started in ${src.tildify(wt.dir)}`);
 };
+// A new iTerm window beside this session's, running command.
+const openWindow = (command, ok) => pane(['window', data.overview?.find((s) => s.current)?.tty ?? 'none', command],
+  (state) => toast(state === 'opened' ? ok : "Couldn't open a window"));
+// A worktree card's menu: its session (or a new window running claude there), its PR and failing check, its branch.
+const prFor = (branch) => (branch && data.prs?.ok ? data.prs.items.find((p) => p.headRefName === branch) : null);
+const failing = (p) => p?.checks.find((c) => c.state === 'fail' && c.url);
+const worktreeMenu = (w) => {
+  // A session belongs to the deepest worktree holding its cwd (a worktree can sit inside another's folder).
+  const inside = (dir, p) => dir === p || dir?.startsWith(p + '/');
+  const owner = (dir) => (data.worktrees?.items ?? []).filter((x) => inside(dir, x.path)).sort((a, b) => b.path.length - a.path.length)[0]?.path;
+  const s = data.overview?.find((o) => inside(o.cwd, w.path) && owner(o.cwd) === w.path);
+  const p = prFor(w.branch), bad = failing(p), name = clean(w.name);
+  menu(name, [
+    s ? { label: s.current ? 'This session' : 'Go to session', run: () => goTo(s) }
+      : { label: 'Open claude here', run: () => openWindow(`cd ${sq(w.path)} && claude`, `Opened claude in ${name}`) },
+    ...(p ? [{ label: `Open PR #${p.number}`, key: 'o', run: () => launch('open', [p.url], `Opened #${p.number}`) }] : []),
+    ...(bad ? [{ label: `Open failing check: ${clean(bad.name)}`, run: () => launch('open', [bad.url], 'Opened the check') }] : []),
+    ...(w.branch ? [{ label: 'Copy branch name', key: 'y', run: () => copy(w.branch, 'branch name') }] : []),
+  ], [clean(src.tildify(w.path)), clean(w.branch ?? `detached at ${w.sha}`)]);
+};
+
 const typeKey = (k) => {
   if (k === '\x1b') { ui.input = null; return; }
   if (k === '\r') {
@@ -319,11 +339,72 @@ function buildMain(W) {
         .replace(/( · )?(\d+ changed)$/, (m, sep = '', t) => dim(sep + t)) });
   };
 
-  // Git: the repo, this branch, and the open pull requests.
+  // Git: worktree cards, this branch's commits, its PR's checks, then the open pull requests.
+  // `spread` lays out pieces already truncated to fit: styled left, styled right, padded between.
+  const spread = (left, right = '', id) => line(left + ' '.repeat(Math.max(right ? 1 : 0, inner - width(left) - width(right))) + right, id);
+  const CHECK = { pass: [C.green, '✓'], fail: [C.red, '✗'], pending: [C.yellow, '◌'] };
+  const badge = (p) => {
+    if (!p) return '';
+    const states = p.checks.map((c) => c.state);
+    const st = states.includes('fail') ? 'fail' : states.includes('pending') ? 'pending' : states.length ? 'pass' : null;
+    return `#${p.number}` + (st ? ' ' + fg(CHECK[st][0], CHECK[st][1]) : '');
+  };
   const gitTab = () => {
-    repoRow();
-    branchRow();
+    const wt = data.worktrees;
+    // Header: the repo, its default branch, and how fresh the cards are.
+    const title = trunc(`${clean(wt?.repo ?? env?.repo ?? '…')}${wt?.base ? ` · ${wt.base}` : ''}`, inner - 6);
+    spread(title.replace(/ · (.*)$/, (m, b) => ' · ' + dim(b)), wt?.at ? dim(`↻ ${ago(wt.at)}`) : '');
     rule();
+
+    // Worktrees: this one first, then git's order.
+    const cards = [...(wt?.items ?? [])].sort((a, b) => b.current - a.current);
+    heading(`Worktrees ${dim(wt ? String(cards.length) : '…')}`);
+    if (wt && !wt.ok) line(dim('Not a git repo'));
+    for (const w of cards) {
+      const id = item(`wt:${w.path}`, () => worktreeMenu(w));
+      const where = clean(w.branch ?? `detached ${w.sha}`);
+      const right = trunc(where, Math.max(8, Math.floor(inner / 2)));
+      const name = trunc(clean(w.name), inner - 4 - width(right) - 1);
+      spread(`${w.current ? fg(C.accent, '▸ ●') : dim('  ○')} ${w.current ? bold(name) : name}`, dim(right), id);
+      const p = prFor(w.branch);
+      const sync = w.merged ? fg(C.green, '✓ merged')
+        : w.ahead == null ? '' : !w.ahead && !w.behind ? 'up to date'
+        : [w.ahead && fg(C.green, `↑${w.ahead}`), w.behind && fg(C.yellow, `↓${w.behind}`)].filter(Boolean).join(' ');
+      const dirt = w.dirty == null ? fg(C.red, 'missing') : w.dirty ? `${w.dirty} changed` : 'clean';
+      const parts = [sync, dirt, badge(p)].filter(Boolean).join(dim(' · '));
+      spread(`    ${width(parts) > inner - 4 ? dim(trunc(parts.replace(/\x1b\[[0-9;]*m/g, ''), inner - 4)) : parts}`, '', id);
+    }
+    rule();
+
+    // This branch: uncommitted work, its commits newest first, and the default-branch commit it forked from.
+    if (env?.isGit) {
+      const diff = env.added || env.removed ? `${fg(C.green, `+${env.added}`)} ${fg(C.red, `−${env.removed}`)}` : '';
+      const label = trunc(clean(env.branch ?? '(detached)'), inner - 12 - (diff ? width(diff) + 1 : 0));
+      spread(`${bold('This branch')} ${dim(label)}`, diff, env.branch ? item('branch', () => branchMenu(env)) : undefined);
+      if (env.dirty) line(fg(C.yellow, '◌') + dim(` ${env.dirty} uncommitted`));
+      for (const c of env.commits ?? []) {
+        const age = dim(ago(c.at)), tag = c.fork && env.base ? `  ${fg(C.blue, env.base)}` : '';
+        const subject = trunc(clean(c.subject), inner - 2 - width(c.sha) - 1 - width(tag) - width(age) - 1);
+        spread(`${c.fork ? fg(C.blue, '◆') : fg(C.accent, '●')} ${dim(c.sha)} ${subject}${tag}`, age);
+      }
+      rule();
+    }
+
+    // This branch's PR and its checks, failing first; Enter opens a check's run.
+    const mine = prFor(env?.branch);
+    if (mine) {
+      heading(`PR #${mine.number} ${dim(`· ${mine.isDraft ? 'draft' : 'open'}`)}`);
+      const order = { fail: 0, pending: 1, pass: 2 };
+      const checks = [...mine.checks].sort((a, b) => order[a.state] - order[b.state]);
+      if (!checks.length) line(dim('No checks'));
+      checks.forEach((c, i) => {
+        const [color, mark] = CHECK[c.state];
+        const note = { fail: 'failing', pending: 'running', pass: '' }[c.state];
+        spread(`${fg(color, mark)} ${trunc(clean(c.name), inner - 2 - width(note) - 1)}`, dim(note),
+          c.url ? item(`check:${i}`, () => launch('open', [c.url], 'Opened the check')) : undefined); // names repeat across workflows
+      });
+      rule();
+    }
 
     // Pull requests: yours, open in this repo
     heading('Pull requests');
@@ -335,7 +416,7 @@ function buildMain(W) {
       for (const p of ui.open.more ? pr.items : pr.items.slice(0, 5)) {
         const id = item(`pr:${p.number}`, () => prMenu(p));
         pair(`⑂ ${clean(p.title)}`, '⋯', id, { leftStyle: (s) => fg(p.isDraft ? C.gray : C.purple, s[0]) + s.slice(1), rightStyle: dim });
-        pair(`  ${env?.repo ?? ''} #${p.number}${p.isDraft ? ' · draft' : ''}`, '', id, { leftStyle: dim });
+        pair(`  ${clean(data.worktrees?.repo ?? env?.repo ?? '')} #${p.number}${p.isDraft ? ' · draft' : ''}`, '', id, { leftStyle: dim });
       }
       if (pr.items.length > 5) line(dim(ui.open.more ? 'Show less' : 'Show more'), item('more', () => { ui.open.more = !ui.open.more; }));
     }
