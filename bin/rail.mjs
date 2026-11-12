@@ -101,8 +101,8 @@ const setTab = (t) => {
   showTab(t);
   saveTab(data.current?.sessionId);
   // The worktree cards and PR checks refresh every 60s, only on Git; arriving on Git brings them up to date (through the runner, so it
-  // can't overlap a scheduled load).
-  if (t === 'git' && !isFrame) { runners.worktrees(); runners.prs(); }
+  // can't overlap a scheduled load), unless they loaded in the last 10s, so flipping tabs doesn't call GitHub each time.
+  if (t === 'git' && !isFrame && Date.now() - (data.worktrees?.at ?? 0) > 10_000) { runners.worktrees(); runners.prs(); }
 };
 const stepTab = (d) => setTab(TABS[(TABS.indexOf(ui.tab) + TABS.length + d) % TABS.length]);
 const otherTab = () => stepTab(1);
@@ -394,7 +394,7 @@ function buildMain(W) {
         const [color, mark] = CHECK[c.state];
         const key = `${c.name}\x1f${c.url}`, n = (seen[key] = (seen[key] ?? 0) + 1); // ids must be unique or j/k sticks on the repeat
         const note = { fail: 'failing', pending: 'running', pass: '' }[c.state];
-        spread(`${fg(color, mark)} ${trunc(clean(c.name), inner - 2 - width(note) - 1)}`, dim(note),
+        spread(`${fg(color, mark)} ${trunc(clean(c.name), inner - 2 - (note ? width(note) + 1 : 0))}`, dim(note),
           c.url ? item(`check:${key}${n > 1 ? `#${n}` : ''}`, () => launch('open', [c.url], 'Opened the check')) : undefined); // names repeat across workflows; the run's url keeps the selection when the order changes
       });
       rule();
@@ -419,7 +419,7 @@ function buildMain(W) {
 
   // Tabs: the active one bold and underlined in orange. Enter flips; a click picks by column (tabAt).
   const labels = TABS.map((t) => [t, TAB_LABELS[t]]);
-  pair(labels.map(([t, l]) => (t === ui.tab ? bold(fg(C.accent, l)) : dim(l))).join('  '), '⇥', item('tabs', otherTab), { rightStyle: dim });
+  spread(labels.map(([t, l]) => (t === ui.tab ? bold(fg(C.accent, l)) : dim(l))).join('  '), dim('⇥'), item('tabs', otherTab));
   const under = labels.map(([t, l]) => (t === ui.tab ? fg(C.accent, '━'.repeat(l.length)) : dim('─'.repeat(l.length)))).join(dim('──'));
   line(under + dim('─'.repeat(Math.max(0, inner - width(labels.map(([, l]) => l).join('  '))))));
 
