@@ -152,11 +152,13 @@ const backgroundTasks = () => companionsFlag ?? data.tasks.running.filter((t) =>
 // keeps allowing edits once a brief is approved, even after it changes).
 const petHeld = () => args.includes('--held') || (src.gateHeld(data.activity) && !isApproved(data.brief?.status));
 // It flinches once at each new failed tool call; failures from before the rail started don't count, nor
-// the gate's refusals (they count as failed calls), which show the ? instead.
+// the gate's refusals (they count as failed calls), which show the ? instead. Other failures while the gate
+// holds (a Bash command, say) still do.
 let lastFailure = Date.now();
 const checkFailure = () => {
-  const at = data.activity?.recent?.find((r) => !r.ok)?.at ?? 0;
-  if (at > lastFailure && !petHeld()) mascot.flinch();
+  const f = data.activity?.recent?.find((r) => !r.ok), at = f?.at ?? 0, gate = data.activity?.gate;
+  const refusal = gate && f?.tool === gate.tool && Math.abs(at - gate.at) < 5000;
+  if (at > lastFailure && !refusal) mascot.flinch();
   lastFailure = Math.max(lastFailure, at);
 };
 const feedPet = (W) => {

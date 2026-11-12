@@ -117,23 +117,21 @@ function stripImage(c, rows, cols, colPx, x, { scale = SCALE, stripRows = STRIP_
     const rgb = xtermRgb(colour), gy = up > 0 ? floorY - up * SCALE : floorY + 2 + (-up - 1) * SCALE;
     for (let dy = 0; dy < SCALE; dy++) for (let dx = 0; dx < SCALE; dx++) putRgb(gx * SCALE + dx, gy + dy, rgb);
   }
-  for (const v of sprites) { // visitors and companions: over the foliage, behind the creature, `up` pixels up
-    const vy = floorY - (v.up + v.rows.length) * SCALE;
-    v.rows.forEach((row, ry) => [...row].forEach((k, rx) => {
-      if (k === '.') return;
-      const rgb = xtermRgb(v.palette[k]);
-      for (let dy = 0; dy < SCALE; dy++) for (let dx = 0; dx < SCALE; dx++) putRgb(v.px + rx * SCALE + dx, vy + ry * SCALE + dy, rgb);
-    }));
-  }
+  // A small drawing at (x0, y0), `sc` image pixels a dot, coloured by `rgbOf(key)`; '.' is transparent.
+  const blit = (rows, x0, y0, sc, rgbOf) => rows.forEach((row, ry) => [...row].forEach((k, rx) => {
+    if (k === '.') return;
+    const rgb = rgbOf(k);
+    for (let dy = 0; dy < sc; dy++) for (let dx = 0; dx < sc; dx++) putRgb(x0 + rx * sc + dx, y0 + ry * sc + dy, rgb);
+  }));
+  for (const v of sprites) // visitors and companions: over the foliage, behind the creature, `up` pixels up
+    blit(v.rows, v.px, floorY - (v.up + v.rows.length) * SCALE, SCALE, (k) => xtermRgb(v.palette[k]));
   for (let y = 0; y < SPR_H * scale; y++) for (let px = 0; px < SPR_W * scale; px++) {
     const key = rows[Math.floor(y / scale)][Math.floor(px / scale)];
     if (key !== '.') put(x + px, top + y, key);
   }
   if (mark) { // anger, a puff or a ?, a sprite pixel a dot, above the front (the right claw, or the head turned left)
     const ax = x + Math.round(SPR_W * scale * (flip ? 0.2 : 0.8)) - (flip ? mark[0].length * scale : 0), ay = Math.max(0, top - mark.length * scale - 2);
-    mark.forEach((row, ry) => [...row].forEach((k, rx) => {
-      if (k !== '.') for (let dy = 0; dy < scale; dy++) for (let dx = 0; dx < scale; dx++) put(ax + rx * scale + dx, ay + ry * scale + dy, k);
-    }));
+    blit(mark, ax, ay, scale, (k) => xtermRgb(colorOf(c, k)));
   }
   for (let y = floorY; y < floorY + 2; y++) for (let px = 0; px < w; px++) raw.set([...FLOOR_RGB, 255], y * stride + 1 + px * 4);
   // Stretched to exactly `cols` × `stripRows` cells; with the right cell aspect the pixels come out square.
@@ -250,7 +248,8 @@ export function createMascot({ images = false, creature = 0, now = Date.now() } 
         let left = progress != null || s.dir > 0;
         if ((left ? roomL : roomR) < span) left = roomL >= roomR;
         companions.forEach((x, i) => {
-          const target = left ? s.x - (i + 1) * (cw + 1) : s.x + width() + 1 + i * (cw + 1);
+          // kept on the strip: with too little room either side they bunch up at its edge
+          const target = Math.max(1, Math.min(W - 1 - cw, left ? s.x - (i + 1) * (cw + 1) : s.x + width() + 1 + i * (cw + 1)));
           companions[i] = x + Math.sign(target - x);
         });
       }
