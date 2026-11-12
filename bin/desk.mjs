@@ -18,7 +18,9 @@ import { reviewApproach, reviewedState, loadReviews, saveReviews } from './revie
 import { ESC, fg, dim, bold, C, charWidth, width, trunc, clean } from './term.mjs';
 import { applySaved } from './fontsize.mjs';
 import { approvalRecord } from './brief.mjs';
-import { writeFile } from 'node:fs/promises';
+import { writeFile, mkdir } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 
 const args = process.argv.slice(2);
 const flag = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
@@ -94,8 +96,10 @@ function startReview() {
   if (!data.review.path) return 'Still loading this branch’s reviews';
   const controller = new AbortController(), path = data.review.path;
   data.review.running = { controller, startedAt: Date.now() };
+  void reportDesk({ kind: 'approach review', startedAt: data.review.running.startedAt });
   reviewApproach(cwd, { brief: data.brief, files: data.files, signal: controller.signal }).then(async (run) => {
     data.review.running = null;
+    void reportDesk(null);
     // A cancelled run leaves the record alone; a failed one is kept so the tab says why.
     if (run.error !== 'Review cancelled') {
       if (path === data.review.path) {
@@ -109,6 +113,18 @@ function startReview() {
   return null;
 }
 const cancelReview = () => data.review.running?.controller.abort();
+
+// The desk's own headless run, for the rail's Now section: <session id>.desk.json beside the hooks' activity
+// file. It carries this desk's pid, so a desk that quits mid-review doesn't leave a review "running" forever.
+const ACTIVITY = join(homedir(), '.claude', 'session-rail', 'activity');
+async function reportDesk(review) {
+  const id = data.claude?.sessionId;
+  if (!id) return;
+  try {
+    await mkdir(ACTIVITY, { recursive: true });
+    await writeFile(join(ACTIVITY, `${id}.desk.json`), JSON.stringify({ pid: process.pid, review, updatedAt: Date.now() }));
+  } catch {}
+}
 
 // Once the brief is approved, a review runs on its own at each milestone: a chunk gets its Done line, or the
 // goal or plan changes after approval. It waits until the brief has been still for AUTO_SETTLE_MS (Claude may
