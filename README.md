@@ -25,16 +25,16 @@ If you have a `/start` command of your own, it runs as soon as the session start
 │                                   │ ⑂ Fix login redirect loop      ⋯ │
 │                                   │   my-app #42                     │
 │                                   │ ──────────────────────────────── │
-│                                   │ Background tasks                 │
-│                                   │ ◇ Run test suite          2m  ■  │
-│                                   │ ◇ 6 finished                     │
+│                                   │ Now                              │
+│                                   │ ◉ Claude  Edit src/auth/redi… 4s │
+│                                   │   ├ ◆ Explore: find callers  38s │
+│                                   │   └ ◇ Run test suite          2m │
+│                                   │ ◉ Desk  approach review      40s │
 │                                   │ ──────────────────────────────── │
-│                                   │ Active agents  2                 │
-│                                   │ ● fix-login-redirect   busy  cli │
-│                                   │   my-app · 4s · here             │
-│                                   │ ○ Write release notes  idle  app │
-│                                   │   docs · 12m                     │
-│                                   │                                  │
+│                                   │ Just now                         │
+│                                   │ ✔ Read src/auth/login.ts      6s │
+│                                   │ ✗ Bash npm test              12s │
+│                                   │ ──────────────────────────────── │
 │  >                                │                                  │
 └───────────────────────────────────┴──────────────────────────────────┘
 ```
@@ -45,10 +45,14 @@ If you have a `/start` command of your own, it runs as soon as the session start
 - **Context:** how full Claude's context window is
 - **Connectors:** your MCP servers and whether they're connected
 - **Changes:** your open pull requests in this repo
-- **Background tasks:** commands and subagents Claude is running in the background. Open one to see its output.
-- **Active agents:** every Claude session running on your Mac, in the terminal or the desktop app
+- **Now:** who is doing what this second, and for how long:
+  - **Claude:** thinking (with the model), the tool it's running and on what, waiting on its subagents, or waiting for you
+  - nested under it, its **subagents** (with what one is doing, when only one runs) and **background tasks**. Open a background task to see its output.
+  - the **Desk** while it runs an approach review, and the **Gate** when it has just held an edit because the brief isn't approved
+- **Just now:** the last few finished tool calls, with ✔ or ✗, and the session's finished background tasks
+- **Other sessions:** every other Claude session on your Mac, folded into one row. Open it to see them.
 
-Click a row, or use the arrow keys and Enter, to open it. Pull requests open in the browser, tasks show their output, and agents give you their resume command.
+Click a row, or use the arrow keys and Enter, to open it. Pull requests open in the browser, tasks show their output, and sessions give you their resume command.
 
 ## The desk
 
@@ -94,6 +98,7 @@ Files: src/a.ts, src/b.ts
 - As you talk the problem through, Claude says when it's scoped out and writes the brief. You don't need to ask.
 - Claude can't edit code (Edit, Write, NotebookEdit) until the brief has a problem, a solution and at least one chunk, and you've pressed **Approve** in the Plan tab (or `A`, or `/approve-brief` when the desk isn't open). Writes Claude makes through the shell aren't covered.
 - Once approved, nothing blocks again. If the problem, solution or outline changes later, the Plan tab says "changed since" and offers **Approve again**.
+- Claude works through the chunks in order. As each one is finished, it reviews it against the plan (running the tests), adds a short `Done:` summary and its `Files:`, commits it on its own and pushes, opening the pull request after the first chunk, then moves straight on to the next chunk unless something needs your decision.
 - The approach review runs by itself at milestones: when a chunk gets its `Done:` line, and when the plan changes after approval, once the brief has been still for 20 seconds. **Run review** runs it any time, before approval too. Each run is one `claude -p` call.
 
 Keys:
@@ -151,7 +156,7 @@ It has these parts:
 1. **The rail** (`bin/rail.mjs`) draws the narrow panel in the terminal. It's plain Node with no dependencies.
 2. **The desk** (`bin/desk.mjs`) draws the wider panel. It reads the branch's brief (`bin/brief.mjs`), finds the plan file in the session's conversation log, asks `git` for the diff and `gh` for the board's Todo issues. Its reviewer (`bin/reviewer.mjs`) runs the approach review through `claude -p` with a JSON schema for the findings, read-only tools, no MCP servers and no saved session, and keeps each branch's reviews in `.git/session-rail/reviews/`.
 3. **The pane opener** (`bin/pane.mjs`) uses iTerm2's AppleScript support to fill the screen, split Claude's pane, run each panel (desk next to Claude, rail on the far right), size them in one pass, and hand focus back to Claude.
-4. **The plugin** (`hooks/register.ts`) opens both panels when a session starts, adds `/rail`, `/desk` and `/approve-brief`, and closes them when the session ends. On a feature branch it adds the brief's instructions to Claude's system prompt and refuses code edits until the brief is approved.
+4. **The plugin** (`hooks/register.ts`) keeps a live record of what the session is doing (`hooks/activity.ts`: turns, every tool call, subagents, the brief gate) in `~/.claude/session-rail/activity/<session id>.json`, which the rail reads every second; the desk adds its running review beside it. It also opens both panels when a session starts, adds `/rail`, `/desk` and `/approve-brief`, and closes them when the session ends. On a feature branch it adds the brief's instructions to Claude's system prompt and refuses code edits until the brief is approved.
 
 ## Good to know
 
@@ -159,6 +164,7 @@ It has these parts:
 - When a session starts, the iTerm window fills the screen (without switching to macOS full screen). The desk takes 28% of the width, the rail 18.5%, and Claude keeps the rest. `/rail` and `/desk` take their share from Claude's pane, and the window never grows.
 - Context shows tokens and the model, but not cost.
 - It reads Claude Code's own files, which can change between Claude Code versions.
+- Every session that loads the plugin, headless `claude -p` runs included, writes a small activity file to `~/.claude/session-rail/activity/`. Nothing cleans them up yet; they're safe to delete.
 
 ## Uninstall
 

@@ -156,6 +156,8 @@ test('the system prompt explains the brief on a feature branch, not on main', as
   const { sections } = await $.prompt.compose(COMPOSE)
   const s = sections.find(x => x.id === 'session-rail-brief')
   expect(s?.text).toContain("Don't wait to be asked")
+  expect(s?.text).toContain('one commit per chunk')
+  expect(s?.text).toContain('Move straight on to the next chunk')
   expect(s?.scope).toBe('session')
 })
 
@@ -187,4 +189,34 @@ test('a command name the engine refuses does not stop the panels opening', async
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
   await new Promise(r => setTimeout(r, 10))
   expect(calls).toContain('pane.mjs layout')
+})
+
+// ── Live activity (hooks/activity.ts) ─────────────────────────────────────────
+// The activity file is the last write to ~/.claude/session-rail/activity/<session id>.json.
+const activityOf = async (files: Record<string, string>) => {
+  await new Promise(r => setTimeout(r, 20)) // writes are chained; let them land
+  return JSON.parse(files['/home/.claude/session-rail/activity/s1.json'] ?? 'null')
+}
+const withActivity = (on: Parameters<Parameters<typeof test>[1]>[1], opts: { branch?: string; brief?: string | null } = {}) => {
+  const h = briefHarness(on, opts)
+  on('env.get', () => ({ value: '/home' }))
+  on('session.id', () => ({ value: 's1' }))
+  return h
+}
+
+test('a finished tool call shows in the activity as just done, with its path relative to the repo', async ($, on) => {
+  const { files } = withActivity(on, { branch: 'main' })
+  await $.tool.call(edit('/repo/src/a.ts'))
+  const a = await activityOf(files)
+  expect(a.running).toEqual([])
+  expect(a.recent[0]).toMatchObject({ tool: 'Edit', arg: 'src/a.ts', ok: true })
+  expect(a.claude.state).toBe('thinking')
+})
+
+test('a refused edit is a failed call, and the gate records what it refused', async ($, on) => {
+  const { files } = withActivity(on)
+  await $.tool.call(edit('/repo/src/a.ts'))
+  const a = await activityOf(files)
+  expect(a.gate).toMatchObject({ tool: 'Edit', file: '/repo/src/a.ts' })
+  expect(a.recent[0]).toMatchObject({ tool: 'Edit', ok: false })
 })

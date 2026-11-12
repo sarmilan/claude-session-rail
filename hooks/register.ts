@@ -1,5 +1,6 @@
 import type { EngineInterface, Register } from 'claude-code'
 import { approvalRecord, briefFile, briefStatus, NO_BRIEF_BRANCHES, parseBrief } from '../bin/brief.mjs'
+import * as act from './activity.ts'
 
 // The controller (bin/pane.mjs) does the iTerm work; this module only decides when to call it.
 // It runs through sh so the user's PATH finds `node`; the script path is passed as an argument,
@@ -85,9 +86,16 @@ ${BRIEF_SHAPE}
 
 Keep the solution and the outline the simplest way to reach the goal. Edit, Write and NotebookEdit calls on any other file are refused until the brief has a problem, a solution and at least one chunk, and the person has approved it. When it's complete, ask them to review it and press Approve in the desk's Plan tab. Never approve it yourself or write its approval file.
 
-While you work, keep the brief current: if the problem, the solution or the outline changes, update the brief right away. When you finish a chunk, add two lines under its outline:
-Done: <one sentence: what changed and why>
+While you work, keep the brief current: if the problem, the solution or the outline changes, update the brief right away.
+
+Work through the chunks in order. When you finish one:
+1. Review it yourself against its outline and the brief's Problem and Solution: is it complete, is it the simplest way, and does it work (run the tests and checks)? Fix what falls short first. If the plan itself has to change, update the brief and say so.
+2. When it's satisfactory, add two lines under the chunk's outline:
+Done: <a short happy-path summary: what changed and how it works end to end>
 Files: <comma-separated paths relative to the repo root>
+3. Commit the chunk on its own: one commit per chunk, its message naming the chunk.
+4. Push the branch. After the first chunk's commit, also open a pull request for the branch, titled after the brief, with its Problem and Solution as the description; later pushes update it.
+5. Move straight on to the next chunk without waiting for the person, unless something needs their decision.
 
 At the end of the session, check the work against the brief's Problem and Solution.`
 
@@ -101,12 +109,15 @@ const gateReason = (b: Brief) => {
 
 // Why an edit of `file` is refused, or null to let it through. The brief itself (anything under
 // .git/session-rail/) can always be written, except its approval file.
-const gate = async ($: EngineInterface, file: string) => {
+const gate = async ($: EngineInterface, tool: string, file: string) => {
   const b = await readBrief($)
   if (!b) return null
-  if (file === b.approvedPath) return 'session-rail: only the person approves the brief, in the desk or with /approve-brief.'
-  if (file.startsWith(b.dir) || b.approval?.approvedAt) return null
-  return gateReason(b)
+  const reason =
+    file === b.approvedPath ? 'session-rail: only the person approves the brief, in the desk or with /approve-brief.'
+    : file.startsWith(b.dir) || b.approval?.approvedAt ? null
+    : gateReason(b)
+  if (reason) record($, a => act.refused(a, tool, file, Date.now()))
+  return reason
 }
 
 // /approve-brief: the same as Approve in the desk, for when the desk isn't open. It approves a complete brief
@@ -120,6 +131,29 @@ const approveCommand = async ($: EngineInterface) => {
   if (briefStatus(brief, b.approval) === 'approved') return `The brief for ${b.branch} is already approved.`
   await $.fs.write(b.approvedPath, approvalRecord(brief, Date.now()))
   return `Brief approved. Claude can edit code on ${b.branch}.`
+}
+
+// ── Live activity for the rail's Now section (activity.ts) ────────────────────
+// Kept in memory (a reload starts it afresh) and written whole on each change. Writes are chained and
+// coalesced: a burst of events while one write is in flight becomes one more write, never interleaved ones.
+let activity = act.fresh(Date.now())
+let callSeq = 0
+let saving: Promise<void> = Promise.resolve()
+let dirty = false
+const saveActivity = ($: EngineInterface) => {
+  dirty = true
+  saving = saving.then(async () => {
+    if (!dirty) return
+    dirty = false
+    try {
+      const [home, id] = await Promise.all([$.env.get('HOME'), $.session.id()])
+      if (home && id) await $.fs.write(`${home}/.claude/session-rail/activity/${id}.json`, JSON.stringify(activity))
+    } catch {}
+  })
+}
+const record = ($: EngineInterface, change: (a: act.Activity) => act.Activity) => {
+  activity = change(activity)
+  saveActivity($)
 }
 
 const message = (state: string, panel: Panel) => {
@@ -166,17 +200,47 @@ export const register: Register = on => {
     return b ? { sections: [...composed.sections, { id: 'session-rail-brief', text: briefInstructions(b), scope: 'session' as const }] } : composed
   })
 
+  // Live activity: the main loop's turns, and every tool call (a subagent's carries its agentId).
+  on('turn.start', async ($, e, next) => {
+    if (!e.agentId) {
+      const model = await $.session.model().catch(() => undefined)
+      record($, a => act.turnStarted(a, model, Date.now()))
+    }
+    return next(e)
+  })
+  on('turn.complete', ($, e, next) => {
+    if (!e.agentId) record($, a => act.turnEnded(a, Date.now()))
+    return next(e)
+  })
+  on('turn.abort', ($, e, next) => {
+    if (!(e as { agentId?: string }).agentId) record($, a => act.turnEnded(a, Date.now())) // its type names no agentId yet
+    return next(e)
+  })
+  on('tool.call', async ($, e, next) => {
+    const id = String(++callSeq)
+    const arg = act.summarise(e.tool, e as unknown as Record<string, unknown>, await $.session.cwd().catch(() => ''))
+    record($, a => act.callStarted(a, { id, tool: e.tool, arg, since: Date.now(), ...(e.agentId ? { agent: e.agentId } : {}) }))
+    let ok = false
+    try {
+      const r = await next(e)
+      ok = r.deny === undefined && r.isError !== true
+      return r
+    } finally {
+      record($, a => act.callFinished(a, id, ok, Date.now()))
+    }
+  })
+
   // The gate: code edits wait for an approved brief. A failure in the gate lets the edit through.
   on('tool.call', { tool: 'Edit' }, async ($, e, next) => {
-    const deny = await gate($, e.file_path)
+    const deny = await gate($, 'Edit', e.file_path)
     return deny ? { deny } : next(e)
   }).catch(($, e, next) => next(e))
   on('tool.call', { tool: 'Write' }, async ($, e, next) => {
-    const deny = await gate($, e.file_path)
+    const deny = await gate($, 'Write', e.file_path)
     return deny ? { deny } : next(e)
   }).catch(($, e, next) => next(e))
   on('tool.call', { tool: 'NotebookEdit' }, async ($, e, next) => {
-    const deny = await gate($, e.notebook_path)
+    const deny = await gate($, 'NotebookEdit', e.notebook_path)
     return deny ? { deny } : next(e)
   }).catch(($, e, next) => next(e))
 
