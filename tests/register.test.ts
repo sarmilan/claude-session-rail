@@ -1,6 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import { goAhead } from '../hooks/goahead.ts'
 import * as compact from '../hooks/compact.ts'
+import * as cadence from '../bin/cadence.mjs'
 
 // Each hook below stands for the engine. process.run records the controller action asked for.
 const harness = (on: Parameters<Parameters<typeof test>[1]>[1], reply = 'opened', commands = ['help']) => {
@@ -346,4 +347,108 @@ test('a compaction that keeps failing is tried 3 times, then dropped', async ($,
   repo.branch = 'main'
   for (let i = 0; i < 5; i++) await poll($)
   expect(compactions.length).toBe(3)
+})
+
+// ── The review cadence (bin/cadence.mjs) ──────────────────────────────────────
+const approachRun = (head: string, dirty: boolean, statuses: string[] = []) => ({
+  type: 'approach', startedAt: 1, finishedAt: 2, head, dirty, verdict: statuses.length ? 'simpler-path' : 'on-track', summary: '',
+  findings: statuses.map((status, i) => ({ id: `a-${i}`, kind: 'simpler', title: `finding ${i}`, detail: '', severity: 'medium', status })),
+})
+const report = (outcomes: (string | undefined)[]) => ({
+  findings: outcomes.map((outcome, i) => ({ file: 'a.ts', line: i + 1, summary: `bug ${i}`, failure_scenario: 'x', ...(outcome ? { outcome } : {}) })),
+})
+
+test('cadence: which commands are gated', () => {
+  expect(cadence.gatedAction('git add -A && git commit -m "x"')).toBe('commit')
+  expect(cadence.gatedAction('git -C /repo commit --amend')).toBe('commit')
+  expect(cadence.gatedAction('git --no-pager -c user.name=x commit -m y')).toBe('commit')
+  expect(cadence.gatedAction('git log --grep commit')).toBe(null)
+  expect(cadence.gatedAction('gh pr merge 24 --merge && git checkout main')).toBe('merge')
+  expect(cadence.gatedAction('git status')).toBe(null)
+  expect(cadence.gatedAction('gh pr create --title "refuse git commit"')).toBe(null)
+  expect(cadence.gatedAction('echo "then git commit"')).toBe(null)
+})
+
+test('cadence: a code report maps outcomes to statuses, and only the newest code review counts', () => {
+  const first = cadence.codeRun(report([undefined, undefined]), { head: 'h', dirty: true, at: 5 })
+  expect(first.findings.map(f => f.status)).toEqual(['open', 'open'])
+  const fixed = cadence.codeRun(report(['fixed', 'no_change_needed']), { head: 'h', dirty: true, at: 6 })
+  expect(fixed.findings.map(f => f.status)).toEqual(['applied', 'declined'])
+  expect(cadence.openFindings([fixed, first]).code).toEqual([])
+  expect(cadence.openFindings([first, fixed]).code.length).toBe(2)
+  expect(cadence.codeRun(report(['skipped']), { head: 'h', dirty: true, at: 7 }).findings[0]!.status).toBe('open')
+})
+
+test('cadence: checks mark earlier findings; untracked findings never count', () => {
+  const runs = [approachRun('h', true, ['open', 'open']), { ...approachRun('h', true), findings: [{ title: 'old', acceptedAt: null }] }]
+  expect(cadence.openFindings(runs).approach.length).toBe(2)
+  const checked = cadence.applyChecks(runs, [{ id: 'a-0', status: 'applied' }, { id: 'a-1', status: 'declined', note: 'runs once' }])
+  expect(cadence.openFindings(checked).approach).toEqual([])
+  expect(checked[0]!.findings[1]).toMatchObject({ status: 'declined', note: 'runs once' })
+})
+
+test('cadence: a commit needs both reviews since the last commit with nothing open', () => {
+  const clean = cadence.codeRun(report([]), { head: 'h2', dirty: true, at: 9 })
+  expect(cadence.gateReason([], { action: 'commit', head: 'h2' })).toContain("approach review hasn't run")
+  expect(cadence.gateReason([approachRun('h1', true)], { action: 'commit', head: 'h2' })).toContain("/code-review hasn't run")
+  expect(cadence.gateReason([clean, approachRun('h2', true, ['open'])], { action: 'commit', head: 'h2' })).toContain('1 open finding ("finding 0")')
+  expect(cadence.gateReason([clean, approachRun('h2', true)], { action: 'commit', head: 'h2' })).toBe(null)
+  // A merge wants them after the last commit, on a clean tree.
+  expect(cadence.gateReason([clean, approachRun('h2', true)], { action: 'merge', head: 'h2' })).toContain('final: true')
+  const final = cadence.codeRun(report([]), { head: 'h2', dirty: false, at: 10 })
+  expect(cadence.gateReason([final, approachRun('h2', false), clean], { action: 'merge', head: 'h2' })).toBe(null)
+})
+
+// A repo on feature/x with an approved brief; the review record and HEAD are the test's.
+const cadenceHarness = (on: Parameters<Parameters<typeof test>[1]>[1], runs: unknown[] = []) => {
+  const files: Record<string, string> = {
+    '/repo/.git/session-rail/briefs/feature%2Fx.md': COMPLETE,
+    '/repo/.git/session-rail/briefs/feature%2Fx.approved.json': '{"approvedAt":1}',
+    '/repo/.git/session-rail/reviews/feature%2Fx.json': JSON.stringify({ runs }),
+  }
+  const ran: string[] = []
+  on('session.cwd', () => ({ value: '/repo' }))
+  on('process.run', (_, e) => {
+    const a = e.argv.join(' ')
+    if (e.argv[0] === 'mv') {
+      files[e.argv[3]!] = files[e.argv[2]!]!
+      delete files[e.argv[2]!]
+    }
+    const out = a.includes('--git-common-dir') ? '/repo/.git\nfeature/x\n' : a.endsWith('rev-parse HEAD') ? 'h2\n' : a.includes('status --porcelain') ? ' M a.ts\n' : ''
+    return { value: { exitCode: 0, stdout: out, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('fs.read', (_, e) => (e.path in files ? { value: files[e.path]! } : { deny: 'ENOENT' }))
+  on('fs.write', (_, e) => {
+    files[e.path] = e.text
+    return { value: undefined }
+  })
+  on('tool.call', (_, e) => {
+    ran.push(e.tool === 'Bash' ? String((e as { command?: string }).command) : e.tool)
+    return { result: { ok: true } } as never
+  })
+  return { files, ran }
+}
+
+test('git commit is refused until both reviews ran since the last commit, then goes through', async ($, on) => {
+  const { files, ran } = cadenceHarness(on)
+  const r = (await $.tool.call({ tool: 'Bash', command: 'git commit -m "chunk 1"' } as never)) as { deny?: string }
+  expect(r.deny).toContain("approach review hasn't run since the last commit")
+  expect(ran).toEqual([])
+  await $.tool.call({ tool: 'Bash', command: 'git status' } as never)
+  expect(ran).toEqual(['git status'])
+  // /code-review reports, then a clean approach review lands: the commit goes through.
+  await $.tool.call({ tool: 'ReportFindings', findings: [] } as never)
+  const saved = JSON.parse(files['/repo/.git/session-rail/reviews/feature%2Fx.json']!).runs
+  expect(saved[0]).toMatchObject({ type: 'code', head: 'h2', dirty: true, verdict: 'clean' })
+  files['/repo/.git/session-rail/reviews/feature%2Fx.json'] = JSON.stringify({ runs: [approachRun('h2', true), ...saved] })
+  await $.tool.call({ tool: 'Bash', command: 'git commit -m "chunk 1"' } as never)
+  expect(ran).toContain('git commit -m "chunk 1"')
+})
+
+test('gh pr merge is refused after commit-time reviews alone', async ($, on) => {
+  const code = cadence.codeRun(report([]), { head: 'h2', dirty: true, at: 9 })
+  const { ran } = cadenceHarness(on, [code, approachRun('h2', true)])
+  const r = (await $.tool.call({ tool: 'Bash', command: 'gh pr merge 25 --merge' } as never)) as { deny?: string }
+  expect(r.deny).toContain('merge after a final review')
+  expect(ran).toEqual([])
 })

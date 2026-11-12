@@ -3,6 +3,7 @@ import { approvalRecord, briefFile, briefStatus, NO_BRIEF_BRANCHES, parseBrief }
 import * as act from './activity.ts'
 import { goAhead } from './goahead.ts'
 import * as compact from './compact.ts'
+import { codeRun, gateReason as reviewWait, gatedAction, KEEP_RUNS, reviewsFile } from '../bin/cadence.mjs'
 
 // The controller (bin/pane.mjs) does the iTerm work; this module only decides when to call it.
 // It runs through sh so the user's PATH finds `node`; the script path is passed as an argument,
@@ -43,6 +44,7 @@ const runStart = async ($: EngineInterface) => {
 // shows "changed since approval" and a review of the change. Bash isn't gated.
 type Brief = {
   branch: string
+  common: string
   path: string
   approvedPath: string
   dir: string
@@ -70,7 +72,7 @@ const readBrief = async ($: EngineInterface): Promise<Brief | null> => {
   try {
     approval = approved ? JSON.parse(approved) : null
   } catch {}
-  return { branch, path, approvedPath, dir: `${common}/session-rail/`, text, approval }
+  return { branch, common, path, approvedPath, dir: `${common}/session-rail/`, text, approval }
 }
 
 const BRIEF_SHAPE = `# <title>
@@ -128,6 +130,49 @@ const gate = async ($: EngineInterface, tool: string, file: string) => {
     : gateReason(b)
   if (reason) record($, a => act.refused(a, tool, file, Date.now()))
   return reason
+}
+
+// ── The review cadence (bin/cadence.mjs) ──────────────────────────────────────
+// On a branch with an approved brief, `git commit` waits for an approach review and a code review since the
+// last commit with nothing open, and `gh pr merge` for both after the last commit on a clean tree. The code
+// review is recorded from ReportFindings calls (/code-review's, in its forked agent). A failure in the gate lets the command through.
+type Run = Record<string, unknown> & { findings: unknown[] }
+const readRuns = async ($: EngineInterface, path: string): Promise<Run[]> => {
+  try {
+    const runs = (JSON.parse(String(await $.fs.read(path))) as { runs?: unknown }).runs
+    return Array.isArray(runs) ? (runs as Run[]).filter(r => r && Array.isArray(r.findings)) : []
+  } catch {
+    return []
+  }
+}
+// The commit HEAD points at, or null.
+const headCommit = async ($: EngineInterface, cwd: string) => {
+  const rev = await $.process.run(['git', '-C', cwd, 'rev-parse', 'HEAD'], { timeoutMs: 5_000 })
+  return rev.exitCode === 0 ? rev.stdout.trim() : null
+}
+// Whether the tree has uncommitted changes.
+const isDirty = async ($: EngineInterface, cwd: string) =>
+  (await $.process.run(['git', '-C', cwd, 'status', '--porcelain'], { timeoutMs: 10_000 })).stdout.trim() !== ''
+// The branch's review record, beside its brief.
+const runsPath = (b: Brief) => reviewsFile(b.common, b.branch)
+const reviewGate = async ($: EngineInterface, command: string) => {
+  const action = gatedAction(command)
+  if (!action) return null
+  const b = await readBrief($)
+  if (!b?.approval?.approvedAt) return null
+  const commit = await headCommit($, await $.session.cwd())
+  return commit ? reviewWait(await readRuns($, runsPath(b)), { action, head: commit }) : null
+}
+const recordCodeReview = async ($: EngineInterface, report: unknown) => {
+  const b = await readBrief($)
+  if (!b) return
+  const cwd = await $.session.cwd()
+  const [commit, dirty, earlier] = await Promise.all([headCommit($, cwd), isDirty($, cwd), readRuns($, runsPath(b))])
+  const runs = [codeRun(report, { head: commit, dirty, at: Date.now() }), ...earlier]
+  // Written beside it and renamed over it, so the desk never reads half a file.
+  const tmp = `${runsPath(b)}.${Date.now()}.tmp`
+  await $.fs.write(tmp, JSON.stringify({ runs: runs.slice(0, KEEP_RUNS) }, null, 1))
+  await $.process.run(['mv', '-f', tmp, runsPath(b)], { timeoutMs: 5_000 })
 }
 
 // /approve-brief: the same as Approve in the desk, for when the desk isn't open. It approves a complete brief
@@ -335,6 +380,18 @@ export const register: Register = on => {
     const deny = await gate($, 'NotebookEdit', e.notebook_path)
     return deny ? { deny } : next(e)
   }).catch(($, e, next) => next(e))
+
+  // The review cadence: commits and merges wait for the reviews, and /code-review's report is recorded.
+  on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
+    const deny = await reviewGate($, e.command)
+    return deny ? { deny } : next(e)
+  }).catch(($, e, next) => next(e))
+  on('tool.call', { tool: 'ReportFindings' }, async ($, e, next) => {
+    const r = await next(e)
+    // /code-review runs as a forked agent, so its calls carry an agentId; the newest report is the one that counts.
+    if (r.deny === undefined) await recordCodeReview($, e).catch(() => {})
+    return r
+  })
 
   // Rate limits are per account, so one file serves every rail; the newest reading wins.
   // sh resolves $HOME (no Node APIs here) and the mv keeps a rail from reading half a file.

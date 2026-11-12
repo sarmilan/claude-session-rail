@@ -5,9 +5,10 @@
 // tab is a record of what was found and accepted.
 // Every export resolves (never throws); a failed review comes back as { error }.
 import { spawn } from 'node:child_process';
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { briefCore } from './brief.mjs';
+import { KEEP_RUNS } from './cadence.mjs';
 
 export const KINDS = ['simpler', 'scope', 'cost', 'goal-gap', 'elegance'];
 export const VERDICTS = ['on-track', 'simpler-path', 'off-goal'];
@@ -106,7 +107,6 @@ export async function reviewApproach(cwd, { brief, files = [], signal, timeoutMs
 // error?, findings: [{ kind, chunk, severity, title, detail, acceptedAt }] }] }, newest first. Runs saved by
 // the old code review (findings with file and line, no verdict) are dropped on load. Callers pass the path, so a review that finishes after a
 // branch switch still lands in the file of the branch it reviewed.
-const KEEP = 10;
 export async function loadReviews(path) {
   try {
     // A hand-edited, older or half-written file must not break the tab: keep only well-formed runs.
@@ -122,7 +122,10 @@ export async function saveReviews(path, runs) {
   try {
     if (!path) return false;
     await mkdir(dirname(path), { recursive: true });
-    await writeFile(path, JSON.stringify({ runs: runs.slice(0, KEEP) }, null, 1));
+    // Written beside it and renamed over it, so a reader never gets half a file.
+    const tmp = `${path}.${process.pid}.tmp`;
+    await writeFile(tmp, JSON.stringify({ runs: runs.slice(0, KEEP_RUNS) }, null, 1));
+    await rename(tmp, path);
     return true;
   } catch { return false; }
 }

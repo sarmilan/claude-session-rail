@@ -83,8 +83,10 @@ const loaders = {
 // ── Review: the staff-engineer approach review of the brief and its finished chunks ─
 // The tab shows the newest successful review. A failed run is only kept as the newest entry, to say why it
 // failed: it never hides the review before it, and failures can't push real reviews out of the history.
-const latest = () => data.review.runs.find((r) => !r.error) ?? null;
-const failed = () => (data.review.runs[0]?.error ? data.review.runs[0] : null);
+// Code reviews (type 'code', recorded by the hooks) share the file but aren't shown here.
+const approachRuns = () => data.review.runs.filter((r) => r.type !== 'code');
+const latest = () => approachRuns().find((r) => !r.error) ?? null;
+const failed = () => (approachRuns()[0]?.error ? approachRuns()[0] : null);
 const pending = () => (latest()?.findings ?? []).map((f, i) => (f.acceptedAt ? -1 : i)).filter((i) => i >= 0);
 const record = (run, runs) => [run, ...runs.filter((r) => !r.error)];
 // Returns why it couldn't start, or null when it started.
@@ -102,11 +104,10 @@ function startReview() {
     void reportDesk(null);
     // A cancelled run leaves the record alone; a failed one is kept so the tab says why.
     if (run.error !== 'Review cancelled') {
-      if (path === data.review.path) {
-        data.review.runs = record(run, data.review.runs);
-        await saveReviews(path, data.review.runs);
-        ui.rsel = 0; ui.scroll.review = 0;
-      } else await saveReviews(path, record(run, await loadReviews(path))); // the branch changed meanwhile
+      // Read the file again first: the hooks add code reviews to it, and the branch may have changed meanwhile.
+      const runs = record(run, await loadReviews(path));
+      await saveReviews(path, runs);
+      if (path === data.review.path) { data.review.runs = runs; ui.rsel = 0; ui.scroll.review = 0; }
     }
     draw();
   });
@@ -134,7 +135,7 @@ function autoReview() {
   const b = data.brief;
   if (!b?.text || !b.approval?.approvedAt || data.review.running || !data.review.path) return;
   if (Date.now() - b.mtime < AUTO_SETTLE_MS) return;
-  const now = reviewedState(b), last = data.review.runs[0];
+  const now = reviewedState(b), last = approachRuns()[0];
   const milestone = now.done > (last?.done ?? 0) || (b.status === 'changed' && now.core !== last?.core);
   if (milestone && !(last?.error && last.core === now.core && last.done === now.done)) startReview();
 }
@@ -151,13 +152,14 @@ function acceptFindings(indices) {
   sendFindings(picked.map((i) => run.findings[i]), async (ok) => {
     for (const i of picked) sending.delete(run.findings[i]);
     if (!ok) return draw();
-    // Mark the run in the list as it is now: a branch switch during the send may have reloaded it from disk.
-    const runs = path === data.review.path ? data.review.runs : await loadReviews(path);
+    // Mark the run as the file is now: the hooks may have added code reviews, or a branch switch reloaded it.
+    const runs = await loadReviews(path);
     const target = runs.find((r) => r.startedAt === run.startedAt);
     if (target) {
       const at = Date.now();
       for (const i of picked) if (target.findings[i]) target.findings[i].acceptedAt = at;
       await saveReviews(path, runs);
+      if (path === data.review.path) data.review.runs = runs;
     }
     draw();
   });
@@ -479,7 +481,7 @@ function reviewLines(w) {
     push('');
   });
 
-  const earlier = data.review.runs.filter((r) => !r.error && r !== run);
+  const earlier = approachRuns().filter((r) => !r.error && r !== run);
   if (earlier.length) {
     push(dim('── Earlier reviews ' + '─'.repeat(Math.max(0, w - 19))));
     for (const r of earlier) {
