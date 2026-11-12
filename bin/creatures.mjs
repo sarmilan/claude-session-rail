@@ -34,14 +34,14 @@ function canvas(lift = 0) {
   return { set, span, vline, ell, eye, mirror, rows: () => g.map((r) => r.join('')) };
 }
 
-// ── Snail ────────────────────────────────────────────────────────────────────────
+// ── Snail ──────────────────────────────────────────────────────────────────────
 const SHELL = [[6, 11], [4, 13], [3, 14], [2, 15], [2, 16], [1, 16], [1, 16], [1, 16], [1, 16], [2, 15], [2, 15], [3, 14]];
 const SPIRAL = { 3: [8, 9, 10, 11], 4: [6, 7, 12, 13], 5: [5, 9, 10, 14], 6: [5, 8, 11, 14], 7: [5, 8, 10, 14],
   8: [6, 9, 13], 9: [7, 8, 11, 12], 10: [9, 10] };
 const SHINE = { 1: [6, 7], 2: [6], 4: [3], 5: [2] };
 
 const snail = {
-  speed: 3,
+  speed: 2,
   name: 'snail',
   habitat: 'woodland',
   palette: { S: 71, D: 28, W: 157, B: 114, E: 231, P: 233 },
@@ -80,7 +80,7 @@ const shellRings = ({ ell, set }, cx, cy, rx, ry, shine) => {
 };
 
 const snailHatchling = {
-  speed: 4,
+  speed: 2,
   palette: { S: 114, D: 71, W: 194, B: 157, K: 71, E: 231, P: 233 },
   advance: [true, false],
   zAt: [[19, 4], [24, 0]],
@@ -102,7 +102,7 @@ const snailHatchling = {
 };
 
 const snailAdult = {
-  speed: 2,
+  speed: 1,
   palette: { S: 35, D: 22, W: 121, B: 78, K: 22, E: 231, P: 233 },
   advance: [true, false],
   zAt: [[21, 6], [26, 1]],
@@ -152,7 +152,7 @@ snail.stages = [snailHatchling, snail, snailAdult, snailHeavy];
 
 // ── Turtle ─────────────────────────────────────────────────────────────────────
 const turtle = {
-  speed: 4,
+  speed: 2,
   name: 'turtle',
   habitat: 'pond',
   palette: { S: 77, H: 28, R: 64, W: 193, L: 149, l: 106, K: 22, E: 231, P: 233 },
@@ -198,7 +198,7 @@ const turtleLegs = ({ set, span, vline }, far, near, thick, claw) => {
 };
 
 const turtleHatchling = {
-  speed: 5,
+  speed: 3,
   palette: { S: 120, H: 71, R: 107, W: 194, L: 193, l: 150, K: 65, E: 231, P: 233 },
   advance: [true, false],
   zAt: [[20, 5], [25, 0]],
@@ -222,7 +222,7 @@ const turtleHatchling = {
 };
 
 const turtleAdult = {
-  speed: 2,
+  speed: 1,
   palette: { S: 34, H: 22, R: 136, W: 120, L: 112, l: 70, K: 22, E: 231, P: 233 },
   advance: [true, false],
   zAt: [[25, 6], [29, 0]],
@@ -282,7 +282,7 @@ turtle.stages = [turtleHatchling, turtle, turtleAdult, turtleHeavy];
 // ── Crab ───────────────────────────────────────────────────────────────────────
 // Four stages as the brief heads toward its compaction (see `stages` below): hatchling, this one, adult, heavy.
 const crab = {
-  speed: 2,
+  speed: 1,
   name: 'crab',
   habitat: 'beach',
   palette: { C: 209, D: 166, K: 88, E: 231, P: 233 },
@@ -343,7 +343,7 @@ const pincer = ({ ell, set, span }, cx, cy, rx, ry, open, line = 'D') => {
 };
 
 const crabHatchling = {
-  speed: 3,
+  speed: 2,
   palette: { C: 216, D: 173, K: 95, E: 231, P: 233 },
   advance: [true, true],
   sideways: true,

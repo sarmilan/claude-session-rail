@@ -49,11 +49,19 @@ const MOOD = [
 // Stage from the branch's brief (sources.readBrief): a hatchling until it's approved, a juvenile once it is,
 // an adult after its first Done chunk, and heavy when every chunk is Done (ready to merge and compact).
 // After the compaction the next branch has no approved brief, so the pet hatches again.
-export const stageFor = (brief) => {
-  if (!['approved', 'changed'].includes(brief?.status) || !brief.chunks?.length) return 0; // an edited plan keeps its growth
-  const done = brief.chunks.filter((c) => c.done).length;
-  return done === 0 ? 1 : done < brief.chunks.length ? 2 : 3;
+// The share of Done chunks of an approved (or approved, then edited) brief, else null.
+const doneShare = (brief) => {
+  if (!['approved', 'changed'].includes(brief?.status) || !brief.chunks?.length) return null; // an edited plan keeps its growth
+  return brief.chunks.filter((c) => c.done).length / brief.chunks.length;
 };
+export const stageFor = (brief) => {
+  const f = doneShare(brief);
+  return f == null ? 0 : f === 0 ? 1 : f < 1 ? 2 : 3;
+};
+// How far along the branch's road the pet lives (0 left … 1 right): the share of Done chunks of an approved
+// (or approved, then edited) brief, 0 before approval, and null with no brief, to pace the whole strip.
+export const progressFor = (brief) => (brief?.status ? doneShare(brief) ?? 0 : null);
+const PACE = 4; // columns it wanders either side of its spot on the road
 const ANGER = ['.A.A.', 'AA.AA', '.....', 'AA.AA', '.A.A.']; // a popping vein, drawn up by a claw
 
 const xtermRgb = (n) => {
@@ -147,7 +155,7 @@ export function createMascot({ images = false, creature = 0, now = Date.now() } 
   let aspect = 0.5; // terminal cell width ÷ height, until the terminal tells us (setCellAspect)
   const colPx = () => aspect * ROW_PX;
   let index = ((creature % CREATURES.length) + CREATURES.length) % CREATURES.length;
-  let stage = 0;
+  let stage = 0, progress = null;
   // The drawing for this stage: the creature's own stage form, or the creature itself.
   const form = () => CREATURES[index].stages?.[stage] ?? CREATURES[index];
   const width = () => (images ? Math.ceil((SPR_W * (form().scale ?? SCALE)) / colPx()) : SPR_W / 2); // columns it occupies
@@ -166,6 +174,8 @@ export function createMascot({ images = false, creature = 0, now = Date.now() } 
     get stage() { return stage; },
     // Grow or shrink to a stage (0 hatchling … 3 heavy); a hop in progress lands.
     setStage(n) { if (n !== stage && n >= 0 && n < MOOD.length) { stage = n; s.hopI = -1; s.lift = 0; s.shake = 0; } },
+    // Its spot on the road, 0 … 1 (progressFor), or null to pace the whole strip.
+    setProgress(f) { progress = f == null ? null : Math.max(0, Math.min(1, f)); },
     get index() { return index; },
     get name() { return CREATURES[index].name; },
 
@@ -194,11 +204,19 @@ export function createMascot({ images = false, creature = 0, now = Date.now() } 
       }
       if (s.shake > 0) s.shake--;
       else if (mood.shake && s.hopI < 0 && Math.random() < mood.shake) s.shake = 4;
+      // On the road it paces around its spot, and heads straight there when it's further off.
+      let a = lo, b = hi, heading = false;
+      if (progress != null) {
+        const home = Math.round(lo + progress * (hi - lo));
+        a = Math.max(lo, home - PACE); b = Math.min(hi, home + PACE);
+        if (s.x < a || s.x > b) { heading = true; s.dir = s.x < a ? 1 : -1; }
+      }
       const speed = Math.max(1, CREATURES[index].stages ? c.speed : c.speed + mood.dSpeed);
-      if (s.tick % (busy ? 1 : speed)) return;
+      const hurry = busy || heading; // a frame a tick, and a column every frame
+      if (s.tick % (hurry ? 1 : speed)) return;
       const next = 1 - s.phase;
-      if (c.advance[next]) {
-        if (s.x + s.dir < lo || s.x + s.dir > hi) { s.dir = -s.dir; return; } // turn at the edge
+      if (hurry || c.advance[next]) {
+        if (!heading && (s.x + s.dir < a || s.x + s.dir > b)) { s.dir = -s.dir; return; } // turn at the edge
         s.x += s.dir;
       }
       s.phase = next;

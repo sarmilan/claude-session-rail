@@ -10,7 +10,7 @@ import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import * as src from './sources.mjs';
 import { ESC, fg, dim, bold, C, charWidth, width, trunc, wrap, clean } from './term.mjs';
-import { createMascot, creatureNames, stageFor } from './mascot.mjs';
+import { createMascot, creatureNames, stageFor, progressFor } from './mascot.mjs';
 import * as fontsize from './fontsize.mjs';
 
 const args = process.argv.slice(2);
@@ -93,6 +93,9 @@ const nextCreature = (d = 1) => saveCreature(mascot.next(d));
 const stageFlag = flag('--pet-stage');
 const pinned = stageFlag != null && /^[0-3]$/.test(stageFlag) ? +stageFlag : null;
 const petStage = () => pinned ?? stageFor(data.brief);
+// And walks the branch's road, left to right as chunks get Done (--pet-progress F pins it for --frame).
+const progressFlag = flag('--pet-progress');
+const petProgress = () => (progressFlag?.trim() && Number.isFinite(+progressFlag) ? +progressFlag : progressFor(data.brief));
 const claudeBusy = () => data.tasks.running.length > 0 || data.current?.status === 'busy';
 
 const toast = (text) => { ui.toast = { text, until: Date.now() + 2500 }; };
@@ -550,7 +553,9 @@ if (args.includes('--frame')) {
   const W = +args[i + 1] || 42, H = +args[i + 2] || 60;
   for (const k of ['context', 'connectors', 'settings']) if (args.includes(`--open-${k}`)) ui.open[k] = true;
   await collect();
-  mascot.setStage(petStage());
+  mascot.setStage(petStage()); mascot.setProgress(petProgress());
+  // let it walk to its spot on the road (at a past time, so no blink is left on the frame)
+  for (let n = 0, t = Date.now() - 1000; n < W * 2; n++) mascot.step(W, false, t);
   // e.g. --activate pr:8  or  --activate finished,opt:0  (a chain of clicks)
   for (const id of (flag('--activate') || '').split(',').filter(Boolean)) frame(W, H).items.find((it) => it.id === id)?.activate();
   console.log(frame(W, H).lines.join('\n'));
@@ -597,7 +602,7 @@ setInterval(() => { ui.tick++; draw(); }, 1000);
 fontsize.baseSize(pinnedPid).then((b) => { font.base = b; draw(); });
 // Put the panes on the saved font size once the layout has settled (pane.mjs sizes the splits after opening them).
 if (font.size) setTimeout(() => setFont(font.size), 3000);
-setInterval(() => { mascot.setStage(petStage()); mascot.step(out.columns || 40, claudeBusy()); draw(); }, 200);
+setInterval(() => { mascot.setStage(petStage()); mascot.setProgress(petProgress()); mascot.step(out.columns || 40, claudeBusy()); draw(); }, 200);
 draw();
 
 // A rail pinned to a Claude process quits (closing its pane) once that process is gone for 3s.
