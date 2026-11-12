@@ -14,7 +14,7 @@ A Claude Code plugin (repo root = plugin = marketplace) that opens a Claude-desk
 - `bin/creatures.mjs`: the mascot sprites (34×16 pixel drawings, palette, gait). Add a creature by appending to `CREATURES`.
 - `bin/habitats.mjs`: the foliage behind the mascot (woodland, pond, beach), picked by each creature's `habitat`
 - `bin/pane.mjs`: iTerm2 split controller (`open|close|toggle|status [rail|desk]`, prints one JSON line, always exits 0). Layout: Claude │ desk │ rail
-- `hooks/register.ts`: plugin hooks (session.start opens the rail then the desk, `/rail`, `/desk`, session.end closes both; on a feature branch the brief: a system prompt section, `/brief [approve]`, and a gate on Edit/Write/NotebookEdit until it's approved)
+- `hooks/register.ts`: plugin hooks (session.start opens the rail then the desk, `/rail`, `/desk`, session.end closes both; on a feature branch the brief: a system prompt section, `/approve-brief`, and a gate on Edit/Write/NotebookEdit until it's approved)
 - `tests/register.test.ts`: plugin tests
 
 ## Rules
