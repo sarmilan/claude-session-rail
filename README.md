@@ -139,15 +139,16 @@ An approach review takes under a minute and uses your Claude account like any ot
 Once the brief is approved, the plugin holds Claude to a review cadence:
 
 - **Before each chunk's commit**, after its `Done:` line:
-  1. Claude calls the plugin's `review_approach` tool, which runs the approach review. Claude applies every finding and calls the tool again until nothing is open. Each new review checks the earlier findings and marks each one **applied**, **declined** (Claude gave a reason not to, and the reviewer accepted it) or still **open**.
-  2. Claude then runs `/code-review --fix` on the chunk's changes. The plugin asks it to end with its findings as a JSON block and records that. The fixed report marks each finding fixed, no change needed or skipped. A skip is the fixer's call (usually a false positive), so it counts as settled, and the desk shows it as ✓ skipped.
-- **Before merging** (still only when you say so), the same pair runs over the whole branch: `review_approach` with `final: true`, and `/code-review --fix` against the default branch. They run after the last commit, with nothing uncommitted.
-- **The gate:** the plugin refuses Claude's `git commit` until both reviews have run since the last commit and nothing is open. It refuses `gh pr merge` until both final reviews have run after the last commit. Claude is told which review is missing or which findings are open.
+  1. Claude runs `/code-review --fix` on the chunk's changes. The plugin notices the Skill tool running it (or you typing it), gives the run a token, asks it to end with its findings as a JSON block that carries the token, and records the answer that does, whether the review ran in a forked agent or inline. Each finding is marked fixed, no change needed or skipped.
+  2. Claude calls the plugin's `review_approach` tool, which runs the approach review. It also gives the code review a staff-engineer pass: it checks that claimed fixes landed, and accepts each skip or "no change" or reopens it. Claude applies every finding raised or reopened, and calls the tool again until nothing is open. Each review checks the earlier findings and marks each one **applied**, **declined** (a reason not to that the reviewer accepted) or still **open**.
+  3. If applying those findings changed code, Claude runs `/code-review --fix` again and then `review_approach`, so the code review always covers the code that gets committed.
+- **Before merging** (still only when you say so), the same pair runs over the whole branch: `/code-review --fix` against the default branch, then `review_approach` with `final: true`. They run after the last commit, with nothing uncommitted.
+- **The gate:** the plugin refuses Claude's `git commit` until both reviews have run since the last commit, the last `/code-review` saw the working tree as it is now, and nothing is open. It refuses `gh pr merge` until both final reviews have run after the last commit. Claude is told which review is missing or which findings are open.
 - **The PR's Progress checklist** notes each chunk's reviews.
 
 Each approach review is one `claude -p` call, usually under a minute, and `/code-review` runs in its own forked agent. So every chunk costs at least those two.
 
-The gate only covers commands Claude runs, so you can always commit or merge yourself, for example if the reviewer keeps failing. It counts a review as covering the work if it ran since the last commit, so a change Claude makes after the review isn't caught. **Run review** in the desk runs an approach review on demand, before approval too.
+The gate only covers commands Claude runs, so you can always commit or merge yourself, for example if the reviewer keeps failing. A `/code-review` you type yourself counts too. **Run review** in the desk runs an approach review on demand, before approval too.
 
 ## What you need
 

@@ -10,7 +10,7 @@ import { spawn } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { briefCore } from './brief.mjs';
-import { KEEP_RUNS, STATUSES, applyChecks, openFindings, trackFindings } from './cadence.mjs';
+import { KEEP_RUNS, STATUSES, applyChecks, openFindings, staffCheck, trackFindings, uncheckedFixes } from './cadence.mjs';
 import { branchFiles, readBrief, reviewsPath, run as exec } from './sources.mjs';
 
 export const KINDS = ['simpler', 'scope', 'cost', 'goal-gap', 'elegance'];
@@ -62,11 +62,19 @@ function earlierList(earlier) {
   return earlier.map((f) => `- id ${f.id} · ${f.kind}${f.chunk ? ` · chunk ${f.chunk}` : ''}: ${f.title}${f.detail ? `\n  ${f.detail}` : ''}`
     + (f.reply ? `\n  Claude's reply: ${f.reply}` : '')).join('\n');
 }
+const OUTCOME = { fixed: 'says it fixed this', skipped: 'skipped this', no_change_needed: 'says no change is needed' };
+// The code review's findings, with what its fixer did about each one.
+function codeList(code) {
+  return code.map((f) => `- id ${f.id} · ${f.file ? `${f.file}${f.line ? `:${f.line}` : ''}` : 'code'}: ${f.title}${f.detail ? `\n  ${f.detail}` : ''}`
+    + `\n  The fixer ${OUTCOME[f.outcome] ?? (f.status === 'open' ? 'left this open' : 'marked this ' + f.status)}.`
+    + (f.checked && f.status === 'open' ? ' You reopened it earlier: check whether it is fixed now.' : '')
+    + (f.reply ? `\n  Claude's reply: ${f.reply}` : '')).join('\n');
+}
 
 // Review the approach. `brief` is a parsed brief with its text (sources.readBrief), `files` the Diff tab's
 // list, `earlier` the open findings of earlier reviews to check, `final` the review before the merge.
 // Resolves { verdict, summary, findings, checks, core, done, startedAt, finishedAt, error? }. `signal` aborts it.
-export async function reviewApproach(cwd, { brief, files = [], earlier = [], final = false, signal, timeoutMs = 540_000 } = {}) {
+export async function reviewApproach(cwd, { brief, files = [], earlier = [], codeFindings = [], final = false, signal, timeoutMs = 540_000 } = {}) {
   const startedAt = Date.now();
   const result = { startedAt, ...reviewedState(brief), findings: [] };
   const prompt = `You are a staff engineer reviewing the approach this branch takes. You are not reviewing its code line by line: `
@@ -87,7 +95,12 @@ export async function reviewApproach(cwd, { brief, files = [], earlier = [], fin
     + (earlier.length ? 'Earlier reviews raised these findings, and Claude was asked to apply each one. Check each against the code and the '
       + 'brief and return a check for it: applied (the work now does it), declined (Claude\'s reply gives a sound reason not to; say '
       + 'why you accept it) or open (not done, and no sound reason). Don\'t raise them again as new findings.\n'
-      + `${earlierList(earlier)}\n\n` : 'There are no earlier findings to check: return an empty checks list.\n\n')
+      + `${earlierList(earlier)}\n\n` : '')
+    + (codeFindings.length ? 'The code review (/code-review --fix) raised these findings. As the staff engineer, judge what its fixer did about each '
+      + 'and return a check for it: applied (a claimed fix really landed in the code), declined (a skip or "no change needed" is sound; '
+      + 'say why) or open (the fix didn\'t land, or it should be fixed after all; say why). Read the code to check. Don\'t raise them again as new findings.\n'
+      + `${codeList(codeFindings)}\n\n` : '')
+    + (earlier.length || codeFindings.length ? '' : 'There are no earlier findings to check: return an empty checks list.\n\n')
     + 'Return a verdict (on-track, simpler-path or off-goal), a summary of at most two sentences, and the findings, most '
     + 'important first, each with its chunk number (null when it is about the whole plan).';
   // Read-only whatever the user's settings say: no Edit/Write at all, Bash only for git, and dontAsk denies
@@ -111,7 +124,7 @@ export async function reviewApproach(cwd, { brief, files = [], earlier = [], fin
       if (j?.is_error) return done({ error: String(j.result || 'Review failed').slice(0, 200) });
       const o = j?.structured_output, findings = normalise(o?.findings);
       if (findings) {
-        const ids = new Set(earlier.map((f) => f.id));
+        const ids = new Set([...earlier, ...codeFindings].map((f) => f.id));
         const checks = (Array.isArray(o.checks) ? o.checks : []).filter((c) => c && ids.has(c.id) && STATUSES.includes(c.status))
           .map((c) => ({ id: c.id, status: c.status, note: typeof c.note === 'string' ? c.note : '' }));
         return done({ findings, checks, verdict: VERDICTS.includes(o.verdict) ? o.verdict : findings.length ? 'simpler-path' : 'on-track',
@@ -163,8 +176,9 @@ export async function reviewAndSave(cwd, { final = false, notes = [], brief, fil
   const [head, status] = await Promise.all([exec('git', ['rev-parse', 'HEAD'], { cwd }), exec('git', ['status', '--porcelain'], { cwd })]);
   const replies = new Map((Array.isArray(notes) ? notes : []).filter((n) => n && typeof n.note === 'string').map((n) => [n.id, n.note]));
   const withReplies = (runs) => runs.map((r) => ({ ...r, findings: r.findings.map((f) => (replies.has(f.id) ? { ...f, reply: replies.get(f.id) } : f)) }));
-  const earlier = openFindings(withReplies(await loadReviews(path))).approach;
-  const run = await reviewApproach(cwd, { brief, files, earlier, final, signal });
+  const prior = withReplies(await loadReviews(path));
+  const earlier = openFindings(prior).approach, codeFindings = staffCheck(prior);
+  const run = await reviewApproach(cwd, { brief, files, earlier, codeFindings, final, signal });
   if (run.error === 'Review cancelled') return run;
   const { checks = [], ...rest } = run;
   const saved = { ...rest, type: 'approach', final, head: head?.trim() ?? null, dirty: status === null || Boolean(status.trim()), // unknown counts as dirty
@@ -190,7 +204,10 @@ export function reviewText(result) {
     lines.push('', 'New findings:');
     for (const f of result.findings) lines.push(`- ${f.id} [${f.severity}] ${f.kind}${f.chunk ? ` · chunk ${f.chunk}` : ''}: ${f.title}${f.detail ? `\n  ${f.detail}` : ''}`);
   }
-  const open = openFindings(result.runs).approach;
+  const { approach, code } = openFindings(result.runs), open = [...approach, ...code];
+  const unchecked = uncheckedFixes(result.runs);
+  if (unchecked.length) lines.push('', `${unchecked.length} code review finding${unchecked.length === 1 ? '' : 's'} still need${unchecked.length === 1 ? 's' : ''} a check (${unchecked.map((f) => f.id).join(', ')}): call review_approach again.`);
+  if (!open.length && unchecked.length) return lines.join('\n');
   lines.push('', open.length
     ? `${open.length} finding${open.length === 1 ? '' : 's'} open (${open.map((f) => f.id).join(', ')}). Apply each one and update the brief to match; for one you shouldn't apply, give your reason in notes. Then call review_approach again so it checks them.`
     : 'Nothing open: the approach review is clear for this commit.');

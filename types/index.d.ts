@@ -9,8 +9,9 @@ declare module 'claude-code' {
       // Auto-compaction (hooks/compact.ts): the branch the poll last saw, and a branch just left that may be compacted after.
       branchSeen: string | null
       compactAfter: string | null
-      // When /code-review's prompt was composed on a gated branch (ms), until its forked answer is recorded.
-      codeReviewAsked: number | null
+      // A /code-review run on a gated branch (register.ts): its token, asked for in its final findings block, and
+      // whether its prompt has been given that instruction.
+      codeReview: { token: string; prompted: boolean } | null
     }
   }
 }
