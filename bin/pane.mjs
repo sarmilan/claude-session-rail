@@ -3,7 +3,7 @@
 //   node pane.mjs layout                                            (fill the screen, open both panels)
 //   node pane.mjs open | close | toggle | status [rail | desk]      (rail if not given)
 //   node pane.mjs focus <tty>                                       (bring the iTerm session on that tty to the front)
-//   node pane.mjs tab <tty> <command>                               (a new tab in that session's window, running command)
+//   node pane.mjs window <tty> <command>                            (a new window over that session's, running command)
 // The layout is Claude │ desk │ rail: the desk splits off Claude (landing left of an open rail), and the
 // rail splits off the desk when the desk is already open. Panels take a fixed share of the window's
 // columns, always from Claude's pane; the window itself never grows.
@@ -212,8 +212,9 @@ const FOCUS = `on run argv
   return ""
 end run`;
 
-// A new tab in the window of the session on a tty (else the current window), typing a command into its shell.
-const NEW_TAB = `on run argv
+// A new window exactly over the window of the session on a tty (else the current window), typing a command into
+// its shell. One tab per window keeps iTerm's tab bar hidden: the rail's Sessions list is the switcher.
+const NEW_WINDOW = `on run argv
   tell application "iTerm2"
     set target to missing value
     repeat with w in windows
@@ -224,10 +225,10 @@ const NEW_TAB = `on run argv
       end repeat
     end repeat
     if target is missing value then set target to current window
-    tell target
-      set t to (create tab with default profile)
-      tell current session of t to write text (item 2 of argv)
-    end tell
+    set b to bounds of target
+    set nw to (create window with default profile)
+    set bounds of nw to b
+    tell current session of nw to write text (item 2 of argv)
     return "ok"
   end tell
 end run`;
@@ -235,12 +236,12 @@ end run`;
 const action = process.argv[2] || 'status';
 const itermRunning = () => (sh('ps', ['-axo', 'comm=']) || '').split('\n').some((c) => c.endsWith('/MacOS/iTerm2'));
 // focus and tab act on any pane, so they don't need to run under a Claude.
-if (action === 'focus' || action === 'tab') {
+if (action === 'focus' || action === 'window') {
   const [tty, command] = process.argv.slice(3);
-  if (!tty || (action === 'tab' && !command)) done('error', { message: `usage: pane.mjs ${action} <tty>${action === 'tab' ? ' <command>' : ''}` });
+  if (!tty || (action === 'window' && !command)) done('error', { message: `usage: pane.mjs ${action} <tty>${action === 'window' ? ' <command>' : ''}` });
   if (!itermRunning()) done('not-iterm');
   if (action === 'focus') done(osa(FOCUS, tty) === 'ok' ? 'focused' : 'not-found');
-  done(osa(NEW_TAB, tty, command) === 'ok' ? 'opened' : 'error');
+  done(osa(NEW_WINDOW, tty, command) === 'ok' ? 'opened' : 'error');
 }
 const which = process.argv[3] || 'rail';
 if (!['layout', 'open', 'close', 'toggle', 'status'].includes(action)) done('error', { message: `unknown action ${action}` });

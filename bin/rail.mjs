@@ -130,14 +130,14 @@ const pane = (argv, cb) => execFile(process.execPath, [PANE, ...argv], { timeout
   let state = 'error'; try { state = JSON.parse(stdout).state; } catch {}
   cb(state); draw();
 });
-// Jump to a session's iTerm tab; one without a terminal (the Claude app) gets its menu.
+// Bring a session's iTerm window (and tab) to the front; one without a terminal (the Claude app) gets its menu.
 const goTo = (s) => {
   if (s.current) return toast('This is the current session');
   if (!s.tty) return agentMenu(s);
   pane(['focus', s.tty], (state) => { if (state !== 'focused') toast(state === 'not-found' ? 'Not an iTerm tab' : "Couldn't switch"); });
 };
 
-// + new: the problem typed on the bottom line becomes a worktree and a new tab running claude "/start <problem>".
+// + new: the problem typed on the bottom line becomes a worktree and a new window running claude "/start <problem>".
 const sq = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
 const startSession = async (problem) => {
   toast('Adding a worktree…'); draw();
@@ -145,7 +145,7 @@ const startSession = async (problem) => {
   if (!wt.ok) { toast(wt.message); return draw(); }
   const command = `cd ${sq(wt.dir)} && SESSION_RAIL_STARTED=1 claude ${sq(`/start ${problem}`)}`;
   const here = data.overview?.find((s) => s.current)?.tty ?? 'none';
-  pane(['tab', here, command], (state) => toast(state === 'opened' ? `Started in ${src.tildify(wt.dir)}` : "Couldn't open a tab"));
+  pane(['window', here, command], (state) => toast(state === 'opened' ? `Started in ${src.tildify(wt.dir)}` : "Couldn't open a window"));
 };
 const typeKey = (k) => {
   if (k === '\x1b') { ui.input = null; return; }

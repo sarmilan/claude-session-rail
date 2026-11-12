@@ -58,11 +58,11 @@ If you have a `/start` command of your own, it runs as soon as the session start
   - the **Desk** while it runs an approach review, and the **Gate** when it has just held an edit because the brief isn't approved
 - **Just now:** the last few finished tool calls, with ✔ or ✗, and the session's finished background tasks
 
-Click a row, or use the arrow keys and Enter, to open it. A session jumps to its iTerm tab (a session in the Claude app gives you its details instead), pull requests open in the browser, and tasks show their output.
+Click a row, or use the arrow keys and Enter, to open it. A session jumps to its iTerm window (a session in the Claude app gives you its details instead), pull requests open in the browser, and tasks show their output.
 
 ### Working on several things at once
 
-**+ new**, on the Sessions heading, starts another session without touching this one. Type the problem on the rail's bottom line and press Enter (Esc cancels). The rail adds a git worktree of the repo at the latest `main`, beside the repo in `<repo>.worktrees/<name>`, opens a new tab in this window there and runs `claude "/start <your problem>"`, so `/start` files the issue and makes the branch inside that worktree. Each session has its own checkout, so two sessions never edit the same files, and each tab gets its own Claude │ desk │ rail.
+**+ new**, on the Sessions heading, starts another session without touching this one. Type the problem on the rail's bottom line and press Enter (Esc cancels). The rail adds a git worktree of the repo at the latest `main`, beside the repo in `<repo>.worktrees/<name>`, opens a new iTerm window there, at the same size and place as this one, and runs `claude "/start <your problem>"`, so `/start` files the issue and makes the branch inside that worktree. Each session has its own checkout, so two sessions never edit the same files, and each window gets its own Claude │ desk │ rail. With one tab per window iTerm shows no tab bar: the Sessions list is how you move between them.
 
 ## The desk
 
@@ -165,7 +165,7 @@ It has these parts:
 
 1. **The rail** (`bin/rail.mjs`) draws the narrow panel in the terminal. It's plain Node with no dependencies.
 2. **The desk** (`bin/desk.mjs`) draws the wider panel. It reads the branch's brief (`bin/brief.mjs`), finds the plan file in the session's conversation log, asks `git` for the diff and `gh` for the board's Todo issues. Its reviewer (`bin/reviewer.mjs`) runs the approach review through `claude -p` with a JSON schema for the findings, read-only tools, no MCP servers and no saved session, and keeps each branch's reviews in `.git/session-rail/reviews/`.
-3. **The pane opener** (`bin/pane.mjs`) uses iTerm2's AppleScript support to fill the screen, split Claude's pane, run each panel (desk next to Claude, rail on the far right), size them in one pass, and hand focus back to Claude. The rail also uses it to bring another session's tab to the front and to open the tab for a new session.
+3. **The pane opener** (`bin/pane.mjs`) uses iTerm2's AppleScript support to fill the screen, split Claude's pane, run each panel (desk next to Claude, rail on the far right), size them in one pass, and hand focus back to Claude. The rail also uses it to bring another session's window to the front and to open the window for a new session.
 4. **The plugin** (`hooks/register.ts`) keeps a live record of what the session is doing (`hooks/activity.ts`: turns, every tool call, subagents, the brief gate) in `~/.claude/session-rail/activity/<session id>.json`, which the rail reads every second; the desk adds its running review beside it. It also opens both panels when a session starts, adds `/rail`, `/desk` and `/approve-brief`, and closes them when the session ends. On a feature branch it adds the brief's instructions to Claude's system prompt and refuses code edits until the brief is approved.
 
 ## Good to know
