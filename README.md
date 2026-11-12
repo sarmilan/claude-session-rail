@@ -11,6 +11,8 @@ If you have a `/start` command of your own, it runs as soon as the session start
 
 ```
 ┌─ claude ──────────────────────────┬─ rail ───────────────────────────┐
+│                                   │ Session  Git                   ⇥ │
+│                                   │ ━━━━━━━───────────────────────── │
 │                                   │ Sessions 3                 + new │
 │                                   │ ▸ ◉ Fix login redirect loop busy │
 │                                   │     my-app · fix/42 · Edit redi… │
@@ -26,10 +28,6 @@ If you have a `/start` command of your own, it runs as soon as the session start
 │                                   │ Context ▸          33% ▰▰▰▱▱▱▱▱  │
 │                                   │ ──────────────────────────────── │
 │                                   │ Connectors ▸         4 connected │
-│                                   │ ──────────────────────────────── │
-│                                   │ Changes                          │
-│                                   │ ⑂ Fix login redirect loop      ⋯ │
-│                                   │   my-app #42                     │
 │                                   │ ──────────────────────────────── │
 │                                   │ Now                              │
 │                                   │ ◉ Claude  Edit src/auth/redi… 4s │
@@ -47,16 +45,50 @@ If you have a `/start` command of your own, it runs as soon as the session start
 
 ## What it shows
 
+The rail has two tabs: **Session**, what Claude is doing, and **Git**, where all your work stands. `Tab` or `]` goes to the next tab, `Shift-Tab` or `[` to the previous one, or click one. Each rail remembers its own tab.
+
+### Session
+
 - **Sessions:** every Claude session on your Mac, this one first (▸), then the ones that need you. Each shows its brief's title (or its branch), whether it's busy, waiting for you, blocked (the brief gate just held an edit) or idle, and underneath, its repo, branch and what it's doing right now. Every rail shows the same list.
-- **Environment:** your computer, repo, and branch, with the lines added and removed since the branch forked from the default branch (committed plus uncommitted; untracked files are not counted)
+- **Environment:** your computer, account, repo, and branch, with the lines added and removed since the branch forked from the default branch (committed plus uncommitted; untracked files are not counted)
 - **Context:** how full Claude's context window is
 - **Connectors:** your MCP servers and whether they're connected
-- **Changes:** your open pull requests in this repo
 - **Now:** who is doing what this second, and for how long:
   - **Claude:** thinking (with the model), the tool it's running and on what, waiting on its subagents, or waiting for you
   - nested under it, its **subagents** (with what one is doing, when only one runs) and **background tasks**. Open a background task to see its output.
   - the **Desk** while it runs an approach review, and the **Gate** when it has just held an edit because the brief isn't approved
 - **Just now:** the last few finished tool calls, with ✔ or ✗, the session's finished background tasks, and `⟲ compacted after <branch>` for an hour after the session compacted itself
+
+### Git
+
+```
+ Session  Git                      ⇥
+ ─────────━━━───────────────────────
+ my-app · main                  ↻ 4s
+ Worktrees 3
+ ▸ ● my-app-login         fix/42-lo…
+     ↑2 · 3 changed · #42 ✗
+   ○ my-app        feature/51-dark-…
+     ↑4 ↓1 · clean · #51 ◌
+   ○ old-spike     feature/38-cache
+     ✓ merged · clean
+ This branch fix/42-login…  +42 −7
+ ◌ 3 uncommitted
+ ● 9f2c1ab Stop the redirect loop 2m
+ ◆ 11b48b1 Merge pull #40   main 3h
+ PR #42 · open
+ ✗ lint                      failing
+ ✓ test
+ Pull requests
+ ⑂ Fix login redirect loop         ⋯
+```
+
+- **Worktrees:** every checkout of the repo, this one first (▸). Each card shows its branch (or the commit it's detached at), how far it is ahead (↑) of and behind (↓) the default branch, or ✓ merged once its work is in, how many files are uncommitted, and its pull request with a badge for its checks: ✓ passing, ✗ failing, ◌ running. Open a card to go to the Claude session working in it (or start one there), open its pull request or its failing check, or copy its branch name.
+- **This branch:** the lines added and removed, uncommitted files, and the branch's commits since it forked, down to the default-branch commit it started from (◆).
+- **PR:** this branch's pull request and each of its checks, failing first. Open a check to see its run.
+- **Pull requests:** your open pull requests in this repo.
+
+Checks come from GitHub through `gh`; a repo without CI shows "No checks". Only your own pull requests are listed, so a worktree on someone else's shows no badge. This worktree's commits refresh every 5 seconds; the other cards and the pull requests every minute, when you switch to the tab, and on `r`.
 
 Click a row, or use the arrow keys and Enter, to open it. A session jumps to its iTerm window (a session in the Claude app gives you its details instead), pull requests open in the browser, and tasks show their output.
 
@@ -161,14 +193,14 @@ If macOS asks whether to allow controlling iTerm2, allow it. That's how the pane
 
 ## How it works
 
-The rail only reads files Claude Code already keeps on your Mac: the list of running sessions, the session's conversation log (for context and background tasks), and the output of each background task. It also asks `git`, `gh`, and `claude mcp list` for the rest.
+The rail only reads files Claude Code already keeps on your Mac: the list of running sessions, the session's conversation log (for context and background tasks), and the output of each background task. It also asks `git` (worktrees, ahead/behind, commits), `gh` (your pull requests and their checks, in one call), and `claude mcp list` for the rest.
 
 It has these parts:
 
 1. **The rail** (`bin/rail.mjs`) draws the narrow panel in the terminal. It's plain Node with no dependencies.
 2. **The desk** (`bin/desk.mjs`) draws the wider panel. It reads the branch's brief (`bin/brief.mjs`), finds the plan file in the session's conversation log, asks `git` for the diff and `gh` for the board's Todo issues. Its reviewer (`bin/reviewer.mjs`) runs the approach review through `claude -p` with a JSON schema for the findings, read-only tools, no MCP servers and no saved session, and keeps each branch's reviews in `.git/session-rail/reviews/`.
 3. **The pane opener** (`bin/pane.mjs`) uses iTerm2's AppleScript support to fill the screen, split Claude's pane, run each panel (desk next to Claude, rail on the far right), size them in one pass, and hand focus back to Claude. The rail also uses it to bring another session's window to the front and to open the window for a new session.
-4. **The plugin** (`hooks/register.ts`) keeps a live record of what the session is doing (`hooks/activity.ts`: turns, every tool call, subagents, the brief gate) in `~/.claude/session-rail/activity/<session id>.json`, which the rail reads every second; the desk adds its running review beside it. It also opens both panels when a session starts, adds `/rail`, `/desk` and `/approve-brief`, and closes them when the session ends. On a feature branch it adds the brief's instructions to Claude's system prompt, refuses code edits until the brief is approved, watches for the approval (`hooks/goahead.ts`) to tell Claude to start, and compacts the session after a finished, merged branch (`hooks/compact.ts`). Settings shared by the rail and the hooks (font size, auto-compact) live in `~/.claude/session-rail/settings.json`.
+4. **The plugin** (`hooks/register.ts`) keeps a live record of what the session is doing (`hooks/activity.ts`: turns, every tool call, subagents, the brief gate) in `~/.claude/session-rail/activity/<session id>.json`, which the rail reads every second; the desk adds its running review beside it. It also opens both panels when a session starts, adds `/rail`, `/desk` and `/approve-brief`, and closes them when the session ends. On a feature branch it adds the brief's instructions to Claude's system prompt, refuses code edits until the brief is approved, watches for the approval (`hooks/goahead.ts`) to tell Claude to start, and compacts the session after a finished, merged branch (`hooks/compact.ts`). Settings shared by the rail and the hooks (font size, auto-compact) live in `~/.claude/session-rail/settings.json`; each rail keeps its open tab in `<session id>.rail.json` beside the session's activity file.
 
 ## Good to know
 

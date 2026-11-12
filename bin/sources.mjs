@@ -286,8 +286,13 @@ export async function newWorktree(cwd, problem) {
 }
 
 // ── Worktrees: every checkout of this repo with its branch, ahead/behind the default branch, and dirt ───
+// A tip on the default branch's own first-parent line is where a branch with no commits yet was made: walking
+// the default branch's first parents down from its tip ends right on it. A merged tip is reached only through a merge.
+const branchedFrom = async (cwd, tip, base) =>
+  (await run('git', ['rev-list', '--first-parent', '--parents', `${tip}..${base}`], { cwd }))?.trim().split('\n').at(-1)?.split(' ')[1] === tip;
 // Cards for the rail's Git tab. `merged`: a named branch with nothing ahead whose tip is behind the default
-// branch (its work went in). The main checkout first, as git lists it; `current` is the one at cwd.
+// branch and got there through a merge, not by being made there. The main checkout first, as git lists it;
+// `current` is the one at cwd.
 export async function worktrees(cwd) {
   const [list, top, base] = await Promise.all([
     run('git', ['worktree', 'list', '--porcelain'], { cwd }),
@@ -299,20 +304,22 @@ export async function worktrees(cwd) {
     Object.fromEntries(block.split('\n').filter(Boolean).map((l) => [l.split(' ')[0], l.slice(l.indexOf(' ') + 1)])))
     .filter((kv) => kv.worktree);
   const entries = blocks.filter((kv) => !('bare' in kv) && !('prunable' in kv))
-    .map((kv) => ({ path: kv.worktree, sha: kv.HEAD?.slice(0, 7) ?? null, branch: kv.branch?.replace(/^refs\/heads\//, '') ?? null }));
+    .map((kv) => ({ path: kv.worktree, head: kv.HEAD ?? null, branch: kv.branch?.replace(/^refs\/heads\//, '') ?? null }));
   const baseName = base?.replace(/^origin\//, '') ?? null;
-  const items = await Promise.all(entries.map(async (w) => {
+  const items = await Promise.all(entries.map(async ({ head, ...w }) => {
     const [counts, porcelain] = await Promise.all([
       base ? run('git', ['rev-list', '--left-right', '--count', `${base}...HEAD`], { cwd: w.path }) : null,
       run('git', ['status', '--porcelain'], { cwd: w.path }),
     ]);
     const [behind, ahead] = (counts ?? '').trim().split(/\s+/).map(Number);
+    // nothing ahead: its tip is in the default branch (the default branch itself is just behind, not merged)
+    const merged = Boolean(w.branch) && w.branch !== baseName && ahead === 0 && behind > 0 && head != null
+      && !(await branchedFrom(w.path, head, base));
     return {
-      ...w, name: basename(w.path), current: w.path === top?.trim(),
+      ...w, sha: head?.slice(0, 7) ?? null, name: basename(w.path), current: w.path === top?.trim(),
       ahead: Number.isFinite(ahead) ? ahead : null, behind: Number.isFinite(behind) ? behind : null,
       dirty: porcelain == null ? null : porcelain.split('\n').filter(Boolean).length, // null: git couldn't tell
-      // nothing ahead: its tip is in the default branch (the default branch itself is just behind, not merged)
-      merged: Boolean(w.branch) && w.branch !== baseName && ahead === 0 && behind > 0,
+      merged,
     };
   }));
   // The repo is named after the main checkout, git's first entry, even when it's bare and has no card.

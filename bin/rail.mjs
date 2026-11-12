@@ -95,8 +95,8 @@ const ui = { sel: null, open: { environment: true, context: false, connectors: f
   overlay: null, toast: null, input: null, tab: TABS.includes(startTab) ? startTab : 'session' };
 // Switch tabs; --frame doesn't touch the saved one.
 const setTab = (t) => {
-  tabSwitched = true;
   if (t === ui.tab) return;
+  tabSwitched = true;
   showTab(t);
   saveTab(data.current?.sessionId);
   // The worktree cards refresh every 60s; arriving on Git brings them up to date (through the runner, so it
@@ -146,7 +146,7 @@ const menu = (title, options, info = []) => {
 const viewLog = (task) => { ui.overlay = { kind: 'log', task, scroll: 0, back: ui.overlay?.back ?? ui.sel }; };
 const closeOverlay = () => { if (ui.overlay) ui.sel = ui.overlay.back; ui.overlay = null; };
 
-const prMenu = (p) => menu(`#${p.number} ${p.title}`, [
+const prMenu = (p) => menu(`#${p.number} ${clean(p.title)}`, [
   { label: 'Open in browser', key: 'o', run: () => launch('open', [p.url], `Opened #${p.number}`) },
   { label: 'Copy link', key: 'y', run: () => copy(p.url, `link to #${p.number}`) },
   { label: 'Copy branch name', run: () => copy(p.headRefName, 'branch name') },
@@ -195,7 +195,7 @@ const worktreeMenu = (w) => {
   // A session belongs to the deepest worktree holding its cwd (a worktree can sit inside another's folder).
   const inside = (dir, p) => dir === p || dir?.startsWith(p + '/');
   const owner = (dir) => (data.worktrees?.items ?? []).filter((x) => inside(dir, x.path)).sort((a, b) => b.path.length - a.path.length)[0]?.path;
-  const s = data.overview?.find((o) => inside(o.cwd, w.path) && owner(o.cwd) === w.path);
+  const s = data.overview?.find((o) => owner(o.cwd) === w.path);
   const p = prFor(w.branch), bad = failing(p), name = clean(w.name);
   menu(name, [
     s ? { label: s.current ? 'This session' : 'Go to session', run: () => goTo(s) }
@@ -324,20 +324,7 @@ function buildMain(W) {
   const heading = (t) => line(bold(t));
   const caret = (open) => (open ? '▾' : '▸');
 
-  // The repo row, on the Git tab and under Environment.
   const env = data.env;
-  const repoRow = () => pair(`▢  ${env ? `${env.repo} · ${env.parent}` : '…'}`, '', env && item('repo', () => repoMenu(env)),
-    { leftStyle: (s) => s.replace(/ · (.*)$/, (m, p) => ' · ' + dim(p)) });
-
-  // +added −removed since the branch forked, then how many files are uncommitted.
-  const branchRow = () => {
-    if (!env?.isGit) return;
-    const diff = env.added || env.removed ? `+${env.added} −${env.removed}` : '';
-    pair(`⎇  ${env.branch ?? '(detached)'}`, [diff, env.dirty && `${env.dirty} changed`].filter(Boolean).join(' · '),
-      env.branch && item('branch', () => branchMenu(env)),
-      { rightStyle: (s) => s.replace(/^\+(\d+) −(\d+)/, (m, a, r) => fg(C.green, `+${a}`) + ' ' + fg(C.red, `−${r}`))
-        .replace(/( · )?(\d+ changed)$/, (m, sep = '', t) => dim(sep + t)) });
-  };
 
   // Git: worktree cards, this branch's commits, its PR's checks, then the open pull requests.
   // `spread` lays out pieces already truncated to fit: styled left, styled right, padded between.
@@ -370,7 +357,9 @@ function buildMain(W) {
       const sync = w.merged ? fg(C.green, '✓ merged')
         : w.ahead == null ? '' : !w.ahead && !w.behind ? 'up to date'
         : [w.ahead && fg(C.green, `↑${w.ahead}`), w.behind && fg(C.yellow, `↓${w.behind}`)].filter(Boolean).join(' ');
-      const dirt = w.dirty == null ? fg(C.red, 'missing') : w.dirty ? `${w.dirty} changed` : 'clean';
+      // This worktree's dirt from the environment, which refreshes every 5s rather than every minute.
+      const dirty = w.current && env?.isGit ? env.dirty : w.dirty;
+      const dirt = dirty == null ? fg(C.red, 'missing') : dirty ? `${dirty} changed` : 'clean';
       const parts = [sync, dirt, badge(p)].filter(Boolean).join(dim(' · '));
       spread(`    ${width(parts) > inner - 4 ? dim(trunc(parts.replace(/\x1b\[[0-9;]*m/g, ''), inner - 4)) : parts}`, '', id);
     }
@@ -397,11 +386,11 @@ function buildMain(W) {
       const order = { fail: 0, pending: 1, pass: 2 };
       const checks = [...mine.checks].sort((a, b) => order[a.state] - order[b.state]);
       if (!checks.length) line(dim('No checks'));
-      checks.forEach((c, i) => {
+      checks.forEach((c) => {
         const [color, mark] = CHECK[c.state];
         const note = { fail: 'failing', pending: 'running', pass: '' }[c.state];
         spread(`${fg(color, mark)} ${trunc(clean(c.name), inner - 2 - width(note) - 1)}`, dim(note),
-          c.url ? item(`check:${i}`, () => launch('open', [c.url], 'Opened the check')) : undefined); // names repeat across workflows
+          c.url ? item(`check:${c.url}`, () => launch('open', [c.url], 'Opened the check')) : undefined); // names repeat across workflows; the run's url keeps the selection when the order changes
       });
       rule();
     }
@@ -459,8 +448,16 @@ function buildMain(W) {
     pair(`▭  ${env?.computer ?? '…'}`);
     // Which login this Claude uses.
     if (data.account?.email) pair(`@  ${data.account.email}`, '', undefined, { leftStyle: (s) => s.slice(0, 3) + dim(s.slice(3)) });
-    repoRow();
-    branchRow();
+    pair(`▢  ${env ? `${env.repo} · ${env.parent}` : '…'}`, '', env && item('repo', () => repoMenu(env)),
+      { leftStyle: (s) => s.replace(/ · (.*)$/, (m, p) => ' · ' + dim(p)) });
+    if (env?.isGit) {
+      // +added −removed since the branch forked, then how many files are uncommitted.
+      const diff = env.added || env.removed ? `+${env.added} −${env.removed}` : '';
+      pair(`⎇  ${env.branch ?? '(detached)'}`, [diff, env.dirty && `${env.dirty} changed`].filter(Boolean).join(' · '),
+        env.branch && item('branch', () => branchMenu(env)),
+        { rightStyle: (s) => s.replace(/^\+(\d+) −(\d+)/, (m, a, r) => fg(C.green, `+${a}`) + ' ' + fg(C.red, `−${r}`))
+          .replace(/( · )?(\d+ changed)$/, (m, sep = '', t) => dim(sep + t)) });
+    }
     pair('◌  Remote Control', '/remote-control', item('remote', () => toast('Type /remote-control in your Claude session')),
       { leftStyle: dim, rightStyle: dim });
   }
