@@ -40,7 +40,6 @@ function normalise(list) {
     severity: RANK[f.severity] != null ? f.severity : 'medium',
     title: f.title,
     detail: typeof f.detail === 'string' ? f.detail : '',
-    acceptedAt: null,
   })).sort((a, b) => RANK[a.severity] - RANK[b.severity]);
 }
 
@@ -123,10 +122,10 @@ export async function reviewApproach(cwd, { brief, files = [], earlier = [], fin
 }
 
 // ── The branch's review record ────────────────────────────────────────────────
-// A branch's file (sources.reviewsPath) holds { runs: [{ startedAt, finishedAt, verdict, summary, core, done,
-// error?, findings: [{ kind, chunk, severity, title, detail, acceptedAt }] }] }, newest first. Runs saved by
-// the old code review (findings with file and line, no verdict) are dropped on load. Callers pass the path, so a review that finishes after a
-// branch switch still lands in the file of the branch it reviewed.
+// A branch's file (sources.reviewsPath) holds { runs: [...] }, newest first: approach runs saved here and code
+// runs the hooks record, in the shape cadence.mjs describes. Runs with no verdict (an old code review's) are
+// dropped on load. Callers pass the path, so a review that finishes after a branch switch still lands in the
+// file of the branch it reviewed.
 export async function loadReviews(path) {
   try {
     // A hand-edited, older or half-written file must not break the tab: keep only well-formed runs.

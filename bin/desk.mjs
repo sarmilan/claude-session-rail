@@ -4,20 +4,20 @@
 //         the plan plan mode is writing (live, from the session's transcript) or recent work
 //   Diff  every file changed since the branch forked from the default branch, grouped by the brief's chunks,
 //         and each file's diff
-//   Review  a staff-engineer review of the approach (reviewer.mjs), run at the brief's milestones or on demand;
-//           findings you accept go to Claude
+//   Review  the branch's review record: the approach reviews (reviewer.mjs) Claude runs before each commit, or
+//           you run on demand, and the code reviews the hooks record, each finding open, applied or declined
 // It opens on Plan; tabs change only when you switch them (Tab, 1 2 3, or a click).
 //   node desk.mjs                                   interactive panel
 //   node desk.mjs --json                            print the collected state once
 //   node desk.mjs --frame [W H] [--tab plan|diff|review] [--file N]   print one rendered frame (no TTY needed)
 //     [--review-json F --select N --jump N]          …with a saved review record (reviewer.mjs's store shape)
 //   --cwd DIR / --pid PID                           the folder and Claude process this desk belongs to
-import { execFile } from 'node:child_process';
 import * as src from './sources.mjs';
-import { reviewAndSave, reviewedState, loadReviews, saveReviews } from './reviewer.mjs';
+import { reviewAndSave, loadReviews } from './reviewer.mjs';
 import { ESC, fg, dim, bold, C, charWidth, width, trunc, clean } from './term.mjs';
 import { applySaved } from './fontsize.mjs';
 import { approvalRecord } from './brief.mjs';
+import { runType } from './cadence.mjs';
 import { writeFile, mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -70,24 +70,37 @@ const loaders = {
     if (!ui.picked || !data.files[ui.sel]) ui.sel = diffOrder()[0] ?? 0;
     if (ui.open) await loadFile(ui.open);
   },
-  // The branch's review record, read again when the branch changes (a running review keeps running and
-  // saves to the branch it started on).
+  // The branch's review record, read again on each refresh: Claude's reviews and the hooks' code reviews
+  // land in it from outside. The selection resets only when the branch changes.
   async reviews() {
-    const path = await src.reviewsPath(cwd);
-    if (path === data.review.path) return;
-    data.review = { ...data.review, runs: await loadReviews(path), path };
-    ui.rsel = 0; ui.scroll.review = 0;
+    const path = await src.reviewsPath(cwd), runs = await loadReviews(path);
+    if (path === data.review.path && JSON.stringify(runs) === JSON.stringify(data.review.runs)) return;
+    // On the same branch the list can grow or reorder under the selection: keep it on the same finding.
+    const id = path === data.review.path ? listedAll()[ui.rsel]?.id : undefined;
+    if (path !== data.review.path) { ui.rsel = 0; ui.scroll.review = 0; }
+    data.review = { ...data.review, runs, path };
+    if (id !== undefined) { const all = listedAll(), at = all.findIndex((f) => f.id === id); ui.rsel = at >= 0 ? at : Math.max(0, Math.min(ui.rsel, all.length - 1)); }
   },
 };
 
-// ── Review: the staff-engineer approach review of the brief and its finished chunks ─
-// The tab shows the newest successful review. A failed run is only kept as the newest entry, to say why it
-// failed: it never hides the review before it, and failures can't push real reviews out of the history.
-// Code reviews (type 'code', recorded by the hooks) share the file but aren't shown here.
-const approachRuns = () => data.review.runs.filter((r) => r.type !== 'code');
+// ── Review: the branch's approach reviews and code reviews ───────────────────────
+// The tab shows the newest successful approach review and the newest code review (type 'code', recorded by
+// the hooks). A failed run is only kept as the newest entry, to say why it failed: it never hides the review
+// before it, and failures can't push real reviews out of the history.
+const approachRuns = () => data.review.runs.filter((r) => runType(r) === 'approach');
 const latest = () => approachRuns().find((r) => !r.error) ?? null;
 const failed = () => (approachRuns()[0]?.error ? approachRuns()[0] : null);
-const pending = () => (latest()?.findings ?? []).map((f, i) => (f.acceptedAt ? -1 : i)).filter((i) => i >= 0);
+// What the tab lists, in order: the newest approach review's findings, then earlier approach findings that
+// are still open or were raised on the same commit (this chunk's, with how they were settled), then the
+// newest code review's. Selection and Enter (jump to the file) index into this list.
+const codeRun = () => data.review.runs.find((r) => !r.error && runType(r) === 'code') ?? null;
+function listed() {
+  const run = latest();
+  const earlier = approachRuns().filter((r) => !r.error && r !== run)
+    .flatMap((r) => r.findings.filter((f) => f.status === 'open' || (f.status && run?.head && r.head === run.head)));
+  return { approach: [...(run?.findings ?? []), ...earlier], code: codeRun()?.findings ?? [] };
+}
+const listedAll = () => { const l = listed(); return [...l.approach, ...l.code]; };
 // Returns why it couldn't start, or null when it started.
 function startReview() {
   if (data.review.running) return 'A review is already running';
@@ -120,68 +133,6 @@ async function reportDesk(review) {
     await mkdir(ACTIVITY, { recursive: true });
     await writeFile(join(ACTIVITY, `${id}.desk.json`), JSON.stringify({ pid: process.pid, review, updatedAt: Date.now() }));
   } catch {}
-}
-
-
-// Hand the latest review's findings at `indices` to Claude; once they're delivered, mark them accepted.
-// Findings on their way are held in `sending`, so a second press during the send can't paste them twice.
-const sending = new Set();
-function acceptFindings(indices) {
-  const run = latest();
-  const picked = indices.filter((i) => run?.findings[i] && !run.findings[i].acceptedAt && !sending.has(run.findings[i]));
-  if (!picked.length) return toast(!run?.findings.length ? 'No findings to accept' : sending.size ? 'Sending to Claude…' : 'Already accepted');
-  const path = data.review.path;
-  for (const i of picked) sending.add(run.findings[i]);
-  sendFindings(picked.map((i) => run.findings[i]), async (ok) => {
-    for (const i of picked) sending.delete(run.findings[i]);
-    if (!ok) return draw();
-    // Mark the run as the file is now: the hooks may have added code reviews, or a branch switch reloaded it.
-    const runs = await loadReviews(path);
-    const target = runs.find((r) => r.startedAt === run.startedAt);
-    if (target) {
-      const at = Date.now();
-      for (const i of picked) if (target.findings[i]) target.findings[i].acceptedAt = at;
-      await saveReviews(path, runs);
-      if (path === data.review.path) data.review.runs = runs;
-    }
-    draw();
-  });
-}
-
-// Type the findings into Claude's pane as one pasted message (bracketed paste keeps the line breaks
-// from submitting early), then press return. The pane is found by the Claude process's terminal.
-const SEND = `on run argv
-  tell application "iTerm2"
-    repeat with w in windows
-      repeat with t in tabs of w
-        repeat with s in sessions of t
-          if tty of s is (item 1 of argv) then
-            tell s to write text ((ASCII character 27) & "[200~" & (item 2 of argv) & (ASCII character 27) & "[201~") newline no
-            delay 0.3
-            tell s to write text "" newline yes
-            return "ok"
-          end if
-        end repeat
-      end repeat
-    end repeat
-  end tell
-  return ""
-end run`;
-// `onDone(ok)`: ok is true only when the text reached Claude's pane.
-function sendFindings(findings, onDone) {
-  const pid = data.claude?.pid;
-  if (!pid) { toast("Couldn't find this desk's Claude session"); return onDone(false); }
-  const text = ["Staff-engineer review of this branch's approach, accepted. Act on each one, and update the brief to match:",
-    ...findings.map((f, i) => `${i + 1}. [${f.severity}] ${f.chunk ? `chunk ${f.chunk} · ` : ''}${f.kind}: ${f.title}${f.detail ? `\n   ${f.detail}` : ''}`)].join('\n');
-  execFile('ps', ['-o', 'tty=', '-p', String(pid)], (err, tty) => {
-    tty = tty?.toString().trim();
-    if (err || !tty || tty === '??') { toast("Claude's pane isn't a terminal"); return onDone(false); }
-    execFile('osascript', ['-e', SEND, `/dev/${tty}`, clean(text)], { timeout: 10_000 }, (e, out) => {
-      const ok = !e && out.toString().trim() === 'ok';
-      toast(ok ? `Sent ${findings.length} finding${findings.length === 1 ? '' : 's'} to Claude` : "Couldn't reach Claude's pane in iTerm");
-      onDone(ok);
-    });
-  });
 }
 
 async function loadFile(path) {
@@ -406,8 +357,16 @@ const ago = (ms) => {
 // A clickable button: its text, styled, and remembered as a span on the current line for mouse clicks.
 const button = (label, colour) => `${ESC}48;5;237m` + bold(fg(colour, ` ${label} `)) + `${ESC}49m`;
 const when = (ms) => new Date(ms).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+// A finding's status label: open, applied or declined (fixed / no change for a code review's); a finding
+// saved before the cadence shows its severity, or accepted.
+function statusLabel(f, code) {
+  if (f.status === 'applied') return [code ? '✓ fixed' : '✓ applied', C.green];
+  if (f.status === 'declined') return [code ? '✓ no change' : '✗ declined', C.gray];
+  if (f.status === 'open') return ['● open', C.yellow];
+  return f.acceptedAt ? ['✓ accepted', C.green] : [`● ${f.severity}`, SEV[f.severity] ?? C.gray];
+}
 function reviewLines(w) {
-  const { running } = data.review, run = latest(), fail = failed(), open = pending();
+  const { running } = data.review, run = latest(), fail = failed(), code = codeRun(), list = listed();
   const lines = [], ids = [], buttons = [];
   const push = (l, id = null) => { lines.push(l); ids.push(id); };
   // Lay out a row of buttons and trailing text; each button's columns are kept for clicks.
@@ -420,56 +379,63 @@ function reviewLines(w) {
     push(l, id);
   };
 
-  // The action row: Run (or the running review), Accept all, and where the latest review stands.
-  const parts = [
-    running ? { action: 'cancel', label: `◌ Reviewing… ${Math.round((Date.now() - running.startedAt) / 1000)}s · x cancel`, colour: C.accent }
-      : { action: 'run', label: fail ? '↻ Retry review' : run ? '↻ Run again' : '▶ Run review', colour: C.accent },
-    ...(open.length && !running ? [{ text: '  ' }, { action: 'acceptAll', label: `✓ Accept all ${open.length}`, colour: C.green }] : []),
-  ];
-  // Where the latest review stands, only when it fits whole: the buttons matter more.
-  const used = parts.reduce((n, p) => n + (p.action ? width(p.label) + 2 : width(p.text)), 0);
-  const changed = run && data.brief?.text && JSON.stringify(reviewedState(data.brief)) !== JSON.stringify({ core: run.core, done: run.done });
-  const status = [run && `reviewed ${ago(run.finishedAt)}`, changed && 'brief changed since'].filter(Boolean);
+  // The action row: Run (or the running review), and when each kind of review last ran, as far as it fits.
+  const parts = [running ? { action: 'cancel', label: `◌ Reviewing… ${Math.round((Date.now() - running.startedAt) / 1000)}s · x cancel`, colour: C.accent }
+    : { action: 'run', label: fail ? '↻ Retry review' : run ? '↻ Run again' : '▶ Run review', colour: C.accent }];
+  const used = width(parts[0].label) + 2;
+  const status = [run && `approach ${ago(run.finishedAt)}`, code && `code ${ago(code.finishedAt)}`].filter(Boolean);
   while (status.length && used + 2 + width(status.join(' · ')) > w) status.pop();
   if (status.length && !running) parts.push({ text: '  ' + dim(status.join(' · ')), plain: '  ' + status.join(' · ') });
   row(parts);
   push('');
-  if (fail) { for (const l of wrapRuns([{ t: `✗ The last review failed: ${clean(fail.error)}`, s: 'text' }], w)) push(fg(C.red, l)); if (run) push(''); }
-  if (!run && !fail) {
+  if (fail) { for (const l of wrapRuns([{ t: `✗ The last review failed: ${clean(fail.error)}`, s: 'text' }], w)) push(fg(C.red, l)); push(''); }
+  if (!run && !code && !fail) {
     const text = data.brief?.text
-      ? 'No approach review yet. A staff-engineer review of the brief runs on its own when a chunk is done or the plan changes after approval. Run review checks the plan now (a minute or so).'
-      : 'The approach review checks the branch\'s brief: whether its plan, and the chunks as they get done, are the simplest way to the goal. This branch has no brief yet.';
+      ? 'No reviews yet. Before each chunk\'s commit Claude runs the approach review (the brief and its finished chunks, judged by a staff engineer) and /code-review, and applies every finding; a final pair runs before the merge. Run review checks the approach now (a minute or so).'
+      : 'Reviews follow the branch\'s brief: an approach review and a code review before each chunk\'s commit, and a final pair before the merge. This branch has no brief yet.';
     for (const l of wrapRuns([{ t: text, s: 'text' }], w)) push(dim(l));
   }
-  if (run) {
-    const [label, colour] = { 'on-track': ['✓ On track', C.green], 'simpler-path': ['◆ A simpler path exists', C.yellow], 'off-goal': ['✗ Off the goal', C.red] }[run.verdict] ?? ['◆ Reviewed', C.gray];
-    push(bold(fg(colour, label)));
-    if (run.summary) for (const l of wrapRuns([{ t: clean(run.summary), s: 'text' }], w)) push(l);
+
+  // One finding: its status and where it is, the title, the detail, and a declined one's reason.
+  let n = 0;
+  const finding = (f, isCode) => {
+    const i = n++, [label, colour] = statusLabel(f, isCode);
+    const where = isCode ? `${f.file ? `${f.file}${f.line ? `:${f.line}` : ''} · ` : ''}${f.kind}` : `${f.chunk ? `chunk ${f.chunk} · ` : 'whole plan · '}${f.kind}`;
+    push(fg(colour, label) + '  ' + dim(trunc(clean(where), Math.max(4, w - width(label) - 2))), i);
+    const settled = f.status === 'applied' || f.status === 'declined' || f.acceptedAt;
+    for (const l of wrapRuns(runs(f.title, 'text').map((r) => ({ ...r, s: r.s === 'text' && !settled ? 'bold' : r.s })), w, '    ')) push(settled ? dim(l) : l, i);
+    if (f.detail && !settled) for (const l of wrapRuns([{ t: clean(f.detail), s: 'text' }], w, '    ')) push(dim(l), i);
+    if (f.note) for (const l of wrapRuns([{ t: `“${clean(f.note)}”`, s: 'text' }], w, '    ')) push(dim(l), i);
     push('');
+  };
+  const openCount = (l) => l.filter((f) => f.status === 'open').length;
+  const heading = (t) => push(bold(t) + ' ' + dim('─'.repeat(Math.max(0, w - width(t) - 1))));
+  if (run || list.approach.length) {
+    const o = openCount(list.approach);
+    heading(`Approach${o ? ` · ${o} open` : ''}`);
+    if (run) {
+      const [label, colour] = { 'on-track': ['✓ On track', C.green], 'simpler-path': ['◆ A simpler path exists', C.yellow], 'off-goal': ['✗ Off the goal', C.red] }[run.verdict] ?? ['◆ Reviewed', C.gray];
+      push(bold(fg(colour, label)) + (run.final ? dim('  final') : ''));
+      if (run.summary) for (const l of wrapRuns([{ t: clean(run.summary), s: 'text' }], w)) push(l);
+      push('');
+    }
+    for (const f of list.approach) finding(f, false);
+  }
+  if (code) {
+    const o = openCount(list.code);
+    heading(`Code review · ${list.code.length ? `${list.code.length} finding${list.code.length === 1 ? '' : 's'}${o ? `, ${o} open` : ''}` : 'no findings'}`);
+    push('');
+    for (const f of list.code) finding(f, true);
   }
 
-  (run?.findings ?? []).forEach((f, i) => {
-    const where = `${f.chunk ? `chunk ${f.chunk} · ` : 'whole plan · '}${f.kind}`;
-    if (f.acceptedAt) {
-      push(`${fg(C.green, '✓ accepted')}  ${dim(trunc(where, w - 14))}`, i);
-      for (const l of wrapRuns([{ t: clean(f.title), s: 'text' }], w, '    ')) push(dim(l), i);
-    } else {
-      const head = `● ${f.severity}  `, room = w - width(head) - 12;
-      const shown = trunc(where, Math.max(4, room));
-      row([{ text: fg(SEV[f.severity], `● ${f.severity}`) + '  ' + dim(shown), plain: head + shown },
-        { text: ' '.repeat(Math.max(1, w - width(head) - width(shown) - 10)) }, { action: `accept:${i}`, label: 'accept', colour: C.green }], i);
-      for (const l of wrapRuns(runs(f.title, 'text').map((r) => ({ ...r, s: r.s === 'text' ? 'bold' : r.s })), w, '    ')) push(l, i);
-      for (const l of wrapRuns([{ t: clean(f.detail), s: 'text' }], w, '    ')) push(dim(l), i);
-    }
-    push('');
-  });
-
-  const earlier = approachRuns().filter((r) => !r.error && r !== run);
+  // Earlier runs of either kind, one line each.
+  const earlier = data.review.runs.filter((r) => !r.error && r !== run && r !== code);
   if (earlier.length) {
     push(dim('── Earlier reviews ' + '─'.repeat(Math.max(0, w - 19))));
     for (const r of earlier) {
-      const n = r.findings.length, ok = r.findings.filter((f) => f.acceptedAt).length;
-      push(dim(trunc(`${when(r.startedAt)} · ${n} finding${n === 1 ? '' : 's'} · ${ok} accepted`, w)));
+      const t = r.findings.length, count = (st) => r.findings.filter((f) => f.status === st).length;
+      const tally = r.findings.some((f) => f.status) ? [count('applied') && `${count('applied')} applied`, count('declined') && `${count('declined')} declined`, count('open') && `${count('open')} open`].filter(Boolean).join(', ') : '';
+      push(dim(trunc(`${when(r.startedAt)} · ${r.type === 'code' ? 'code' : 'approach'} · ${t} finding${t === 1 ? '' : 's'}${tally ? ` · ${tally}` : ''}`, w)));
     }
   }
   return { lines, ids, buttons };
@@ -481,7 +447,7 @@ function frame(W, H) {
   const w = W - 2, bodyH = H - 4;
   // Tab bar, between two rules: each tab's span is remembered for mouse clicks.
   const { a, r } = totals();
-  const nf = pending().length;
+  const nf = listedAll().filter((f) => f.status === 'open').length;
   const labels = { plan: 'Plan', diff: `Diff ${data.files.length ? `+${a} −${r}` : ''}`.trim(),
     review: `Review${nf ? ` ${nf}` : ''}${data.review.running ? ' ◌' : ''}` };
   let x = 1, bar = '';
@@ -552,8 +518,10 @@ const openFile = async (i) => {
 
 // Open a finding's file in the Diff tab, scrolled to its line.
 async function jumpTo(i) {
-  const f = latest()?.findings?.[i];
-  const at = data.files.findIndex((x) => x.path === f?.file);
+  const f = listedAll()[i];
+  // A code review may name the file absolutely or with ./ in front; the diff's paths are repo-relative.
+  const rel = f?.file && data.root && f.file.startsWith(`${data.root}/`) ? f.file.slice(data.root.length + 1) : f?.file?.replace(/^\.\//, '');
+  const at = data.files.findIndex((x) => x.path === rel);
   if (at < 0) return toast(f?.file ? `${clean(f.file)} isn't in the diff any more` : 'That finding has no file');
   ui.tab = 'diff';
   ui.jump = f.line;
@@ -623,13 +591,11 @@ if (pinnedPid) {
 const review = (action) => {
   if (action === 'run') return toast(startReview() ?? 'Reviewing…');
   if (action === 'cancel') return cancelReview();
-  if (action === 'acceptAll') return acceptFindings(pending());
-  if (action.startsWith('accept:')) { ui.rsel = +action.slice(7); return acceptFindings([ui.rsel]); }
 };
 const manual = (tab) => { ui.tab = tab; };
 const scrollBy = (d) => { const key = ui.tab === 'diff' && ui.open ? 'file' : ui.tab; ui.scroll[key] = (ui.scroll[key] ?? 0) + d; };
 const move = (d) => {
-  const n = latest()?.findings?.length ?? 0;
+  const n = listedAll().length;
   if (ui.tab === 'review') { if (n) ui.rsel = Math.max(0, Math.min(n - 1, ui.rsel + d)); else scrollBy(d); return; }
   if (ui.tab === 'diff' && !ui.open && data.files.length) ui.sel = stepFile(d);
   else scrollBy(d);
@@ -654,11 +620,9 @@ const handleKey = async (k) => {
   if (k === '\x1b[Z') return manual(TABS[(TABS.indexOf(ui.tab) + TABS.length - 1) % TABS.length]);
   if (k === '1' || k === '2' || k === '3') return manual(TABS[+k - 1]);
   if (ui.tab === 'review') {
-    const findings = latest()?.findings ?? [];
+    const findings = listedAll();
     if (k === 'r') return review('run');
     if (k === 'x') return review('cancel');
-    if (k === 'y') return review(`accept:${ui.rsel}`);
-    if (k === 'A') return review('acceptAll');
     if ((k === '\r' || k === 'l' || k === '\x1b[C') && findings[ui.rsel]?.file) return jumpTo(ui.rsel);
   }
   if (ui.tab === 'plan' && k === 'A') return approveBrief();
@@ -688,7 +652,7 @@ const handleMouse = async (b, x, y) => {
   if (ui.tab === 'review') {
     const b = layout.buttons.find((s) => s.row === y - 1 - layout.body && x - 2 >= s.from && x - 2 < s.to);
     if (b) return review(b.action);
-    if (i != null) { if (ui.rsel === i && latest()?.findings[i]?.file) return jumpTo(i); ui.rsel = i; }
+    if (i != null) { if (ui.rsel === i && listedAll()[i]?.file) return jumpTo(i); ui.rsel = i; }
   }
 };
 

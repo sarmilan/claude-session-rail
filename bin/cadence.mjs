@@ -38,7 +38,7 @@ export function codeRun(report, { head, dirty, at }) {
       id: `c${at.toString(36)}-${i}`, kind: typeof f.category === 'string' ? f.category : 'correctness',
       title: f.short_summary || f.summary, detail: [f.summary, f.failure_scenario].filter(Boolean).join(' '),
       severity: 'medium', file: typeof f.file === 'string' ? f.file : null, line: Number.isInteger(f.line) ? f.line : null,
-      status, ...(status === 'declined' ? { note: 'No change needed' } : {}),
+      status,
     };
   });
   const open = findings.filter((f) => f.status === 'open').length;
