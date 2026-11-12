@@ -11,6 +11,7 @@
 import { deflateSync } from 'node:zlib';
 import { CREATURES, SPR_W, SPR_H } from './creatures.mjs';
 import { foliage } from './habitats.mjs';
+import { createVisitors } from './visitors.mjs';
 
 const ESC = '\x1b[';
 const IDLE_MS = 60_000;  // nothing busy for this long → sleep
@@ -100,7 +101,7 @@ const pngEncode = (w, h, raw) => {
 // `colPx` is image pixels per terminal column; `x` is the creature's left edge.
 const SCALE = 4, STRIP_ROWS = 3, ROW_PX = 34, FLOOR_RGB = xtermRgb(240);
 const SWAY = [0, 1, 0, -1]; // the foliage's lean, a step a second (5 ticks)
-function stripImage(c, rows, cols, colPx, x, { scale = SCALE, stripRows = STRIP_ROWS, lift = 0, rage = false, flip = false, ground = [] } = {}) {
+function stripImage(c, rows, cols, colPx, x, { scale = SCALE, stripRows = STRIP_ROWS, lift = 0, rage = false, flip = false, ground = [], visitors = [] } = {}) {
   const h = stripRows * ROW_PX, floorY = h - ROW_PX / 2 - 1, top = floorY - (SPR_H + lift) * scale;
   const w = Math.max(1, Math.round(cols * colPx)), stride = w * 4 + 1;
   const raw = Buffer.alloc(h * stride);
@@ -109,6 +110,14 @@ function stripImage(c, rows, cols, colPx, x, { scale = SCALE, stripRows = STRIP_
   for (const [gx, up, colour] of ground) { // a sprite pixel each; below the floor they start under its line
     const rgb = xtermRgb(colour), gy = up > 0 ? floorY - up * SCALE : floorY + 2 + (-up - 1) * SCALE;
     for (let dy = 0; dy < SCALE; dy++) for (let dx = 0; dx < SCALE; dx++) putRgb(gx * SCALE + dx, gy + dy, rgb);
+  }
+  for (const v of visitors) { // over the foliage, behind the creature; `alt` lifts them 7 … 15 sprite pixels
+    const vy = floorY - (7 + Math.round(v.alt * 8) + v.rows.length) * SCALE;
+    v.rows.forEach((row, ry) => [...row].forEach((k, rx) => {
+      if (k === '.') return;
+      const rgb = xtermRgb(v.palette[k]);
+      for (let dy = 0; dy < SCALE; dy++) for (let dx = 0; dx < SCALE; dx++) putRgb(v.px + rx * SCALE + dx, vy + ry * SCALE + dy, rgb);
+    }));
   }
   for (let y = 0; y < SPR_H * scale; y++) for (let px = 0; px < SPR_W * scale; px++) {
     const key = rows[Math.floor(y / scale)][Math.floor(px / scale)];
@@ -130,9 +139,9 @@ function stripImage(c, rows, cols, colPx, x, { scale = SCALE, stripRows = STRIP_
 const GLYPH = [...' 𜺨𜺫🮂𜴀▘𜴁𜴂𜴃𜴄▝𜴅𜴆𜴇𜴈▀𜴉𜴊𜴋𜴌🯦𜴍𜴎𜴏𜴐𜴑𜴒𜴓𜴔𜴕𜴖𜴗𜴘𜴙𜴚𜴛𜴜𜴝𜴞𜴟🯧𜴠𜴡𜴢𜴣𜴤𜴥𜴦𜴧𜴨𜴩𜴪𜴫𜴬𜴭𜴮𜴯𜴰𜴱𜴲𜴳𜴴𜴵🮅𜺣𜴶𜴷𜴸𜴹𜴺𜴻𜴼𜴽𜴾𜴿𜵀𜵁𜵂𜵃𜵄▖𜵅𜵆𜵇𜵈▌𜵉𜵊𜵋𜵌▞𜵍𜵎𜵏𜵐▛𜵑𜵒𜵓𜵔𜵕𜵖𜵗𜵘𜵙𜵚𜵛𜵜𜵝𜵞𜵟𜵠𜵡𜵢𜵣𜵤𜵥𜵦𜵧𜵨𜵩𜵪𜵫𜵬𜵭𜵮𜵯𜵰𜺠𜵱𜵲𜵳𜵴𜵵𜵶𜵷𜵸𜵹𜵺𜵻𜵼𜵽𜵾𜵿𜶀𜶁𜶂𜶃𜶄𜶅𜶆𜶇𜶈𜶉𜶊𜶋𜶌𜶍𜶎𜶏▗𜶐𜶑𜶒𜶓▚𜶔𜶕𜶖𜶗▐𜶘𜶙𜶚𜶛▜𜶜𜶝𜶞𜶟𜶠𜶡𜶢𜶣𜶤𜶥𜶦𜶧𜶨𜶩𜶪𜶫▂𜶬𜶭𜶮𜶯𜶰𜶱𜶲𜶳𜶴𜶵𜶶𜶷𜶸𜶹𜶺𜶻𜶼𜶽𜶾𜶿𜷀𜷁𜷂𜷃𜷄𜷅𜷆𜷇𜷈𜷉𜷊𜷋𜷌𜷍𜷎𜷏𜷐𜷑𜷒𜷓𜷔𜷕𜷖𜷗𜷘𜷙𜷚▄𜷛𜷜𜷝𜷞▙𜷟𜷠𜷡𜷢▟𜷣▆𜷤𜷥█'];
 function octantRows(c, rows) {
   const out = [];
-  for (let cy = 0; cy < SPR_H / 4; cy++) {
+  for (let cy = 0; cy < rows.length / 4; cy++) {
     const cells = [];
-    for (let cx = 0; cx < SPR_W / 2; cx++) {
+    for (let cx = 0; cx < rows[0].length / 2; cx++) {
       const px = [];
       for (let dy = 0; dy < 4; dy++) for (let dx = 0; dx < 2; dx++) px.push(rows[cy * 4 + dy][cx * 2 + dx]);
       const count = {};
@@ -156,6 +165,7 @@ export function createMascot({ images = false, creature = 0, now = Date.now() } 
   const colPx = () => aspect * ROW_PX;
   let index = ((creature % CREATURES.length) + CREATURES.length) % CREATURES.length;
   let stage = 0, progress = null;
+  const flock = createVisitors(); // a flier for each running subagent (visitors.mjs)
   // The drawing for this stage: the creature's own stage form, or the creature itself.
   const form = () => CREATURES[index].stages?.[stage] ?? CREATURES[index];
   const width = () => (images ? Math.ceil((SPR_W * (form().scale ?? SCALE)) / colPx()) : SPR_W / 2); // columns it occupies
@@ -176,6 +186,8 @@ export function createMascot({ images = false, creature = 0, now = Date.now() } 
     setStage(n) { if (n !== stage && n >= 0 && n < MOOD.length) { stage = n; s.hopI = -1; s.lift = 0; s.shake = 0; } },
     // Its spot on the road, 0 … 1 (progressFor), or null to pace the whole strip.
     setProgress(f) { progress = f == null ? null : Math.max(0, Math.min(1, f)); },
+    // How many subagents are running: a visitor each, up to 4; one flies off as each finishes.
+    setVisitors(n, W = 42) { flock.want(n, W); },
     get index() { return index; },
     get name() { return CREATURES[index].name; },
 
@@ -191,6 +203,7 @@ export function createMascot({ images = false, creature = 0, now = Date.now() } 
     step(W, busy, t = Date.now()) {
       const c = form(), mood = MOOD[stage];
       s.tick++;
+      flock.step(s.x + width() / 2, W, s.tick, width() / 2, images ? Math.ceil((7 * SCALE) / colPx()) : 4);
       if (busy) s.lastActive = t;
       s.mode = busy ? 'busy' : t - s.lastActive > IDLE_MS ? 'sleep' : 'walk';
       const [lo, hi] = bounds(W);
@@ -240,20 +253,31 @@ export function createMascot({ images = false, creature = 0, now = Date.now() } 
         const rage = Boolean(mood.rage && !sleep && s.lift === 0 && Math.floor(s.tick / 3) % 2);
         const cols = W - 2, x = Math.round((s.x - 1) * colPx()) + jitter;
         const sway = SWAY[Math.floor(s.tick / 5) % SWAY.length];
-        const data = cached(`${poseKey}|${cols}|${x}|${aspect}|${s.lift}|${rage}|${sway}`, () => {
+        const visitors = flock.sprites(s.tick).map((v) => ({ ...v, px: Math.round((v.x - 1) * colPx()) }));
+        const flying = visitors.map((v) => `${v.px},${Math.round(v.alt * 8)},${v.rows.join('')}`).join(';'); // what stripImage draws
+        const data = cached(`${poseKey}|${cols}|${x}|${aspect}|${s.lift}|${rage}|${sway}|${flying}`, () => {
           const ground = foliage(CREATURES[index].habitat, Math.ceil((cols * colPx()) / SCALE), sway);
-          return stripImage(c, pixels(c, pose), cols, colPx(), x, { scale, stripRows, lift: s.lift, rage, flip: s.dir < 0 && !c.sideways, ground });
+          return stripImage(c, pixels(c, pose), cols, colPx(), x, { scale, stripRows, lift: s.lift, rage, flip: s.dir < 0 && !c.sideways, ground, visitors });
         });
         return { lines: Array(rowsOut).fill(blankLine), image: { row: 0, rows: stripRows, col: 1, data } };
       }
       const grid = Array.from({ length: SPR_H / 4 + 1 }, () => Array.from({ length: W }, () => ' '));
       for (let col = 1; col < W - 1; col++) grid[SPR_H / 4][col] = `${ESC}2m▔${ESC}22m`;
+      const sky = Array.from({ length: W }, () => ' '); // the blank line above, where high visitors fly
+      for (const v of flock.sprites(s.tick)) { // 2 cells high, behind the creature
+        const padded = [...v.rows, '.......'].map((r) => `${r}.`), top = v.alt > 0.5 ? -1 : 0;
+        octantRows(v, padded.concat(Array(8 - padded.length).fill('........'))).forEach((cells, r) => cells.forEach((cell, col) => {
+          const X = Math.round(v.x) + col, line = r + top === -1 ? sky : grid[r + top];
+          if (!cell || X < 1 || X >= W - 1) return;
+          line[X] = `${ESC}38;5;${cell.fg}m${cell.bg != null ? `${ESC}48;5;${cell.bg}m` : ''}${cell.ch}${ESC}0m`;
+        }));
+      }
       cached(poseKey, () => octantRows(c, pixels(c, pose))).forEach((cells, r) => cells.forEach((cell, col) => {
         if (!cell) return;
         const bg = cell.bg != null ? `${ESC}48;5;${cell.bg}m` : '';
         grid[r][s.x + col] = `${ESC}38;5;${cell.fg}m${bg}${cell.ch}${ESC}0m`;
       }));
-      return { lines: [blankLine, ...grid.map((row) => row.join(''))], image: null };
+      return { lines: [sky.join(''), ...grid.map((row) => row.join(''))], image: null };
     },
 
     get state() { return { ...s, stage, creature: CREATURES[index].name }; },
