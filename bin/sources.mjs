@@ -251,6 +251,23 @@ export async function sessionsOverview(list, currentPid) {
   return rows.sort((a, b) => (b.current - a.current) || (RANK[a.state] - RANK[b.state]) || (b.since - a.since));
 }
 
+// ── New session: a worktree of the repo at the default branch, detached so /start makes the branch there ─
+// It goes beside the main checkout in <repo>.worktrees/<slug>, named after the problem's first words.
+export async function newWorktree(cwd, problem) {
+  const common = (await run('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd }))?.trim();
+  if (!common) return { ok: false, message: 'Not a git repo' };
+  const main = basename(common) === '.git' ? dirname(common) : common.replace(/\.git$/, '');
+  await run('git', ['fetch', '--quiet', 'origin'], { cwd, timeout: 20_000 });
+  const base = await defaultBranch(cwd);
+  if (!base) return { ok: false, message: 'No main branch' };
+  const slug = problem.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(' ').slice(0, 4).join('-').slice(0, 40) || 'session';
+  const root = join(dirname(main), `${basename(main)}.worktrees`);
+  let dir = join(root, slug);
+  for (let n = 2; await exists(dir); n++) dir = join(root, `${slug}-${n}`);
+  const added = await run('git', ['worktree', 'add', '--detach', dir, base], { cwd, timeout: 30_000 });
+  return added == null ? { ok: false, message: "Couldn't add the worktree" } : { ok: true, dir, base };
+}
+
 // The session this rail belongs to: newest live CLI session in the rail's folder (or a parent/child of it).
 export function currentSession(list, cwd) {
   const related = (p) => p && (p === cwd || cwd.startsWith(p + '/') || p.startsWith(cwd + '/'));

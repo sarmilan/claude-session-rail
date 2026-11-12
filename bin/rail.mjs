@@ -71,7 +71,7 @@ const bar = (pct, n = 8) => {
 
 // ── Actions ────────────────────────────────────────────────────────────────────
 const ui = { sel: null, open: { environment: true, context: false, connectors: false, more: false, settings: false }, scroll: 0, tick: 0,
-  overlay: null, toast: null };
+  overlay: null, toast: null, input: null };
 // Inline images only in a live iTerm2 pane; --frame output (and other terminals) get text octants.
 const iterm = process.env.TERM_PROGRAM === 'iTerm.app' || process.env.LC_TERMINAL === 'iTerm2';
 // The chosen creature is remembered across rails; `c` cycles through them.
@@ -135,6 +135,32 @@ const goTo = (s) => {
   if (s.current) return toast('This is the current session');
   if (!s.tty) return agentMenu(s);
   pane(['focus', s.tty], (state) => { if (state !== 'focused') toast(state === 'not-found' ? 'Not an iTerm tab' : "Couldn't switch"); });
+};
+
+// + new: the problem typed on the bottom line becomes a worktree and a new tab running claude "/start <problem>".
+const sq = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
+const startSession = async (problem) => {
+  toast('Adding a worktree…'); draw();
+  const wt = await src.newWorktree(cwd, problem);
+  if (!wt.ok) { toast(wt.message); return draw(); }
+  const command = `cd ${sq(wt.dir)} && SESSION_RAIL_STARTED=1 claude ${sq(`/start ${problem}`)}`;
+  const here = data.overview?.find((s) => s.current)?.tty ?? 'none';
+  pane(['tab', here, command], (state) => toast(state === 'opened' ? `Started in ${src.tildify(wt.dir)}` : "Couldn't open a tab"));
+};
+const typeKey = (k) => {
+  if (k === '\x1b') { ui.input = null; return; }
+  if (k === '\r') {
+    const problem = ui.input.text.trim();
+    ui.input = null;
+    if (problem) startSession(problem);
+    return;
+  }
+  if (k.startsWith('\x1b')) return; // arrows and other escape sequences
+  // Keys can arrive several to a read (fast typing, a paste): backspaces apply in order, a pasted newline is a space.
+  for (const ch of k) {
+    if (ch === '\x7f' || ch === '\b') ui.input.text = [...ui.input.text].slice(0, -1).join('');
+    else ui.input.text += ch < ' ' ? ' ' : ch;
+  }
 };
 
 const agentMenu = (a) => {
@@ -229,7 +255,8 @@ function buildMain(W) {
   // Sessions: every Claude on this Mac, this one first, then those needing you. Enter jumps to its tab.
   rule();
   const list = data.overview ?? [];
-  pair('Sessions', list.length ? String(list.length) : '…', undefined, { leftStyle: bold, rightStyle: dim });
+  pair(`Sessions ${dim(list.length ? String(list.length) : '…')}`, '+ new', item('new-session', () => { ui.input = { text: '' }; }),
+    { leftStyle: bold, rightStyle: (s) => fg(C.accent, s) });
   const STATE = {
     busy: [() => fg(C.accent, ui.tick % 2 ? '●' : '◉'), (s) => fg(C.accent, s)],
     waiting: [() => fg(C.yellow, '◆'), (s) => fg(C.yellow, s)],
@@ -471,6 +498,15 @@ function frame(W, H) {
   for (const r of settings?.rows ?? []) { lines.push(right(`${r.label}  ${dim(r.value)}`, r.id)); viewIds.push(r.id); }
   // The bottom line: a toast on the left, the settings selector on the right. It also keeps the mascot's
   // image off the last row: drawing an image moves the cursor below it, which would scroll the screen there.
+  if (ui.input) {
+    // + new's prompt replaces the bottom line; long text scrolls so the cursor stays in view.
+    const prompt = fg(C.accent, ' New session: ');
+    const room = W - width(prompt) - 2;
+    const t = clean(ui.input.text), shown = width(t) > room ? '…' + [...t].slice(-(room - 1)).join('') : t;
+    lines.push(prompt + (t ? shown + '▌' : '▌' + dim(trunc(' the problem · esc cancel', room - 1))));
+    viewIds.push(null);
+    return { lines, items, viewIds, image };
+  }
   const label = settings ? fg(C.accent, settings.toggle.label) : '';
   const toastText = ui.toast && ui.toast.until > Date.now() ? trunc(` ${ui.toast.text}`, W - width(label) - 2) : '';
   lines.push(fg(C.green, toastText) + (label ? right(label, 'settings').slice(width(toastText)) : ''));
@@ -564,6 +600,7 @@ const selectedPr = () => {
 
 const handleKey = (k) => {
   if (k === '\x03') return quit();
+  if (ui.input) return typeKey(k);
   if (ui.overlay) {
     if (k === '\x1b' || k === 'q' || k === '\x1b[D' || k === 'h') return closeOverlay();
     if (ui.overlay.kind === 'log') {

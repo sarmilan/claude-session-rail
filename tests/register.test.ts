@@ -177,6 +177,15 @@ test('/start runs once per session, even when session.start runs again after a r
   expect(calls.filter(c => c === '/start').length).toBe(1)
 })
 
+test('a session started by the rail\'s + new does not run /start again', async ($, on) => {
+  const calls = harness(on, 'opened', ['help', 'start'])
+  on('env.get', (_, e) => ({ value: e.name === 'SESSION_RAIL_STARTED' ? '1' : undefined }))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await new Promise(r => setTimeout(r, 10))
+  expect(calls).toContain('pane.mjs layout')
+  expect(calls).not.toContain('/start')
+})
+
 test('a command name the engine refuses does not stop the panels opening', async ($, on) => {
   const calls: string[] = []
   on('command.register', (_, e) => (e.name === 'desk' ? { deny: 'that name is taken' } : { value: { command: e.name } }))
