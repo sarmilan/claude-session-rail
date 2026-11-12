@@ -3,6 +3,7 @@
 //   node rail.mjs                 interactive panel (run it in a narrow iTerm pane)
 //   node rail.mjs --json          print the collected state once
 //   node rail.mjs --frame [W H]   print one rendered frame (for testing, no TTY needed)
+//   --tab session|git             open on that tab (otherwise the session's saved tab, or Session)
 //   --cwd DIR                     use DIR instead of the current folder
 import { execFile, spawn } from 'node:child_process';
 import { openSync, readSync, fstatSync, closeSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
@@ -20,13 +21,14 @@ const pinnedPid = Number(flag('--pid')) || null; // the Claude process this rail
 const taskIndex = new src.TaskIndex();
 
 // ── Data ───────────────────────────────────────────────────────────────────────
-const data = { env: null, account: null, usage: [], agents: [], overview: null, current: null, stats: null, connectors: null, prs: null, activity: null,
+const data = { env: null, account: null, usage: [], agents: [], overview: null, current: null, stats: null, connectors: null, prs: null, worktrees: null, activity: null,
   tasks: { running: [], finished: 0, done: [] } };
 
 const loaders = {
   async fast() {
     data.agents = await src.sessions();
     data.current = (pinnedPid && data.agents.find((a) => a.pid === pinnedPid)) || src.currentSession(data.agents, cwd);
+    restoreTab(data.current?.sessionId);
     const files = await src.sessionFiles(data.current);
     await taskIndex.update(files.transcriptPath);
     data.stats = taskIndex.context();
@@ -36,7 +38,9 @@ const loaders = {
   async env() { data.env = await src.environment(cwd); },
   async sessions() { data.overview = await src.sessionsOverview(data.agents, data.current?.pid); },
   async account() { [data.account, data.usage] = await Promise.all([src.account(), src.usage()]); },
-  async prs() { data.prs = await src.prs(cwd); },
+  // The PRs and worktree cards only show on Git: off it, load them once and leave them (setTab refreshes on arrival).
+  async prs() { if (ui.tab !== 'git' && data.prs) return; data.prs = await src.prs(cwd); },
+  async worktrees() { if (ui.tab !== 'git' && data.worktrees) return; data.worktrees = { ...(await src.worktrees(cwd)), at: Date.now() }; },
   async connectors() { data.connectors = await src.connectors(); },
 };
 
@@ -70,8 +74,44 @@ const bar = (pct, n = 8) => {
 };
 
 // ── Actions ────────────────────────────────────────────────────────────────────
+const TABS = ['session', 'git'];
+const TAB_LABELS = { session: 'Session', git: 'Git' };
+// Each rail remembers its own tab, in <session id>.rail.json beside the session's activity file, restored once
+// the session is known. --frame (and --tab) open where they say, Session by default.
+const isFrame = args.includes('--frame');
+const startTab = flag('--tab');
+const railFile = (sid) => join(homedir(), '.claude', 'session-rail', 'activity', `${sid}.rail.json`);
+let tabRestored = isFrame || TABS.includes(startTab), tabSwitched = false;
+const showTab = (t) => { ui.tab = t; ui.scroll = 0; ui.sel = null; }; // each tab starts at its top
+const saveTab = (sid) => {
+  if (!isFrame && sid) try { mkdirSync(dirname(railFile(sid)), { recursive: true }); writeFileSync(railFile(sid), JSON.stringify({ tab: ui.tab })); } catch {}
+};
+const restoreTab = (sid) => {
+  if (tabRestored || !sid) return;
+  tabRestored = true;
+  if (tabSwitched) return saveTab(sid); // a switch before the session was known wins over the saved tab, and is kept
+  try { const t = JSON.parse(readFileSync(railFile(sid), 'utf8')).tab; if (TABS.includes(t) && t !== ui.tab) showTab(t); } catch {}
+};
 const ui = { sel: null, open: { environment: true, context: false, connectors: false, more: false, settings: false }, scroll: 0, tick: 0,
-  overlay: null, toast: null, input: null };
+  overlay: null, toast: null, input: null, tab: TABS.includes(startTab) ? startTab : 'session' };
+// Switch tabs; --frame doesn't touch the saved one.
+const setTab = (t) => {
+  if (t === ui.tab) return;
+  tabSwitched = true;
+  showTab(t);
+  saveTab(data.current?.sessionId);
+  // The worktree cards and PR checks refresh every 60s, only on Git; arriving on Git brings them up to date (through the runner, so it
+  // can't overlap a scheduled load), unless they loaded in the last 10s, so flipping tabs doesn't call GitHub each time.
+  if (t === 'git' && !isFrame && Date.now() - (data.worktrees?.at ?? 0) > 10_000) { runners.worktrees(); runners.prs(); }
+};
+const stepTab = (d) => setTab(TABS[(TABS.indexOf(ui.tab) + TABS.length + d) % TABS.length]);
+const otherTab = () => stepTab(1);
+// The tab under screen column x (1-based; column 1 is the frame's left pad, tabs are two spaces apart), else null.
+const tabAt = (x) => {
+  let from = 2;
+  for (const t of TABS) { const to = from + TAB_LABELS[t].length; if (x >= from && x < to) return t; from = to + 2; }
+  return null;
+};
 // Inline images only in a live iTerm2 pane; --frame output (and other terminals) get text octants.
 const iterm = process.env.TERM_PROGRAM === 'iTerm.app' || process.env.LC_TERMINAL === 'iTerm2';
 // The chosen creature is remembered across rails; `c` cycles through them.
@@ -107,7 +147,7 @@ const menu = (title, options, info = []) => {
 const viewLog = (task) => { ui.overlay = { kind: 'log', task, scroll: 0, back: ui.overlay?.back ?? ui.sel }; };
 const closeOverlay = () => { if (ui.overlay) ui.sel = ui.overlay.back; ui.overlay = null; };
 
-const prMenu = (p) => menu(`#${p.number} ${p.title}`, [
+const prMenu = (p) => menu(`#${p.number} ${clean(p.title)}`, [
   { label: 'Open in browser', key: 'o', run: () => launch('open', [p.url], `Opened #${p.number}`) },
   { label: 'Copy link', key: 'y', run: () => copy(p.url, `link to #${p.number}`) },
   { label: 'Copy branch name', run: () => copy(p.headRefName, 'branch name') },
@@ -144,9 +184,29 @@ const startSession = async (problem) => {
   const wt = await src.newWorktree(cwd, problem);
   if (!wt.ok) { toast(wt.message); return draw(); }
   const command = `cd ${sq(wt.dir)} && SESSION_RAIL_STARTED=1 claude ${sq(`/start ${problem}`)}`;
-  const here = data.overview?.find((s) => s.current)?.tty ?? 'none';
-  pane(['window', here, command], (state) => toast(state === 'opened' ? `Started in ${src.tildify(wt.dir)}` : "Couldn't open a window"));
+  openWindow(command, `Started in ${src.tildify(wt.dir)}`);
 };
+// A new iTerm window beside this session's, running command.
+const openWindow = (command, ok) => pane(['window', data.overview?.find((s) => s.current)?.tty ?? 'none', command],
+  (state) => toast(state === 'opened' ? ok : "Couldn't open a window"));
+// A worktree card's menu: its session (or a new window running claude there), its PR and failing check, its branch.
+const prFor = (branch) => (branch && data.prs?.ok ? data.prs.items.find((p) => p.headRefName === branch) : null);
+const failing = (p) => p?.checks.find((c) => c.state === 'fail' && c.url);
+const worktreeMenu = (w) => {
+  // A session belongs to the deepest worktree holding its cwd (a worktree can sit inside another's folder).
+  const inside = (dir, p) => dir === p || dir?.startsWith(p + '/');
+  const owner = (dir) => (data.worktrees?.items ?? []).filter((x) => inside(dir, x.path)).sort((a, b) => b.path.length - a.path.length)[0]?.path;
+  const s = data.overview?.find((o) => owner(o.cwd) === w.path);
+  const p = prFor(w.branch), bad = failing(p), name = clean(w.name);
+  menu(name, [
+    s ? { label: s.current ? 'This session' : 'Go to session', run: () => goTo(s) }
+      : { label: 'Open claude here', run: () => openWindow(`cd ${sq(w.path)} && claude`, `Opened claude in ${name}`) },
+    ...(p ? [{ label: `Open PR #${p.number}`, key: 'o', run: () => launch('open', [p.url], `Opened #${p.number}`) }] : []),
+    ...(bad ? [{ label: `Open failing check: ${clean(bad.name)}`, run: () => launch('open', [bad.url], 'Opened the check') }] : []),
+    ...(w.branch ? [{ label: 'Copy branch name', key: 'y', run: () => copy(w.branch, 'branch name') }] : []),
+  ], [clean(src.tildify(w.path)), clean(w.branch ?? `detached at ${w.sha}`)]);
+};
+
 const typeKey = (k) => {
   if (k === '\x1b') { ui.input = null; return; }
   if (k === '\r') {
@@ -265,8 +325,107 @@ function buildMain(W) {
   const heading = (t) => line(bold(t));
   const caret = (open) => (open ? '▾' : '▸');
 
+  const env = data.env;
+
+  // Git: worktree cards, this branch's commits, its PR's checks, then the open pull requests.
+  // `spread` lays out pieces already truncated to fit: styled left, styled right, padded between.
+  const spread = (left, right = '', id) => line(left + ' '.repeat(Math.max(right ? 1 : 0, inner - width(left) - width(right))) + right, id);
+  const CHECK = { pass: [C.green, '✓'], fail: [C.red, '✗'], pending: [C.yellow, '◌'] };
+  const badge = (p) => {
+    if (!p) return '';
+    const states = p.checks.map((c) => c.state);
+    const st = states.includes('fail') ? 'fail' : states.includes('pending') ? 'pending' : states.length ? 'pass' : null;
+    return `#${p.number}` + (st ? ' ' + fg(CHECK[st][0], CHECK[st][1]) : '');
+  };
+  const gitTab = () => {
+    const wt = data.worktrees;
+    // Header: the repo, its default branch, and how fresh the cards are.
+    const repo = trunc(clean(wt?.repo ?? env?.repo ?? '…'), inner - 6);
+    const baseName = wt?.base ? trunc(clean(wt.base), inner - 6 - width(repo) - 3) : '';
+    spread(repo + (baseName ? ' · ' + dim(baseName) : ''), wt?.at ? dim(`↻ ${ago(wt.at)}`) : '');
+    rule();
+
+    // Worktrees: this one first, then git's order.
+    const cards = [...(wt?.items ?? [])].sort((a, b) => b.current - a.current);
+    heading(`Worktrees ${dim(wt ? String(cards.length) : '…')}`);
+    if (wt && !wt.ok) line(dim('Not a git repo'));
+    for (const w of cards) {
+      const id = item(`wt:${w.path}`, () => worktreeMenu(w));
+      const where = clean(w.branch ?? `detached ${w.sha}`);
+      const right = trunc(where, Math.max(8, Math.floor(inner / 2)));
+      const name = trunc(clean(w.name), inner - 4 - width(right) - 1);
+      spread(`${w.current ? fg(C.accent, '▸ ●') : dim('  ○')} ${w.current ? bold(name) : name}`, dim(right), id);
+      const p = prFor(w.branch);
+      const sync = w.merged ? fg(C.green, '✓ merged')
+        : w.ahead == null ? '' : !w.ahead && !w.behind ? 'up to date'
+        : [w.ahead && fg(C.green, `↑${w.ahead}`), w.behind && fg(C.yellow, `↓${w.behind}`)].filter(Boolean).join(' ');
+      // This worktree's dirt from the environment, which refreshes every 5s rather than every minute.
+      const dirty = w.current && env?.isGit ? env.dirty : w.dirty;
+      const dirt = dirty == null ? fg(C.red, 'missing') : dirty ? `${dirty} changed` : 'clean';
+      const parts = [sync, dirt, badge(p)].filter(Boolean).join(dim(' · '));
+      spread(`    ${width(parts) > inner - 4 ? dim(trunc(clean(parts), inner - 4)) : parts}`, '', id);
+    }
+    rule();
+
+    // This branch: uncommitted work, its commits newest first, and the default-branch commit it forked from.
+    if (env?.isGit) {
+      const diff = env.added || env.removed ? `${fg(C.green, `+${env.added}`)} ${fg(C.red, `−${env.removed}`)}` : '';
+      const label = trunc(clean(env.branch ?? '(detached)'), inner - 12 - (diff ? width(diff) + 1 : 0));
+      spread(`${bold('This branch')} ${dim(label)}`, diff, env.branch ? item('branch', () => branchMenu(env)) : undefined);
+      if (env.dirty) line(fg(C.yellow, '◌') + dim(` ${env.dirty} uncommitted`));
+      for (const c of env.commits ?? []) {
+        const age = dim(ago(c.at)), tag = c.fork && env.base ? `  ${fg(C.blue, trunc(clean(env.base), Math.floor(inner / 3)))}` : '';
+        const subject = trunc(clean(c.subject), inner - 2 - width(c.sha) - 1 - width(tag) - width(age) - 1);
+        if (c.fork && env.moreCommits) line(dim(`┆ ${env.moreCommits} more`));
+        spread(`${c.fork ? fg(C.blue, '◆') : fg(C.accent, '●')} ${dim(c.sha)} ${subject}${tag}`, age);
+      }
+      rule();
+    }
+
+    // This branch's PR and its checks, failing first; Enter opens a check's run.
+    const mine = prFor(env?.branch);
+    if (mine) {
+      heading(`PR #${mine.number} ${dim(`· ${mine.isDraft ? 'draft' : 'open'}`)}`);
+      const order = { fail: 0, pending: 1, pass: 2 };
+      const checks = [...mine.checks].sort((a, b) => order[a.state] - order[b.state]);
+      if (!checks.length) line(dim('No checks'));
+      const seen = {};
+      checks.forEach((c) => {
+        const [color, mark] = CHECK[c.state];
+        const key = `${c.name}\x1f${c.url}`, n = (seen[key] = (seen[key] ?? 0) + 1); // ids must be unique or j/k sticks on the repeat
+        const note = { fail: 'failing', pending: 'running', pass: '' }[c.state];
+        spread(`${fg(color, mark)} ${trunc(clean(c.name), inner - 2 - (note ? width(note) + 1 : 0))}`, dim(note),
+          c.url ? item(`check:${key}${n > 1 ? `#${n}` : ''}`, () => launch('open', [c.url], 'Opened the check')) : undefined); // names repeat across workflows; the run's url keeps the selection when the order changes
+      });
+      rule();
+    }
+
+    // Pull requests: yours, open in this repo
+    heading('Pull requests');
+    const pr = data.prs;
+    if (!pr) line(dim('Loading…'));
+    else if (!pr.ok) line(dim('GitHub unavailable'));
+    else if (!pr.items.length) line(dim('No open pull requests'));
+    else {
+      for (const p of ui.open.more ? pr.items : pr.items.slice(0, 5)) {
+        const id = item(`pr:${p.number}`, () => prMenu(p));
+        pair(`⑂ ${clean(p.title)}`, '⋯', id, { leftStyle: (s) => fg(p.isDraft ? C.gray : C.purple, s[0]) + s.slice(1), rightStyle: dim });
+        pair(`  ${clean(data.worktrees?.repo ?? env?.repo ?? '')} #${p.number}${p.isDraft ? ' · draft' : ''}`, '', id, { leftStyle: dim });
+      }
+      if (pr.items.length > 5) line(dim(ui.open.more ? 'Show less' : 'Show more'), item('more', () => { ui.open.more = !ui.open.more; }));
+    }
+    rule();
+  };
+
+  // Tabs: the active one bold and underlined in orange. Enter flips; a click picks by column (tabAt).
+  const labels = TABS.map((t) => [t, TAB_LABELS[t]]);
+  spread(labels.map(([t, l]) => (t === ui.tab ? bold(fg(C.accent, l)) : dim(l))).join('  '), dim('⇥'), item('tabs', otherTab));
+  const under = labels.map(([t, l]) => (t === ui.tab ? fg(C.accent, '━'.repeat(l.length)) : dim('─'.repeat(l.length)))).join(dim('──'));
+  line(under + dim('─'.repeat(Math.max(0, inner - width(labels.map(([, l]) => l).join('  '))))));
+
+  if (ui.tab === 'git') { gitTab(); return { rows, items }; }
+
   // Sessions: every Claude on this Mac, this one first, then those needing you. Enter jumps to its tab.
-  rule();
   const list = data.overview ?? [];
   pair(`Sessions ${dim(list.length ? String(list.length) : '…')}`, '+ new', item('new-session', () => { ui.input = { text: '' }; }),
     { leftStyle: bold, rightStyle: (s) => fg(C.accent, s) });
@@ -287,7 +446,6 @@ function buildMain(W) {
   }
 
   // Environment
-  const env = data.env;
   rule();
   pair(`Environment ${caret(ui.open.environment)}`, '', item('environment', () => { ui.open.environment = !ui.open.environment; }),
     { leftStyle: bold });
@@ -345,22 +503,6 @@ function buildMain(W) {
   if (ui.open.connectors) for (const c of cn?.items ?? []) {
     pair(`  ${c.ok ? '✔' : '✗'} ${c.name}`, c.ok ? '' : c.state, undefined,
       { leftStyle: (s) => s.replace(/^( {2})(.)/, (m, sp, mark) => sp + fg(c.ok ? C.green : C.red, mark)), rightStyle: dim });
-  }
-  rule();
-
-  // Changes (open PRs)
-  heading('Changes');
-  const pr = data.prs;
-  if (!pr) line(dim('Loading…'));
-  else if (!pr.ok) line(dim('GitHub unavailable'));
-  else if (!pr.items.length) line(dim('No open pull requests'));
-  else {
-    for (const p of ui.open.more ? pr.items : pr.items.slice(0, 5)) {
-      const id = item(`pr:${p.number}`, () => prMenu(p));
-      pair(`⑂ ${p.title}`, '⋯', id, { leftStyle: (s) => fg(p.isDraft ? C.gray : C.purple, s[0]) + s.slice(1), rightStyle: dim });
-      pair(`  ${data.env?.repo ?? ''} #${p.number}${p.isDraft ? ' · draft' : ''}`, '', id, { leftStyle: dim });
-    }
-    if (pr.items.length > 5) line(dim(ui.open.more ? 'Show less' : 'Show more'), item('more', () => { ui.open.more = !ui.open.more; }));
   }
   rule();
 
@@ -483,7 +625,8 @@ function frame(W, H) {
   const bodyH = H - 1 - (withMascot ? mascot.rows : 0) - (settings?.rows.length ?? 0);
   const { rows, items } = ui.overlay ? buildOverlay(W, bodyH) : buildMain(W);
   if (settings) items.push(...settings.rows, settings.toggle);
-  if (!items.some((i) => i.id === ui.sel)) ui.sel = items[ui.overlay?.kind === 'menu' && items.length > 1 ? 1 : 0]?.id ?? null;
+  // The first row, past a menu's ‹ back or the tab bar.
+  if (!items.some((i) => i.id === ui.sel)) ui.sel = items[(ui.overlay?.kind === 'menu' || items[0]?.id === 'tabs') && items.length > 1 ? 1 : 0]?.id ?? null;
   const scroll = ui.overlay ? 0 : (() => {
     const first = rows.findIndex((r) => r.id === ui.sel);
     const last = rows.findLastIndex((r) => r.id === ui.sel);
@@ -586,7 +729,7 @@ const refresh = (name) => {
   let busy = false;
   return async () => { if (busy) return; busy = true; try { await loaders[name](); } catch {} busy = false; draw(); };
 };
-const schedule = { fast: 1000, sessions: 3000, env: 5000, account: 5000, prs: 60_000, connectors: 300_000 };
+const schedule = { fast: 1000, sessions: 3000, env: 5000, account: 5000, prs: 60_000, worktrees: 60_000, connectors: 300_000 };
 const runners = Object.fromEntries(Object.keys(schedule).map((k) => [k, refresh(k)]));
 for (const [k, ms] of Object.entries(schedule)) { runners[k](); setInterval(runners[k], ms); }
 setInterval(() => { ui.tick++; draw(); }, 1000);
@@ -632,6 +775,8 @@ const handleKey = (k) => {
     if (k === 'q') return quit();
     if (k === 'r') { Object.values(runners).forEach((f) => f()); return toast('Refreshing…'); }
     if (k === 'c') return nextCreature();
+    if (k === '\t' || k === ']') return stepTab(1);
+    if (k === '\x1b[Z' || k === '[') return stepTab(-1);
     if (ui.sel === 'font' && (k === '\x1b[D' || k === 'h')) return stepFont(-1)();
     if (ui.sel === 'font' && (k === '\x1b[C' || k === 'l')) return stepFont(1)();
     if (ui.sel === 'pet' && (k === '\x1b[D' || k === 'h')) return nextCreature(-1);
@@ -652,6 +797,7 @@ const handleMouse = (b, x, y) => {
   if (b !== 0) return;                     // left click only
   const id = current.viewIds[y - 1];
   if (!id) return;
+  if (id === 'tabs') { const t = tabAt(x); return t ? setTab(t) : otherTab(); } // a label picks its tab, the ⇥ flips
   ui.sel = id;
   activate(id);
 };
