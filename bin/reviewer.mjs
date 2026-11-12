@@ -10,7 +10,7 @@ import { spawn } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { briefCore } from './brief.mjs';
-import { KEEP_RUNS, STATUSES, applyChecks, openFindings, staffCheck, trackFindings, uncheckedFixes } from './cadence.mjs';
+import { STATUSES, applyChecks, openFindings, staffCheck, keptRuns, trackFindings, uncheckedFixes } from './cadence.mjs';
 import { branchFiles, readBrief, reviewsPath, run as exec } from './sources.mjs';
 
 export const KINDS = ['simpler', 'scope', 'cost', 'goal-gap', 'elegance'];
@@ -157,7 +157,7 @@ export async function saveReviews(path, runs) {
     await mkdir(dirname(path), { recursive: true });
     // Written beside it and renamed over it, so a reader never gets half a file.
     const tmp = `${path}.${process.pid}.tmp`;
-    await writeFile(tmp, JSON.stringify({ runs: runs.slice(0, KEEP_RUNS) }, null, 1));
+    await writeFile(tmp, JSON.stringify({ runs: keptRuns(runs) }, null, 1));
     await rename(tmp, path);
     return true;
   } catch { return false; }
@@ -167,8 +167,8 @@ export async function saveReviews(path, runs) {
 // Run an approach review of the branch in `cwd` and save it: the run records the commit it reviewed and
 // whether the tree was dirty, its findings start open, and its checks mark the earlier findings. `notes`
 // ([{ id, note }]) are Claude's replies to earlier findings it chose not to apply. The desk passes the brief
-// and files it already has. Resolves the saved run with the branch's runs, or { error }.
-export async function reviewAndSave(cwd, { final = false, notes = [], brief, files, signal } = {}) {
+// and files it already has, and `manual` (its on-demand review isn't a chunk's). Resolves the saved run with the branch's runs, or { error }.
+export async function reviewAndSave(cwd, { final = false, manual = false, notes = [], brief, files, signal } = {}) {
   const path = await reviewsPath(cwd);
   brief ??= await readBrief(cwd);
   if (!path || !brief?.text) return { error: 'This branch has no brief to review' };
@@ -181,7 +181,7 @@ export async function reviewAndSave(cwd, { final = false, notes = [], brief, fil
   const run = await reviewApproach(cwd, { brief, files, earlier, codeFindings, final, signal });
   if (run.error === 'Review cancelled') return run;
   const { checks = [], ...rest } = run;
-  const saved = { ...rest, type: 'approach', final, head: head?.trim() ?? null, dirty: status === null || Boolean(status.trim()), // unknown counts as dirty
+  const saved = { ...rest, type: 'approach', final, ...(manual ? { manual: true } : {}), head: head?.trim() ?? null, dirty: status === null || Boolean(status.trim()), // unknown counts as dirty
     findings: run.error ? [] : trackFindings(run.findings, run.startedAt) };
   // Read the file again: the review took a while, and the hooks may have recorded a code review meanwhile.
   // A failed run is kept only as the newest, to say why; it never pushes real reviews out.

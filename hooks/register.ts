@@ -3,7 +3,7 @@ import { approvalRecord, briefFile, briefStatus, NO_BRIEF_BRANCHES, parseBrief }
 import * as act from './activity.ts'
 import { goAhead } from './goahead.ts'
 import * as compact from './compact.ts'
-import { codeRun, gateReason as reviewWait, KEEP_RUNS, mergesPr, reportFromText, reviewsFile } from '../bin/cadence.mjs'
+import { codeRun, gateReason as reviewWait, keptRuns, mergesPr, reportFromText, reviewsFile } from '../bin/cadence.mjs'
 
 // The controller (bin/pane.mjs) does the iTerm work; this module only decides when to call it.
 // It runs through sh so the user's PATH finds `node`; the script path is passed as an argument,
@@ -178,14 +178,14 @@ const recordCodeReview = async ($: EngineInterface, report: unknown) => {
   const runs = [codeRun(report, { head: commit, dirty, at: Date.now() }), ...earlier]
   // Written beside it and renamed over it, so the desk never reads half a file.
   const tmp = `${runsPath(b)}.${Date.now()}.tmp`
-  await $.fs.write(tmp, JSON.stringify({ runs: runs.slice(0, KEEP_RUNS) }, null, 1))
+  await $.fs.write(tmp, JSON.stringify({ runs: keptRuns(runs) }, null, 1))
   await $.process.run(['mv', '-f', tmp, runsPath(b)], { timeoutMs: 5_000 })
 }
 
 // What a run's prompt is told: end with a findings block that carries the run's token, so the plugin knows
 // the answer is this run's report however it ran (forked or inline, in the main loop or a subagent).
 const reportOutcomes = (token: string) =>
-  `session-rail: this branch's commits wait for this review. End your final message with a \`\`\`json block holding {"run": "${token}", "findings": [...]}: the findings after --fix, each given an "outcome": "fixed", "skipped" or "no_change_needed" (an empty list when there were none).`
+  `session-rail: this branch's merge waits for this review. End your final message with a \`\`\`json block holding {"run": "${token}", "findings": [...]}: the findings after --fix, each given an "outcome": "fixed", "skipped" or "no_change_needed" (an empty list when there were none).`
 
 // A /code-review run on a gated branch, armed when the Skill tool runs it or the person types it (a skill
 // merely preloaded into an agent arms nothing). It gets a token, its first prompt asks for the token in the
@@ -450,7 +450,7 @@ export const register: Register = on => {
     return deny ? { deny } : next(e)
   }).catch(($, e, next) => next(e))
 
-  // The review cadence: commits and merges wait for the reviews, and /code-review's report is recorded.
+  // The review cadence: merges wait for the reviews, and /code-review's report is recorded.
   on('tool.call', { tool: 'mcp__session-rail__review_approach' }, async ($, e) => ({ result: await runReview($, e as never) }) as never)
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const deny = await reviewGate($, e.command)

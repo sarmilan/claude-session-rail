@@ -507,6 +507,11 @@ test('cadence: a code finding the approach review reopened outlives the next /co
   expect(cadence.openFindings(settled).code).toEqual([])
 })
 
+test('cadence: trimming the record keeps an older run that still holds an open finding', () => {
+  const runs = Array.from({ length: cadence.KEEP_RUNS + 2 }, (_, i) => approachRun('h', false, i === cadence.KEEP_RUNS + 1 ? ['open'] : []))
+  expect(cadence.keptRuns(runs).length).toBe(cadence.KEEP_RUNS + 1)
+})
+
 test('cadence: only gh pr merge is gated', () => {
   expect(cadence.mergesPr('gh pr merge 24 --merge && git checkout main')).toBe(true)
   expect(cadence.mergesPr('(gh pr merge 24)')).toBe(true)
@@ -526,6 +531,8 @@ test('cadence: a merge needs a code review after the chunks, then a final approa
     expect(cadence.gateReason([f, code, chunk].sort((x, y) => y.startedAt - x.startedAt), { head: 'h2' })).toContain('final: true')
   // A non-final approach review after the code review is a chunk's review: the code review is stale again.
   expect(cadence.gateReason([{ ...final, final: false }, code, chunk], { head: 'h2' })).toContain("/code-review hasn't run")
+  // One run from the desk on demand isn't a chunk's review.
+  expect(cadence.gateReason([{ ...final, final: false, manual: true, startedAt: 25 }, final, code, chunk], { head: 'h2' })).toBe(null)
   // Open findings block it, with the two-round cap in the message.
   const r = cadence.gateReason([{ ...approachRun('h2', false, ['open']), final: true, startedAt: 20 }, code, chunk], { head: 'h2' })
   expect(r).toContain('1 open finding ("finding 0")')

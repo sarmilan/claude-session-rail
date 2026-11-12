@@ -4,8 +4,9 @@
 // a branch's review record (reviewer.mjs's store): finding statuses, what's still open, and why a merge must
 // wait. Pure, no Node APIs: shared by the hooks, the reviewer and the desk.
 //
-// A run: { type: 'approach' | 'code', startedAt, finishedAt, head, dirty, final?, verdict, summary, error?, findings }.
-// `head` is the commit it reviewed and `dirty` whether there were uncommitted changes. Runs from before the
+// A run: { type: 'approach' | 'code', startedAt, finishedAt, head, dirty, final?, manual?, verdict, summary, error?, findings }.
+// `head` is the commit it reviewed, `dirty` whether there were uncommitted changes, and `manual` an approach
+// review run from the desk (on demand, not a chunk's). Runs from before the
 // cadence have no type (an approach review) and no head.
 // A finding: { id, kind, title, detail, severity, chunk?, file?, line?, status, outcome?, checked?, note? }, `status`
 // one of open, applied, declined; a code finding's `outcome` is its fixer's verdict and `checked` says an approach
@@ -15,6 +16,9 @@ export const STATUSES = ['open', 'applied', 'declined'];
 // The record's file (the same place as sources.reviewsPath) and how many runs it keeps.
 export const reviewsFile = (common, branch) => `${common}/session-rail/reviews/${encodeURIComponent(branch)}.json`;
 export const KEEP_RUNS = 30;
+// The runs to save: the newest KEEP_RUNS, and any older one still holding an open finding, so the gate never
+// loses one by trimming.
+export const keptRuns = (runs) => runs.filter((r, i) => i < KEEP_RUNS || r.findings?.some((f) => f?.status === 'open'));
 export const runType = (r) => (r.type === 'code' ? 'code' : 'approach');
 const tracked = (f) => STATUSES.includes(f.status);
 
@@ -45,7 +49,7 @@ export function codeRun(report, { head, dirty, at }) {
     const status = f.outcome === 'fixed' ? 'applied' : f.outcome === 'no_change_needed' || f.outcome === 'skipped' ? 'declined' : 'open';
     return {
       id: `c${at.toString(36)}-${i}`, kind: typeof f.category === 'string' ? f.category : 'correctness',
-      title: f.short_summary || f.summary, detail: [f.summary, f.failure_scenario].filter(Boolean).join(' '),
+      title: (typeof f.short_summary === 'string' && f.short_summary) || f.summary, detail: [f.summary, f.failure_scenario].filter(Boolean).join(' '),
       severity: 'medium', file: typeof f.file === 'string' ? f.file : null, line: Number.isInteger(f.line) ? f.line : null,
       status, ...(typeof f.outcome === 'string' ? { outcome: f.outcome } : {}),
     };
@@ -106,7 +110,8 @@ export function gateReason(runs, { head }) {
   const done = runs.filter((r) => !r.error);
   const final = done.find((r) => runType(r) === 'approach' && r.final === true && r.head === head && r.dirty === false);
   const code = done.find((r) => runType(r) === 'code');
-  const lastChunkReview = done.find((r) => runType(r) === 'approach' && r.final !== true);
+  // A review run from the desk on demand isn't a chunk's, so it doesn't make the code review stale.
+  const lastChunkReview = done.find((r) => runType(r) === 'approach' && r.final !== true && !r.manual);
   const missing = [];
   if (!code || (lastChunkReview && code.startedAt < lastChunkReview.startedAt))
     missing.push("/code-review hasn't run over the whole branch since the last chunk's review: run /code-review --fix against the default branch, and commit its fixes.");

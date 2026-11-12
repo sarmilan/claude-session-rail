@@ -111,7 +111,7 @@ function startReview() {
   const controller = new AbortController(), path = data.review.path;
   data.review.running = { controller, startedAt: Date.now() };
   void reportDesk({ kind: 'approach review', startedAt: data.review.running.startedAt });
-  reviewAndSave(cwd, { brief: data.brief, files: data.files, signal: controller.signal }).then((run) => {
+  reviewAndSave(cwd, { brief: data.brief, files: data.files, manual: true, signal: controller.signal }).then((run) => {
     data.review.running = null;
     void reportDesk(null);
     // A cancelled run leaves the record alone; a saved one (failed too, so the tab says why) is shown if the
@@ -359,9 +359,10 @@ const button = (label, colour) => `${ESC}48;5;237m` + bold(fg(colour, ` ${label}
 const when = (ms) => new Date(ms).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
 // A finding's status label: open, applied or declined (fixed / no change for a code review's); a finding
 // saved before the cadence shows its severity, or accepted.
+// A code finding whose fixer settled it but the approach review hasn't judged yet: still pending for the gate.
+const toCheck = (f, code) => code && !f.checked && (f.status === 'applied' || f.status === 'declined');
 function statusLabel(f, code) {
-  // A code finding the approach review hasn't judged yet is still pending for the gate.
-  if (code && !f.checked && (f.status === 'applied' || f.status === 'declined'))
+  if (toCheck(f, code))
     return [`◌ ${f.status === 'applied' ? 'fixed' : f.outcome === 'skipped' ? 'skipped' : 'no change'} · to check`, C.yellow];
   if (f.status === 'applied') return [code ? '✓ fixed' : '✓ applied', C.green];
   if (f.status === 'declined') return [code ? (f.outcome === 'skipped' ? '✓ skipped' : '✓ no change') : '✗ declined', C.gray];
@@ -405,7 +406,7 @@ function reviewLines(w) {
     const i = n++, [label, colour] = statusLabel(f, isCode);
     const where = isCode ? `${f.file ? `${f.file}${f.line ? `:${f.line}` : ''} · ` : ''}${f.kind}` : `${f.chunk ? `chunk ${f.chunk} · ` : 'whole plan · '}${f.kind}`;
     push(fg(colour, label) + '  ' + dim(trunc(clean(where), Math.max(4, w - width(label) - 2))), i);
-    const settled = ((f.status === 'applied' || f.status === 'declined') && !(isCode && !f.checked)) || f.acceptedAt;
+    const settled = ((f.status === 'applied' || f.status === 'declined') && !toCheck(f, isCode)) || f.acceptedAt;
     for (const l of wrapRuns(runs(f.title, 'text').map((r) => ({ ...r, s: r.s === 'text' && !settled ? 'bold' : r.s })), w, '    ')) push(settled ? dim(l) : l, i);
     if (f.detail && !settled) for (const l of wrapRuns([{ t: clean(f.detail), s: 'text' }], w, '    ')) push(dim(l), i);
     if (f.note) for (const l of wrapRuns([{ t: `“${clean(f.note)}”`, s: 'text' }], w, '    ')) push(dim(l), i);
