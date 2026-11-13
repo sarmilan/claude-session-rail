@@ -1,18 +1,20 @@
 #!/usr/bin/env node
-// Opens/closes the session rail and the desk as iTerm splits beside the Claude pane that runs this.
+// Opens/closes the session rail and the desk as iTerm splits beside the Claude or Grok pane that runs this.
 //   node pane.mjs layout                                            (fill the screen, open both panels)
 //   node pane.mjs open | close | toggle | status [rail | desk]      (rail if not given)
 //   node pane.mjs focus <tty>                                       (bring the iTerm session on that tty to the front)
 //   node pane.mjs window <tty> <command>                            (a new window over that session's, running command)
-// The layout is Claude │ desk │ rail: the desk splits off Claude (landing left of an open rail), and the
+//   node pane.mjs type <tty> <text>                                 (type text into that session and submit it)
+// The layout is agent │ desk │ rail: the desk splits off the agent (landing left of an open rail), and the
 // rail splits off the desk when the desk is already open. Panels take a fixed share of the window's
-// columns, always from Claude's pane; the window itself never grows.
+// columns, always from the agent's pane; the window itself never grows.
 // Prints one JSON line: { state, ... }. Always exits 0 so callers never break.
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, readdirSync, writeFileSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { findAgent } from './host.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PANES = join(homedir(), '.claude', 'session-rail', 'panes');
@@ -25,21 +27,6 @@ const done = (state, extra = {}) => { console.log(JSON.stringify({ state, ...ext
 
 const sh = (cmd, args) => { try { return execFileSync(cmd, args, { encoding: 'utf8', timeout: 10_000 }).trim(); } catch { return null; } };
 const osa = (script, ...argv) => sh('osascript', ['-e', script, ...argv]);
-
-// Walk up from this process to the `claude` process; its TTY identifies the iTerm pane.
-function findClaude() {
-  let pid = process.ppid;
-  for (let i = 0; i < 12 && pid > 1; i++) {
-    const row = sh('ps', ['-o', 'ppid=,tty=,comm=', '-p', String(pid)]);
-    if (!row) return null;
-    const [ppid, tty, ...comm] = row.trim().split(/\s+/);
-    // Stop at the nearest Claude: one with no terminal (claude -p, the desktop app) owns no pane,
-    // and walking past it would act on an unrelated outer session.
-    if (comm.join(' ').split('/').pop() === 'claude') return tty && tty !== '??' ? { pid, tty: `/dev/${tty}` } : null;
-    pid = Number(ppid);
-  }
-  return null;
-}
 
 // Returns "<session id>,<window id>,<window left edge>".
 const FIND_BY_TTY = `on run argv
@@ -192,6 +179,24 @@ const QUIT = `on run argv
   return ""
 end run`;
 
+// Type into a session and submit it (write text's newline is the default). The watcher uses this for the
+// go-ahead, /compact and /start, which the hook can't submit on its own.
+const TYPE = `on run argv
+  tell application "iTerm2"
+    repeat with w in windows
+      repeat with t in tabs of w
+        repeat with s in sessions of t
+          if tty of s is (item 1 of argv) then
+            tell s to write text (item 2 of argv)
+            return "ok"
+          end if
+        end repeat
+      end repeat
+    end repeat
+  end tell
+  return ""
+end run`;
+
 // Bring the session on a tty to the front: its window, its tab, then the pane itself.
 const FOCUS = `on run argv
   tell application "iTerm2"
@@ -235,12 +240,13 @@ end run`;
 
 const action = process.argv[2] || 'status';
 const itermRunning = () => (sh('ps', ['-axo', 'comm=']) || '').split('\n').some((c) => c.endsWith('/MacOS/iTerm2'));
-// focus and tab act on any pane, so they don't need to run under a Claude.
-if (action === 'focus' || action === 'window') {
+// focus, window and type act on any pane, so they don't need to run under the agent.
+if (action === 'focus' || action === 'window' || action === 'type') {
   const [tty, command] = process.argv.slice(3);
-  if (!tty || (action === 'window' && !command)) done('error', { message: `usage: pane.mjs ${action} <tty>${action === 'window' ? ' <command>' : ''}` });
+  if (!tty || ((action === 'window' || action === 'type') && !command)) done('error', { message: `usage: pane.mjs ${action} <tty>${action === 'focus' ? '' : ' <text>'}` });
   if (!itermRunning()) done('not-iterm');
   if (action === 'focus') done(osa(FOCUS, tty) === 'ok' ? 'focused' : 'not-found');
+  if (action === 'type') done(osa(TYPE, tty, command) === 'ok' ? 'typed' : 'not-found');
   done(osa(NEW_WINDOW, tty, command) === 'ok' ? 'opened' : 'error');
 }
 const which = process.argv[3] || 'rail';
@@ -248,8 +254,11 @@ if (!['layout', 'open', 'close', 'toggle', 'status'].includes(action)) done('err
 if (!PANELS[which]) done('error', { message: `unknown panel ${which}` });
 const panel = PANELS[which];
 
-const claude = findClaude();
-if (!claude) done('no-claude');
+// Stop at the nearest grok or claude. One with no terminal (a headless -p, or the desktop app) owns no pane,
+// and walking past it would act on an unrelated outer session. The state stays `no-claude` so older callers
+// still match.
+const claude = findAgent();
+if (!claude?.tty) done('no-claude');
 // Never launch iTerm by accident: only talk to it if it's already running. (pgrep can't see it from
 // inside Claude's sandboxed shells, so read the process list instead.)
 if (!itermRunning()) done('not-iterm');
@@ -270,7 +279,8 @@ for (const p of Object.values(PANELS)) if (record[p.pane] && osa(EXISTS, record[
 const save = () => {
   if (!Object.values(PANELS).some((p) => record[p.pane])) return rmSync(recordPath, { force: true });
   mkdirSync(PANES, { recursive: true });
-  writeFileSync(recordPath, JSON.stringify({ claudePane, claudePid: claude.pid, deskPane: record.deskPane, railPane: record.railPane }));
+  const sessionId = process.env.SESSION_RAIL_SESSION || record.sessionId || undefined;
+  writeFileSync(recordPath, JSON.stringify({ claudePane, claudePid: claude.pid, deskPane: record.deskPane, railPane: record.railPane, host: claude.host, sessionId }));
 };
 save();
 
@@ -278,8 +288,10 @@ const q = (s) => `"${s.replace(/(["\\])/g, '\\$1')}"`;
 // Split a panel off its neighbour (the rail off an open desk, so it stays on the far right; the desk off Claude).
 const split = (p) => {
   // iTerm starts the command with a bare system PATH; pass on Claude's so the panel finds gh, git and claude.
+  const sessionId = process.env.SESSION_RAIL_SESSION || record.sessionId || '';
   const cmd = ['/usr/bin/env', `PATH=${process.env.PATH ?? ''}`, process.execPath, join(HERE, p.script),
-    '--pid', String(claude.pid), '--cwd', process.cwd()].map(q).join(' ');
+    '--pid', String(claude.pid), '--cwd', process.cwd(), '--host', claude.host,
+    ...(sessionId ? ['--session', sessionId] : [])].map(q).join(' ');
   const from = p === PANELS.rail && record.deskPane ? record.deskPane : claudePane;
   const id = osa(SPLIT, from, cmd);
   if (id) { record[p.pane] = id; save(); }

@@ -7,6 +7,24 @@ import { parseBrief, briefStatus, NO_BRIEF_BRANCHES } from './brief.mjs';
 
 const HOME = homedir();
 const CLAUDE = join(HOME, '.claude');
+const GROK = join(HOME, '.grok');
+
+// ── Claude config dirs: ~/.claude plus any second login (CLAUDE_CONFIG_DIR=~/.claude-<name>) ──
+// Each dir keeps its own sessions, transcripts, plans and account, so the rail looks in all of them.
+// The default dir's account lives at ~/.claude.json; any other dir keeps it inside the dir.
+export async function claudeDirs() {
+  const dirs = [CLAUDE];
+  if (process.env.CLAUDE_CONFIG_DIR) dirs.push(process.env.CLAUDE_CONFIG_DIR.replace(/\/+$/, ''));
+  try {
+    for (const n of await readdir(HOME)) if (/^\.claude-[^/]+$/.test(n) && await exists(join(HOME, n, 'sessions'))) dirs.push(join(HOME, n));
+  } catch { /* unreadable home: the default dir only */ }
+  return [...new Set(dirs)];
+}
+const accountFile = (dir) => (!dir || dir === CLAUDE ? join(HOME, '.claude.json') : join(dir, '.claude.json'));
+// Rate limits are per account: the default dir keeps usage.json, another dir usage-<name>.json (register.ts writes both).
+export const usageFile = (dir) => join(CLAUDE, 'session-rail', !dir || dir === CLAUDE ? 'usage.json' : `usage-${basename(dir).replace(/^\./, '')}.json`);
+// A plan file under any Claude config dir in HOME (~/.claude/plans/, ~/.claude-work/plans/, …).
+const isPlanPath = (p) => typeof p === 'string' && p.startsWith(HOME + '/') && /^\/\.claude[^/]*\/plans\//.test(p.slice(HOME.length));
 
 export const run = (cmd, args, { cwd, timeout = 10_000 } = {}) =>
   new Promise((resolve) => {
@@ -200,25 +218,123 @@ export async function readPlan(path) {
   } catch { return null; }
 }
 
-// ── Account: who Claude is signed in as (the login record /status reads) ───────
-export async function account() {
-  const a = (await readJson(join(HOME, '.claude.json')))?.oauthAccount;
+// ── Account: who this session is signed in as ─────────────────────────────────
+export async function account(host, configDir) {
+  if (host === 'grok') {
+    const auth = await readJson(join(GROK, 'auth.json'));
+    if (!auth || typeof auth !== 'object') return null;
+    for (const v of Object.values(auth)) if (v && typeof v.email === 'string') return { email: v.email };
+    return null;
+  }
+  const a = (await readJson(accountFile(configDir)))?.oauthAccount;
   return a?.emailAddress ? { email: a.emailAddress } : null;
 }
 
-// ── Usage: rate-limit windows, written by the plugin's session.measure hook ────
-export async function usage() {
-  const u = await readJson(join(CLAUDE, 'session-rail', 'usage.json'));
+// ── Usage: rate-limit windows ──────────────────────────────────────────────────
+// Claude: the plugin's session.measure hook writes them per account.
+// Grok: the plan's allowance, from the same billing call /usage reads. A week is a percent
+// already used; a month is shown only when the plan has a positive limit. Cached for a minute
+// so the rail's fast poll does not hit the network every time.
+const GROK_PROXY = () => (process.env.GROK_CLI_CHAT_PROXY_BASE_URL || 'https://cli-chat-proxy.grok.com/v1').replace(/\/+$/, '');
+const grokCache = new Map();
+async function grokToken() {
+  const auth = await readJson(join(GROK, 'auth.json'));
+  if (!auth || typeof auth !== 'object') return null;
+  for (const v of Object.values(auth)) if (typeof v?.key === 'string' && v.key) return v.key;
+  return null;
+}
+async function grokGet(path) {
+  const hit = grokCache.get(path);
+  if (hit && Date.now() - hit.at < 60_000) return hit.value;
+  const token = await grokToken();
+  if (!token) return null;
+  try {
+    const res = await fetch(GROK_PROXY() + path, {
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+      signal: AbortSignal.timeout(12_000),
+    });
+    if (!res.ok) return null;
+    const value = await res.json();
+    grokCache.set(path, { at: Date.now(), value });
+    return value;
+  } catch { return null; }
+}
+// credits is /billing?format=credits (the weekly allowance). plan is /billing (the monthly cap).
+export function usageFromBilling(credits, plan) {
+  const rows = [];
+  const c = credits?.config;
+  if (c && Number.isFinite(c.creditUsagePercent)) {
+    const end = c.currentPeriod?.end || c.billingPeriodEnd || null;
+    rows.push({ kind: 'week', percentUsed: c.creditUsagePercent, resetsAt: end });
+    for (const p of c.productUsage || []) {
+      if (!Number.isFinite(p?.usagePercent) || Math.abs(p.usagePercent - c.creditUsagePercent) < 0.05) continue;
+      const label = String(p.product || '').replace(/([a-z])([A-Z])/g, '$1 $2');
+      if (label) rows.push({ kind: 'week', label, percentUsed: p.usagePercent, resetsAt: end });
+    }
+  }
+  const limit = plan?.config?.monthlyLimit?.val;
+  const used = plan?.config?.used?.val;
+  if (Number.isFinite(limit) && limit > 0 && Number.isFinite(used))
+    rows.push({ kind: 'month', percentUsed: Math.min(100, (used / limit) * 100), resetsAt: plan.config.billingPeriodEnd || null });
+  return rows;
+}
+export async function usage(host, configDir) {
+  if (host === 'grok') {
+    const [credits, plan] = await Promise.all([grokGet('/billing?format=credits'), grokGet('/billing')]);
+    return usageFromBilling(credits, plan);
+  }
+  const u = await readJson(usageFile(configDir));
   return Array.isArray(u?.rateLimits) ? u.rateLimits : [];
 }
 
 // ── Active agents: every live Claude session on this Mac ───────────────────────
+// One live Grok session from ~/.grok/active_sessions.json, titled from its summary when that file is there.
+export function rowFromActive(s, summary) {
+  if (!s?.pid || !s.session_id) return null;
+  const title = summary?.generated_title || String(summary?.session_summary || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+  const opened = Date.parse(s.opened_at) || 0;
+  return {
+    pid: s.pid, sessionId: s.session_id, name: title || basename(s.cwd || '') || `pid ${s.pid}`,
+    cwd: s.cwd, repo: basename(s.cwd || ''), surface: 'cli', status: 'unknown', host: 'grok',
+    statusSince: opened, updatedAt: Date.parse(summary?.updated_at) || opened, version: summary?.current_model_id || '',
+    model: summary?.current_model_id || null,
+  };
+}
+
+async function grokSummary(cwd, id) {
+  if (!id) return null;
+  const direct = cwd && await readJson(join(GROK, 'sessions', encodeURIComponent(cwd), id, 'summary.json'));
+  if (direct) return direct;
+  try {
+    for (const d of await readdir(join(GROK, 'sessions'))) {
+      const hit = await readJson(join(GROK, 'sessions', d, id, 'summary.json'));
+      if (hit) return hit;
+    }
+  } catch { /* no session store yet */ }
+  return null;
+}
+
+async function grokSessionDir(cwd, id) {
+  if (!id) return null;
+  const direct = cwd && join(GROK, 'sessions', encodeURIComponent(cwd), id);
+  if (direct && await exists(join(direct, 'summary.json'))) return direct;
+  try {
+    for (const d of await readdir(join(GROK, 'sessions'))) {
+      const dir = join(GROK, 'sessions', d, id);
+      if (await exists(join(dir, 'summary.json'))) return dir;
+    }
+  } catch { /* no session store yet */ }
+  return null;
+}
+
 export async function sessions() {
-  const dir = join(CLAUDE, 'sessions');
-  let files = [];
-  try { files = (await readdir(dir)).filter((f) => /^\d+\.json$/.test(f)); } catch { return []; }
-  const rows = await Promise.all(files.map((f) => readJson(join(dir, f))));
-  return rows
+  const rows = (await Promise.all((await claudeDirs()).map(async (configDir) => {
+    const dir = join(configDir, 'sessions');
+    let files = [];
+    try { files = (await readdir(dir)).filter((f) => /^\d+\.json$/.test(f)); } catch { files = []; }
+    return (await Promise.all(files.map((f) => readJson(join(dir, f))))).map((s) => s && { ...s, configDir });
+  }))).flat();
+  const claude = rows
     .filter((s) => s && s.pid && alive(s.pid))
     .map((s) => ({
       pid: s.pid,
@@ -231,8 +347,13 @@ export async function sessions() {
       statusSince: s.statusUpdatedAt || s.updatedAt || s.startedAt,
       updatedAt: s.updatedAt || s.startedAt,
       version: s.version,
-    }))
-    .sort((a, b) => b.updatedAt - a.updatedAt);
+      host: 'claude',
+      configDir: s.configDir,
+    }));
+  const active = await readJson(join(GROK, 'active_sessions.json'));
+  const grok = (await Promise.all((Array.isArray(active) ? active : []).filter((s) => s?.pid && alive(s.pid)).map(async (s) => rowFromActive(s, await grokSummary(s.cwd, s.session_id)))))
+    .filter(Boolean);
+  return [...claude, ...grok].sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
 // ── Sessions: every session with what it's on and whether it needs the person ──
@@ -259,7 +380,7 @@ export function sessionState(s, act, now = Date.now()) {
 // Every live session with its branch, brief title, tty and state. This session first, then the ones
 // needing the person (blocked, waiting), then the rest; most recent first within each.
 const RANK = { blocked: 0, waiting: 1, busy: 2, idle: 3 };
-export async function sessionsOverview(list, currentPid) {
+export async function sessionsOverview(list, currentPid, currentId) {
   const ttys = new Map(((await run('ps', ['-o', 'pid=,tty=', '-p', list.map((s) => s.pid).join(',') || '0'])) || '')
     .split('\n').map((l) => l.trim().split(/\s+/)).filter(([, t]) => t && t !== '??').map(([p, t]) => [Number(p), `/dev/${t}`]));
   const rows = await Promise.all(list.map(async (s) => {
@@ -269,7 +390,8 @@ export async function sessionsOverview(list, currentPid) {
       s.cwd ? readBrief(s.cwd) : null,
     ]);
     const b = branch?.trim() || null;
-    return { ...s, ...sessionState(s, act), branch: b, title: brief?.title || b || s.name, tty: ttys.get(s.pid) ?? null, current: s.pid === currentPid };
+    return { ...s, ...sessionState(s, act), branch: b, title: brief?.title || b || s.name, tty: ttys.get(s.pid) ?? null,
+      current: currentId ? s.sessionId === currentId : s.pid === currentPid };
   }));
   return rows.sort((a, b) => (b.current - a.current) || (RANK[a.state] - RANK[b.state]) || (b.since - a.since));
 }
@@ -333,9 +455,22 @@ export async function worktrees(cwd) {
 }
 
 // The session this rail belongs to: newest live CLI session in the rail's folder (or a parent/child of it).
-export function currentSession(list, cwd) {
+// A pinned session id wins, so two Grok sessions that share one process stay distinct.
+export function currentSession(list, cwd, sessionId) {
+  if (sessionId) { const hit = list.find((s) => s.sessionId === sessionId); if (hit) return hit; }
   const related = (p) => p && (p === cwd || cwd.startsWith(p + '/') || p.startsWith(cwd + '/'));
   return list.find((s) => s.surface === 'cli' && related(s.cwd)) || null;
+}
+
+// The session a pane was opened for: its session id, else the only process with this pid, else the newest related one.
+export function pickSession(list, { pid, cwd, sessionId } = {}) {
+  if (sessionId) { const hit = list.find((s) => s.sessionId === sessionId); if (hit) return hit; }
+  if (pid) {
+    const matches = list.filter((s) => s.pid === pid);
+    if (matches.length === 1) return matches[0];
+    if (matches.length > 1) return currentSession(matches, cwd) || matches[0];
+  }
+  return currentSession(list, cwd, sessionId);
 }
 
 // ── Where a session keeps its transcript and background task output ────────────
@@ -344,13 +479,24 @@ const slug = (cwd) => cwd.replace(/[^a-zA-Z0-9]/g, '-');
 
 export async function sessionFiles(session) {
   if (!session?.sessionId || !session.cwd) return { transcriptPath: null, tasksDir: null };
+  if (session.host === 'grok') {
+    const dir = await grokSessionDir(session.cwd, session.sessionId);
+    return {
+      transcriptPath: null, tasksDir: null, host: 'grok',
+      planPath: null, // the brief is the plan; plan.json is Grok's own todo list, not a document
+      signalsPath: dir ? join(dir, 'signals.json') : null,
+      summaryPath: dir ? join(dir, 'summary.json') : null,
+      usagePath: dir ? join(dir, 'usage.json') : null,
+    };
+  }
   const id = session.sessionId;
-  let transcriptPath = join(CLAUDE, 'projects', slug(session.cwd), `${id}.jsonl`);
+  const projects = join(session.configDir || CLAUDE, 'projects');
+  let transcriptPath = join(projects, slug(session.cwd), `${id}.jsonl`);
   if (!(await exists(transcriptPath))) {
     transcriptPath = null; // cwd changed since start: look the session up by id instead
     try {
-      for (const d of await readdir(join(CLAUDE, 'projects'))) {
-        const p = join(CLAUDE, 'projects', d, `${id}.jsonl`);
+      for (const d of await readdir(projects)) {
+        const p = join(projects, d, `${id}.jsonl`);
         if (await exists(p)) { transcriptPath = p; break; }
       }
     } catch {}
@@ -366,11 +512,85 @@ const windowFor = (model = '') => (/\[1m\]|^claude-[a-z]+-5(-|$)/.test(model) ? 
 const MODEL_NAMES = { opus: 'Opus', sonnet: 'Sonnet', haiku: 'Haiku', fable: 'Fable' };
 const prettyModel = (id = '') => {
   const m = id.match(/claude-([a-z]+)-(\d+)-(\d+)/);
-  return m ? `${MODEL_NAMES[m[1]] ?? m[1]} ${m[2]}.${m[3]}` : id || null;
+  if (m) return `${MODEL_NAMES[m[1]] ?? m[1]} ${m[2]}.${m[3]}`;
+  const g = id.match(/^grok-(.+)$/);
+  return g ? `Grok ${g[1]}` : id || null;
 };
 
-// ── Connectors (MCP servers) ───────────────────────────────────────────────────
-export async function connectors() {
+// Context for a Grok session, from signals.json (usage is already a percent; a 0–1 fraction is scaled).
+// ledger is the session's usage.json; costUsdTicks is 1e10 per dollar.
+export function contextFrom(signals, summary, ledger) {
+  if (!signals && !summary) return null;
+  const tokens = Number.isFinite(signals?.contextTokensUsed) ? signals.contextTokensUsed : null;
+  const size = Number.isFinite(signals?.contextWindowTokens) ? signals.contextWindowTokens : null;
+  let pct = null;
+  const usage = signals?.contextWindowUsage;
+  if (Number.isFinite(usage)) {
+    // signals.json reports a percent (27). A 0–1 fraction is scaled when the token count agrees.
+    const fromTokens = tokens != null && size ? (tokens / size) * 100 : null;
+    const asFraction = usage > 0 && usage <= 1 && (fromTokens == null || Math.abs(fromTokens - usage * 100) <= Math.abs(fromTokens - usage));
+    pct = Math.min(100, Math.round(asFraction ? usage * 100 : usage));
+  } else if (tokens != null && size) pct = Math.min(100, Math.round((tokens / size) * 100));
+  const id = summary?.current_model_id || signals?.primaryModelId || '';
+  const ticks = ledger?.session?.costUsdTicks;
+  const costUsd = Number.isFinite(ticks) ? ticks / 1e10 : null;
+  return { model: prettyModel(id), effort: summary?.reasoning_effort || null, contextTokens: tokens, contextSize: size, contextPct: pct,
+    ...(costUsd != null ? { costUsd } : {}) };
+}
+
+export async function grokContext(files) {
+  if (!files?.signalsPath && !files?.summaryPath) return null;
+  const [signals, summary, ledger] = await Promise.all([readJson(files.signalsPath), readJson(files.summaryPath), readJson(files.usagePath)]);
+  return contextFrom(signals, summary, ledger);
+}
+
+// Grok's connectors: its own MCP servers, the account catalog, the linked X account, and a
+// logged-in gh. Claude and Cursor compat servers are left out — those are the other account.
+const connectorName = (s) => String(s?.displayName || s?.display_name || s?.name || s?.title || s?.server || s?.id || '').trim();
+const fromClaude = (s) => /claude|cursor/.test(String(s?.source || s?.origin || s?.vendor || s?.scope || '').toLowerCase());
+export function connectorsFrom({ mcp = [], catalog = [], user = null, github = null } = {}) {
+  const items = [];
+  const seen = new Set();
+  const add = (name, ok, state = '') => {
+    const key = name.toLowerCase();
+    if (!name || seen.has(key)) return;
+    seen.add(key);
+    items.push({ name, ok: Boolean(ok), state });
+  };
+  for (const s of mcp) {
+    if (fromClaude(s)) continue;
+    const name = connectorName(s);
+    add(name, s.status !== 'failed' && s.error == null && s.enabled !== false, String(s.status || s.error || ''));
+  }
+  for (const s of catalog) {
+    const name = connectorName(s);
+    const ok = s.connected !== false && s.status !== 'disconnected' && s.status !== 'failed' && s.enabled !== false;
+    add(name, ok, ok ? '' : String(s.status || 'disconnected'));
+  }
+  if (user?.xUserId) add('Twitter', true);
+  if (github?.ok) add('GitHub', true);
+  return { ok: true, items, connected: items.filter((i) => i.ok).length };
+}
+export async function connectors(host) {
+  if (host === 'grok') {
+    const [out, catalog, user, gh] = await Promise.all([
+      run('grok', ['mcp', 'list', '--json'], { timeout: 20_000 }),
+      grokGet('/mcp/catalog'),
+      grokGet('/user'),
+      run('gh', ['auth', 'status'], { timeout: 8_000 }),
+    ]);
+    let mcp = [];
+    if (out) try {
+      const parsed = JSON.parse(out);
+      mcp = Array.isArray(parsed) ? parsed : parsed.servers || parsed.items || parsed.connectors || [];
+    } catch { mcp = []; }
+    const login = gh?.match(/account (\S+)/);
+    // gh prints a masked token on this status line. Keep only whether a login exists.
+    const built = connectorsFrom({
+      mcp, catalog: catalog?.connectors || [], user, github: login ? { ok: true } : null,
+    });
+    return out == null && !catalog && !user && !gh ? { ok: false, items: [], connected: 0 } : built;
+  }
   const out = await run('claude', ['mcp', 'list'], { timeout: 20_000 });
   if (out == null) return { ok: false, items: [] };
   const items = out.split('\n')
@@ -446,8 +666,7 @@ export async function recentWork(cwd, { prs = 5, commits = 8 } = {}) {
 }
 
 // ── Background tasks: indexed incrementally from the session transcript ───────
-const KEYWORDS = ['run_in_background', 'backgroundTaskId', 'agentId', 'task-notification', '"name":"Agent"', '"name":"Task"', '"usage"', '/.claude/plans/'];
-const PLANS = join(CLAUDE, 'plans') + '/';
+const KEYWORDS = ['run_in_background', 'backgroundTaskId', 'agentId', 'task-notification', '"name":"Agent"', '"name":"Task"', '"usage"', '/plans/'];
 
 export class TaskIndex {
   constructor() { this.path = null; this.offset = 0; this.partial = ''; this.reset(); }
@@ -493,11 +712,11 @@ export class TaskIndex {
       if (c.type === 'tool_use' && (c.name === 'Agent' || c.name === 'Task'))
         this.calls.set(c.id, { kind: 'agent', label: c.input?.description || 'subagent', agentType: c.input?.subagent_type });
       // The plan file plan mode writes; watching the writes shows the plan while it's still being drafted.
-      if (c.type === 'tool_use' && !e.isSidechain && (c.name === 'Write' || c.name === 'Edit') && c.input?.file_path?.startsWith(PLANS))
+      if (c.type === 'tool_use' && !e.isSidechain && (c.name === 'Write' || c.name === 'Edit') && isPlanPath(c.input?.file_path))
         this.planPath = c.input.file_path;
     }
     const r = e.toolUseResult;
-    if (!e.isSidechain && typeof r?.filePath === 'string' && r.filePath.startsWith(PLANS) && 'plan' in r) this.planPath = r.filePath;
+    if (!e.isSidechain && isPlanPath(r?.filePath) && 'plan' in r) this.planPath = r.filePath;
     const toolUseId = e.message?.content?.find?.((c) => c.tool_use_id)?.tool_use_id;
     if (r && typeof r === 'object' && toolUseId) {
       const id = r.backgroundTaskId || r.agentId;

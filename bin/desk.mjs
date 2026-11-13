@@ -14,7 +14,7 @@
 //   --cwd DIR / --pid PID                           the folder and Claude process this desk belongs to
 import * as src from './sources.mjs';
 import { reviewAndSave, loadReviews } from './reviewer.mjs';
-import { ESC, fg, dim, bold, C, charWidth, width, trunc, clean, tabBar } from './term.mjs';
+import { ESC, fg, dim, bold, C, bg, bgOpen, charWidth, width, trunc, clean, tabBar, usePalette, paneBgOn, paneBgOff } from './term.mjs';
 import { applySaved } from './fontsize.mjs';
 import { approvalRecord } from './brief.mjs';
 import { codeFindings, runType } from './cadence.mjs';
@@ -26,6 +26,9 @@ const args = process.argv.slice(2);
 const flag = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
 const cwd = flag('--cwd') || process.cwd();
 const pinnedPid = Number(flag('--pid')) || null;
+const sessionFlag = flag('--session');
+const hostFlag = flag('--host');
+const agentName = () => (data.claude?.host === 'grok' || (!data.claude && hostFlag === 'grok') ? 'Grok' : 'Claude');
 const taskIndex = new src.TaskIndex();
 
 // ── Data ───────────────────────────────────────────────────────────────────────
@@ -50,9 +53,10 @@ const changed = (tab, sig) => {
 const loaders = {
   async plan() {
     const agents = await src.sessions();
-    const current = (pinnedPid && agents.find((a) => a.pid === pinnedPid)) || src.currentSession(agents, cwd);
+    const current = src.pickSession(agents, { pid: pinnedPid, cwd, sessionId: sessionFlag });
     data.claude = current;
-    await taskIndex.update((await src.sessionFiles(current)).transcriptPath);
+    const files = await src.sessionFiles(current);
+    if (current?.host !== 'grok') await taskIndex.update(files.transcriptPath);
     [data.plan, data.brief] = await Promise.all([src.readPlan(taskIndex.planPath), src.readBrief(cwd)]);
     if (changed('plan', `${data.plan ? `${data.plan.path}:${data.plan.mtime}` : ''}|${data.brief?.mtime ?? ''}`)) {
       ui.scroll.plan = 0;
@@ -111,7 +115,7 @@ function startReview() {
   const controller = new AbortController(), path = data.review.path;
   data.review.running = { controller, startedAt: Date.now() };
   void reportDesk({ kind: 'approach review', startedAt: data.review.running.startedAt });
-  reviewAndSave(cwd, { brief: data.brief, files: data.files, manual: true, signal: controller.signal }).then((run) => {
+  reviewAndSave(cwd, { brief: data.brief, files: data.files, manual: true, signal: controller.signal, host: data.claude?.host || hostFlag }).then((run) => {
     data.review.running = null;
     void reportDesk(null);
     // A cancelled run leaves the record alone; a saved one (failed too, so the tab says why) is shown if the
@@ -214,14 +218,14 @@ function planLines(w) {
     const approve = ['ready', 'changed'].includes(b.status) ? [button(b.status === 'ready' ? 'Approve' : 'Approve again', C.green) + dim('  or A'), ''] : [];
     return [bold('Brief') + dim(' · ') + status, ...approve, dim(trunc(src.tildify(b.path), w)), '', ...markdownLines(b.text, w, { brief: true })];
   }
-  const note = [...(b ? [dim(trunc(`No brief for ${clean(b.branch)} yet: Claude writes one before editing code.`, w)), ''] : []), ...todoLines(w)];
+  const note = [...(b ? [dim(trunc(`No brief for ${clean(b.branch)} yet: ${agentName()} writes one before editing code.`, w)), ''] : []), ...todoLines(w)];
   if (!data.plan) return [...note, ...recentLines(w)];
   return [...note, dim(src.tildify(data.plan.path)), '', ...markdownLines(data.plan.text, w)];
 }
 // Todo issues from the repo's project board, first thing at the start of a session.
 function todoLines(w) {
   if (!data.todos?.length) return [];
-  const out = [bold(fg(C.accent, 'Todo')) + dim(`  ${data.todos.length} · tell Claude which to take`), ''];
+  const out = [bold(fg(C.accent, 'Todo')) + dim(`  ${data.todos.length} · tell ${agentName()} which to take`), ''];
   for (const t of data.todos) {
     out.push(trunc(`${dim(`#${t.number}`)} ${clean(t.title)}`, w + 20));
     if (t.summary) out.push(dim('    ' + trunc(clean(t.summary), w - 4)));
@@ -343,7 +347,7 @@ function fileLines(w) {
       : raw.startsWith('-') ? fg(C.red, line) : raw.startsWith('\\') || raw.startsWith('…') ? dim(line) : line);
   }
   if (!body.length) body.push(dim(data.diff?.path === ui.open ? 'No textual changes.' : 'Loading…'));
-  if (target >= 0) body[target] = `${ESC}48;5;236m` + body[target] + ' '.repeat(Math.max(0, w - width(body[target]))) + `${ESC}49m`;
+  if (target >= 0) body[target] = bg(C.jump, body[target] + ' '.repeat(Math.max(0, w - width(body[target]))));
   return { lines: [head, '', ...body], target: target >= 0 ? target + 2 : -1 };
 }
 
@@ -355,7 +359,7 @@ const ago = (ms) => {
   return m < 1 ? 'just now' : m < 60 ? `${m}m ago` : m < 1410 ? `${Math.round(m / 60)}h ago` : `${Math.round(m / 1440)}d ago`;
 };
 // A clickable button: its text, styled, and remembered as a span on the current line for mouse clicks.
-const button = (label, colour) => `${ESC}48;5;237m` + bold(fg(colour, ` ${label} `)) + `${ESC}49m`;
+const button = (label, colour) => bg(C.select, bold(fg(colour, ` ${label} `)));
 const when = (ms) => new Date(ms).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
 // A finding's status label: open, applied or declined (fixed / no change for a code review's); a finding
 // saved before the cadence shows its severity, or accepted.
@@ -394,8 +398,9 @@ function reviewLines(w) {
   push('');
   if (fail) { for (const l of wrapRuns([{ t: `✗ The last review failed: ${clean(fail.error)}`, s: 'text' }], w)) push(fg(C.red, l)); push(''); }
   if (!run && !code && !fail) {
+    const reviewCmd = agentName() === 'Grok' ? '/review' : '/code-review';
     const text = data.brief?.text
-      ? 'No reviews yet. Claude runs the approach review (the brief and its finished chunks, judged by a staff engineer) on the plan and after each chunk, and /code-review over the whole branch before the merge. Run review checks the approach now (under a minute).'
+      ? `No reviews yet. ${agentName()} runs the approach review (the brief and its finished chunks, judged by a staff engineer) on the plan and after each chunk, and ${reviewCmd} over the whole branch before the merge. Run review checks the approach now (under a minute).`
       : 'Reviews follow the branch\'s brief: an approach review on the plan and after each chunk, and a code review of the whole branch before the merge. This branch has no brief yet.';
     for (const l of wrapRuns([{ t: text, s: 'text' }], w)) push(dim(l));
   }
@@ -448,6 +453,8 @@ function reviewLines(w) {
 // ── Frame ──────────────────────────────────────────────────────────────────────
 let layout = { tabs: [], tabRow: 2, body: 3, ids: [], scroll: 0 };
 function frame(W, H) {
+  usePalette(agentName() === 'Grok' ? 'grok' : 'claude');
+  const hi = bgOpen(C.select);
   const w = W - 2, bodyH = H - 4;
   // Tab bar under a rule, underlined in orange beneath the active tab; its spans are kept for mouse clicks.
   const { a, r } = totals();
@@ -480,7 +487,7 @@ function frame(W, H) {
   scroll = ui.scroll[key] = Math.max(0, Math.min(scroll, body.length - bodyH));
   const view = body.slice(scroll, scroll + bodyH).map((l, i) => {
     const padded = ' ' + l + ' '.repeat(Math.max(0, W - 1 - width(l)));
-    return ids.length && ids[scroll + i] === selected ? `${ESC}48;5;237m${padded}${ESC}49m` : padded;
+    return ids.length && ids[scroll + i] === selected ? `${hi}${padded}${ESC}49m` : padded;
   });
   while (view.length < bodyH) view.push('');
 
@@ -548,18 +555,19 @@ if (!process.stdin.isTTY || !process.stdout.isTTY) {
 const out = process.stdout;
 draw = () => {
   const lines = frame(out.columns || 80, out.rows || 40);
-  out.write(`${ESC}?2026h${ESC}H${lines.map((l) => l + `${ESC}K`).join('\r\n')}${ESC}J${ESC}?2026l`);
+  out.write(`${paneBgOn()}${ESC}?2026h${ESC}H${lines.map((l) => l + `${ESC}K`).join('\r\n')}${ESC}J${ESC}?2026l`);
 };
 const MOUSE_ON = `${ESC}?1000h${ESC}?1006h`, MOUSE_OFF = `${ESC}?1000l${ESC}?1006l`;
-const restore = () => { out.write(`${MOUSE_OFF}${ESC}?25h${ESC}?1049l`); try { process.stdin.setRawMode(false); } catch {} };
+const restore = () => { out.write(`${MOUSE_OFF}${ESC}?25h${ESC}?1049l${paneBgOff()}`); try { process.stdin.setRawMode(false); } catch {} };
 const quit = (code = 0) => { cancelReview(); restore(); process.exit(code); };
 process.on('SIGINT', () => quit());
 process.on('SIGTERM', () => quit());
 process.on('uncaughtException', (e) => { restore(); console.error(e); process.exit(1); });
-out.write(`${ESC}?1049h${ESC}?25l${MOUSE_ON}`);
+usePalette(hostFlag === 'grok' ? 'grok' : 'claude');
+out.write(`${paneBgOn()}${ESC}?1049h${ESC}?25l${MOUSE_ON}`);
 out.on('resize', draw);
 // A desk opened after a font size was chosen in the rail joins it (after pane.mjs has sized the splits).
-setTimeout(() => applySaved(pinnedPid), 3000);
+setTimeout(() => applySaved(pinnedPid).then(() => draw()), 3000);
 
 const refresh = (name) => {
   let busy = false;
@@ -608,7 +616,7 @@ const approveBrief = async () => {
   try { await writeFile(b.approvedPath, approvalRecord(b, Date.now())); } catch { return toast("Couldn't save the approval"); }
   await runners.plan();
   // The hooks notice the approval and tell Claude (hooks/goahead.ts).
-  toast(b.status === 'changed' ? 'Change approved: Claude will carry on' : 'Brief approved: Claude is starting on chunk 1');
+  toast(b.status === 'changed' ? `Change approved: ${agentName()} will carry on` : `Brief approved: ${agentName()} is starting on chunk 1`);
 };
 
 const handleKey = async (k) => {
