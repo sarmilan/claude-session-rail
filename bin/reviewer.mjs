@@ -80,6 +80,19 @@ function parseReply(out) {
   try { return JSON.parse(out.slice(at)); } catch { return null; }
 }
 
+// Claude fills structured_output. Grok fills structuredOutput, and otherwise leaves the object in the message text.
+export function reviewPayload(reply) {
+  if (!reply || typeof reply !== 'object') return null;
+  const direct = reply.structured_output ?? reply.structuredOutput;
+  if (direct && typeof direct === 'object') return direct;
+  if (Array.isArray(reply.findings)) return reply;
+  const raw = reply.result ?? reply.text;
+  if (typeof raw === 'string' && raw.trim().startsWith('{')) {
+    try { const o = JSON.parse(raw); if (o && typeof o === 'object') return o; } catch { /* prose */ }
+  } else if (raw && typeof raw === 'object' && Array.isArray(raw.findings)) return raw;
+  return null;
+}
+
 // Review the approach. `brief` is a parsed brief with its text (sources.readBrief), `files` the Diff tab's
 // list, `earlier` the open findings of earlier reviews to check, `final` the review before the merge.
 // Resolves { verdict, summary, findings, checks, core, done, startedAt, finishedAt, error? }. `signal` aborts it.
@@ -141,7 +154,7 @@ export async function reviewApproach(cwd, { brief, files = [], earlier = [], cod
     child.on('close', (code) => {
       const j = parseReply(out);
       if (j?.is_error) return done({ error: String(j.result || 'Review failed').slice(0, 200) });
-      const o = j?.structured_output, findings = normalise(o?.findings);
+      const o = reviewPayload(j), findings = normalise(o?.findings);
       if (findings) {
         const ids = new Set([...earlier, ...codeFindings].map((f) => f.id));
         const checks = (Array.isArray(o.checks) ? o.checks : []).filter((c) => c && ids.has(c.id) && STATUSES.includes(c.status))

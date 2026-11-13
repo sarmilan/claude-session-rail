@@ -5,6 +5,7 @@ import { attentionFor } from '../bin/mascot.mjs';
 import { editReason, slashCommand } from '../bin/grok-hook.mjs';
 import { C, fg, paneBgOff, paneBgOn, usePalette } from '../bin/term.mjs';
 import { connectorsFrom, contextFrom, rowFromActive, usageFromBilling } from '../bin/sources.mjs';
+import { reviewPayload } from '../bin/reviewer.mjs';
 import { goAhead, startWanted, step } from '../bin/grok-watch.mjs';
 
 const brief = {
@@ -12,6 +13,14 @@ const brief = {
   approvedPath: '/repo/.git/session-rail/briefs/x.approved.json', dir: '/repo/.git/session-rail/',
   text: null, approval: null,
 };
+
+test('a Grok review verdict in the message text is the payload', () => {
+  const verdict = { verdict: 'on-track', summary: 'ok', findings: [], checks: [] };
+  assert.deepEqual(reviewPayload({ structured_output: verdict }), verdict);
+  assert.deepEqual(reviewPayload({ structuredOutput: verdict }), verdict);
+  assert.deepEqual(reviewPayload({ text: JSON.stringify(verdict) }), verdict);
+  assert.equal(reviewPayload({ text: 'no verdict here' }), null);
+});
 
 test('edits under the brief dir and an empty brief are told apart', () => {
   assert.equal(editReason(null, '/repo/a.js'), null);
