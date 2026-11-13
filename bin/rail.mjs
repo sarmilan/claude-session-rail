@@ -10,7 +10,7 @@ import { openSync, readSync, fstatSync, closeSync, readFileSync, writeFileSync, 
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import * as src from './sources.mjs';
-import { ESC, fg, dim, bold, C, charWidth, width, trunc, wrap, clean, tabBar } from './term.mjs';
+import { ESC, fg, dim, bold, C, bgOpen, charWidth, width, trunc, wrap, clean, tabBar, usePalette, paneBgOn, paneBgOff } from './term.mjs';
 import { createMascot, creatureNames, stageFor, progressFor } from './mascot.mjs';
 import { isApproved } from './brief.mjs';
 import { NAMES, COLOURS } from './names.mjs';
@@ -21,35 +21,49 @@ const flag = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 
 // A numeric flag's value, or null when it's missing or not a number.
 const numFlag = (name) => { const v = flag(name); return v?.trim() && Number.isFinite(+v) ? +v : null; };
 const cwd = flag('--cwd') || process.cwd();
-const pinnedPid = Number(flag('--pid')) || null; // the Claude process this rail belongs to
+const pinnedPid = Number(flag('--pid')) || null; // the agent process this rail belongs to
+const sessionFlag = flag('--session');
+const hostFlag = flag('--host');
+const agentName = () => (data.current?.host === 'grok' || (!data.current && hostFlag === 'grok') ? 'Grok' : 'Claude');
+const agentBin = () => (agentName() === 'Grok' ? 'grok' : 'claude');
 const taskIndex = new src.TaskIndex();
 
 // ── Data ───────────────────────────────────────────────────────────────────────
 const data = { env: null, brief: null, account: null, usage: [], agents: [], overview: null, current: null, stats: null, connectors: null, prs: null,
   worktrees: null, activity: null,
   tasks: { running: [], finished: 0, done: [] } };
+// A grok rail with nothing picked yet still belongs to Grok. Otherwise the account loaders fall through to Claude.
+const hostOf = () => data.current?.host || (hostFlag === 'grok' || hostFlag === 'claude' ? hostFlag : null);
 
 const loaders = {
   async fast() {
     data.agents = await src.sessions();
-    data.current = (pinnedPid && data.agents.find((a) => a.pid === pinnedPid)) || src.currentSession(data.agents, cwd);
+    data.current = src.pickSession(data.agents, { pid: pinnedPid, cwd, sessionId: sessionFlag });
     restoreTab(data.current?.sessionId);
     const files = await src.sessionFiles(data.current);
-    await taskIndex.update(files.transcriptPath);
-    data.stats = taskIndex.context();
-    data.tasks = files.tasksDir ? await taskIndex.list(files.tasksDir) : { running: [], finished: 0, done: [] };
+    if (data.current?.host === 'grok') {
+      data.stats = await src.grokContext(files);
+      data.tasks = { running: [], finished: 0, done: [] };
+    } else {
+      await taskIndex.update(files.transcriptPath);
+      data.stats = taskIndex.context();
+      data.tasks = files.tasksDir ? await taskIndex.list(files.tasksDir) : { running: [], finished: 0, done: [] };
+    }
     data.activity = await src.activity(data.current?.sessionId);
   },
   async env() {
     const [env, brief] = await Promise.all([src.environment(cwd), src.readBrief(cwd)]);
     data.env = env; data.brief = brief?.status ? { status: brief.status, chunks: brief.chunks } : null; // what the pet needs
   },
-  async sessions() { data.overview = await src.sessionsOverview(data.agents, data.current?.pid); },
-  async account() { [data.account, data.usage] = await Promise.all([src.account(), src.usage()]); },
+  async sessions() { data.overview = await src.sessionsOverview(data.agents, data.current?.pid, data.current?.sessionId); },
+  async account() {
+    const host = hostOf();
+    [data.account, data.usage] = await Promise.all([src.account(host, data.current?.configDir), src.usage(host, data.current?.configDir)]);
+  },
   // The PRs and worktree cards only show on Git: off it, load them once and leave them (setTab refreshes on arrival).
   async prs() { if (ui.tab !== 'git' && data.prs) return; data.prs = await src.prs(cwd); },
   async worktrees() { if (ui.tab !== 'git' && data.worktrees) return; data.worktrees = { ...(await src.worktrees(cwd)), at: Date.now() }; },
-  async connectors() { data.connectors = await src.connectors(); },
+  async connectors() { data.connectors = await src.connectors(hostOf()); },
 };
 
 export async function collect() {
@@ -217,7 +231,7 @@ const startSession = async (problem) => {
   toast('Adding a worktree…'); draw();
   const wt = await src.newWorktree(cwd, problem);
   if (!wt.ok) { toast(wt.message); return draw(); }
-  const command = `cd ${sq(wt.dir)} && SESSION_RAIL_STARTED=1 claude ${sq(`/start ${problem}`)}`;
+  const command = `cd ${sq(wt.dir)} && SESSION_RAIL_STARTED=1 ${agentBin()} ${sq(`/start ${problem}`)}`;
   openWindow(command, `Started in ${src.tildify(wt.dir)}`);
 };
 // A new iTerm window beside this session's, running command.
@@ -234,7 +248,7 @@ const worktreeMenu = (w) => {
   const p = prFor(w.branch), bad = failing(p), name = clean(w.name);
   menu(name, [
     s ? { label: s.current ? 'This session' : 'Go to session', run: () => goTo(s) }
-      : { label: 'Open claude here', run: () => openWindow(`cd ${sq(w.path)} && claude`, `Opened claude in ${name}`) },
+      : { label: `Open ${agentBin()} here`, run: () => openWindow(`cd ${sq(w.path)} && ${agentBin()}`, `Opened ${agentBin()} in ${name}`) },
     ...(p ? [{ label: `Open PR #${p.number}`, key: 'o', run: () => launch('open', [p.url], `Opened #${p.number}`) }] : []),
     ...(bad ? [{ label: `Open failing check: ${clean(bad.name)}`, run: () => launch('open', [bad.url], 'Opened the check') }] : []),
     ...(w.branch ? [{ label: 'Copy branch name', key: 'y', run: () => copy(w.branch, 'branch name') }] : []),
@@ -259,8 +273,9 @@ const typeKey = (k) => {
 
 const agentMenu = (a) => {
   const info = [`${a.status} for ${ago(a.statusSince)} · ${a.surface === 'desktop' ? 'Claude app' : 'terminal'}`,
-    src.tildify(a.cwd), `v${a.version} · pid ${a.pid}`];
-  const resume = `cd ${JSON.stringify(a.cwd)} && claude --resume ${a.sessionId}`;
+    src.tildify(a.cwd), `${a.host === 'grok' ? (a.version || 'grok') : `v${a.version}`} · pid ${a.pid}`];
+  const bin = a.host === 'grok' ? 'grok' : 'claude';
+  const resume = `cd ${JSON.stringify(a.cwd)} && ${bin} --resume ${a.sessionId}`;
   menu(a.name, [
     ...(a.surface === 'desktop' ? [{ label: 'Open Claude app', run: () => launch('open', ['-a', 'Claude'], 'Opened Claude') }]
       : [{ label: 'Copy resume command', run: () => copy(resume, 'resume command') }]),
@@ -271,7 +286,7 @@ const agentMenu = (a) => {
 
 // Font size for all three panes. `font.size` is what's on screen (null until known), `font.base` the profile's own size.
 const font = { size: fontsize.saved(), base: null, busy: false };
-const fontInfo = () => [`Claude, desk and rail · ${font.size ? `${font.size}pt` : 'profile size'}`];
+const fontInfo = () => [`${agentName()}, desk and rail · ${font.size ? `${font.size}pt` : 'profile size'}`];
 const setFont = async (size) => {
   if (font.busy || !size) return;
   font.busy = true; toast(`Font size ${size}pt…`); draw();
@@ -471,7 +486,7 @@ function buildMain(W) {
     idle: [() => dim('○'), dim],
   };
   for (const s of list) {
-    const id = item(`session:${s.pid}`, () => goTo(s));
+    const id = item(`session:${s.sessionId || s.pid}`, () => goTo(s));
     const [dot, paint] = STATE[s.state] ?? STATE.idle;
     const right = s.state;
     const l = trunc(clean(s.title), inner - 4 - width(right) - 1);
@@ -498,7 +513,7 @@ function buildMain(W) {
         { rightStyle: (s) => s.replace(/^\+(\d+) −(\d+)/, (m, a, r) => fg(C.green, `+${a}`) + ' ' + fg(C.red, `−${r}`))
           .replace(/( · )?(\d+ changed)$/, (m, sep = '', t) => dim(sep + t)) });
     }
-    pair('◌  Remote Control', '/remote-control', item('remote', () => toast('Type /remote-control in your Claude session')),
+    if (agentName() !== 'Grok') pair('◌  Remote Control', '/remote-control', item('remote', () => toast('Type /remote-control in your Claude session')),
       { leftStyle: dim, rightStyle: dim });
   }
   rule();
@@ -510,7 +525,10 @@ function buildMain(W) {
     item('context', () => { ui.open.context = !ui.open.context; }),
     { leftStyle: bold, rightStyle: (s) => (pct != null ? dim(`${pct}% `) + bar(pct) : dim(s)) });
   if (ui.open.context) {
-    const kv = (k, v) => line(`  ${dim(k.padEnd(9))}${trunc(v, inner - 11)}`);
+    const kv = (k, v) => {
+      const gap = k.length >= 9 ? ' ' : '';
+      line(`  ${dim(k.padEnd(9))}${gap}${trunc(v, inner - 11 - gap.length)}`);
+    };
     if (!st) line(dim('  No session data yet'));
     else {
       if (st.model) kv('Model', [st.model, st.effort].filter(Boolean).join(' · '));
@@ -521,8 +539,9 @@ function buildMain(W) {
     }
     // Account-wide, so shown even before this session has a transcript.
     for (const l of data.usage) {
-      const label = { five_hour: '5h left', seven_day: '7d left' }[l.kind];
-      if (!label) continue;
+      const raw = l.label || { five_hour: '5h left', seven_day: '7d left', week: 'Week left', month: 'Month left' }[l.kind];
+      if (!raw) continue;
+      const label = clean(String(raw));
       const reset = l.resetsAt ? Date.parse(l.resetsAt) / 1000 : 0;
       // A window whose reset has passed is fresh again, even before the next reading arrives.
       const left = reset && reset * 1000 < Date.now() ? 100 : Math.max(0, Math.round(100 - l.percentUsed));
@@ -536,7 +555,7 @@ function buildMain(W) {
   pair(`Connectors ${caret(ui.open.connectors)}`, !cn ? 'checking…' : !cn.ok ? 'unavailable' : `${cn.connected} connected`,
     item('connectors', () => { ui.open.connectors = !ui.open.connectors; }), { leftStyle: bold, rightStyle: dim });
   if (ui.open.connectors) for (const c of cn?.items ?? []) {
-    pair(`  ${c.ok ? '✔' : '✗'} ${c.name}`, c.ok ? '' : c.state, undefined,
+    pair(`  ${c.ok ? '✔' : '✗'} ${clean(String(c.name ?? ''))}`, c.ok ? '' : clean(String(c.state ?? '')), undefined,
       { leftStyle: (s) => s.replace(/^( {2})(.)/, (m, sp, mark) => sp + fg(c.ok ? C.green : C.red, mark)), rightStyle: dim });
   }
   rule();
@@ -544,11 +563,11 @@ function buildMain(W) {
   // Now: who is doing what this second (hooks/activity.ts's feed, the desk's run, the session's background tasks)
   heading('Now');
   const act = data.activity, { running: tasks, finished } = data.tasks;
-  if (!data.current) line(dim('No Claude session in this folder'));
+  if (!data.current) line(dim(`No ${agentName()} session in this folder`));
   else {
     const spin = (on) => (on ? fg(C.accent, ui.tick % 2 ? '●' : '◉') : dim('○'));
     const rel = (p) => (p && p.startsWith(cwd + '/') ? p.slice(cwd.length + 1) : p ?? '');
-    const model = (m) => (m ?? '').replace(/^claude-/, '').replace(/-\d{8}$/, '');
+    const model = (m) => (m ?? '').replace(/^claude-/, '').replace(/^grok-/, 'Grok ').replace(/-\d{8}$/, '');
     // Claude itself, from the feed when there is one, else from the session's own status.
     // Claude's own call in flight, leaving out Agent calls: those are its subagents, shown under it.
     const main = act?.running?.filter((c) => !c.agent && c.tool !== 'Agent').at(-1);
@@ -565,7 +584,7 @@ function buildMain(W) {
       const who = bold(l.slice(0, name.length));
       line(`${mark} ${opts.colour ? fg(opts.colour, who) : who}${l.slice(name.length)}${' '.repeat(gap)}${dim(right)}`, opts.id);
     };
-    actor(spin(busy), 'Claude', state, since);
+    actor(spin(busy), agentName(), state, since);
     // Under Claude: its subagents, each by the name and colour it got at its spawn (hooks/register.ts), with its
     // latest call in flight; then background shell tasks. A background agent's task row merges into its named row
     // (which opens its log). Agent calls with no named agent (from before the plugin loaded) keep a plain row.
@@ -669,6 +688,8 @@ function buildSettings() {
 }
 
 function frame(W, H) {
+  usePalette(agentName() === 'Grok' ? 'grok' : 'claude');
+  const hi = bgOpen(C.select);
   const withMascot = showMascot(W, H);
   const settings = ui.overlay ? null : buildSettings();
   const bodyH = H - 1 - (withMascot ? mascot.rows : 0) - (settings?.rows.length ?? 0);
@@ -689,12 +710,12 @@ function frame(W, H) {
   const lines = view.map((r) => {
     const padded = ' ' + r.text + ' '.repeat(Math.max(0, W - 1 - width(r.text)));
     // A lit block inside the row (the active tab) ends its own background; the selection carries on past it.
-    return r.id && r.id === ui.sel ? `${ESC}48;5;237m${padded.replaceAll(`${ESC}49m`, `${ESC}48;5;237m`)}${ESC}49m` : padded;
+    return r.id && r.id === ui.sel ? `${hi}${padded.replaceAll(`${ESC}49m`, hi)}${ESC}49m` : padded;
   });
   while (lines.length < bodyH) lines.push('');
   const viewIds = view.map((r) => r.id);
   while (viewIds.length < bodyH) viewIds.push(null);
-  const sel = (id, s) => (id === ui.sel ? `${ESC}48;5;237m${s}${ESC}49m` : s);
+  const sel = (id, s) => (id === ui.sel ? `${hi}${s}${ESC}49m` : s);
   const right = (text, id) => ' '.repeat(Math.max(0, W - 1 - width(text))) + sel(id, text) + ' ';
   // The mascot sits between the list and the bottom line.
   let image = null;
@@ -780,17 +801,18 @@ draw = () => {
   const keep = key !== '' && key === shownImage;
   const body = current.lines.map((l, i) => (keep && i >= img.at && i < img.at + img.rows ? '' : l + `${ESC}K`));
   // Synchronized update: iTerm2 shows the finished frame, never the moment the image's rows are blank.
-  out.write(`${ESC}?2026h${ESC}H${body.join('\r\n')}${ESC}J${img && !keep ? img.seq : ''}${ESC}?2026l`);
+  out.write(`${paneBgOn()}${ESC}?2026h${ESC}H${body.join('\r\n')}${ESC}J${img && !keep ? img.seq : ''}${ESC}?2026l`);
   shownImage = key;
 };
 const MOUSE_ON = `${ESC}?1000h${ESC}?1006h`, MOUSE_OFF = `${ESC}?1000l${ESC}?1006l`;
-const restore = () => { out.write(`${MOUSE_OFF}${ESC}?25h${ESC}?1049l`); try { process.stdin.setRawMode(false); } catch {} };
+const restore = () => { out.write(`${MOUSE_OFF}${ESC}?25h${ESC}?1049l${paneBgOff()}`); try { process.stdin.setRawMode(false); } catch {} };
 const quit = (code = 0) => { restore(); process.exit(code); };
 process.on('SIGINT', () => quit());
 process.on('SIGTERM', () => quit());
 process.on('uncaughtException', (e) => { restore(); console.error(e); process.exit(1); });
 
-out.write(`${ESC}?1049h${ESC}?25l${MOUSE_ON}${ESC}16t`); // 16t: ask for the cell size (for the mascot strip)
+usePalette(hostFlag === 'grok' ? 'grok' : 'claude');
+out.write(`${paneBgOn()}${ESC}?1049h${ESC}?25l${MOUSE_ON}${ESC}16t`); // 16t: ask for the cell size (for the mascot strip)
 out.on('resize', () => { shownImage = ''; draw(); });
 
 const refresh = (name) => {

@@ -57,26 +57,37 @@ function fileTable(brief, files) {
 // the brief as it is now to decide whether there's anything new to review.
 export const reviewedState = (brief) => ({ core: briefCore(brief), done: brief.chunks.filter((c) => c.done).length });
 
-// The earlier findings still open, for the reviewer to check, with Claude's reply where it gave one.
-function earlierList(earlier) {
+// The earlier findings still open, for the reviewer to check, with the agent's reply where it gave one.
+function earlierList(earlier, who) {
   return earlier.map((f) => `- id ${f.id} · ${f.kind}${f.chunk ? ` · chunk ${f.chunk}` : ''}: ${f.title}${f.detail ? `\n  ${f.detail}` : ''}`
-    + (f.reply ? `\n  Claude's reply: ${f.reply}` : '')).join('\n');
+    + (f.reply ? `\n  ${who}'s reply: ${f.reply}` : '')).join('\n');
 }
 const OUTCOME = { fixed: 'says it fixed this', skipped: 'skipped this', no_change_needed: 'says no change is needed' };
 // The code review's findings, with what its fixer did about each one.
-function codeList(code) {
+function codeList(code, who) {
   return code.map((f) => `- id ${f.id} · ${f.file ? `${f.file}${f.line ? `:${f.line}` : ''}` : 'code'}: ${f.title}${f.detail ? `\n  ${f.detail}` : ''}`
     + `\n  The fixer ${OUTCOME[f.outcome] ?? (f.status === 'open' ? 'left this open' : 'marked this ' + f.status)}.`
     + (f.checked && f.status === 'open' ? ' You reopened it earlier: check whether it is fixed now.' : '')
-    + (f.reply ? `\n  Claude's reply: ${f.reply}` : '')).join('\n');
+    + (f.reply ? `\n  ${who}'s reply: ${f.reply}` : '')).join('\n');
+}
+
+// The last JSON object in a headless reply. Grok may print a log line before it.
+function parseReply(out) {
+  try { return JSON.parse(out); } catch { /* a log line in front of the object */ }
+  const nl = out.lastIndexOf('\n{');
+  const at = nl >= 0 ? nl + 1 : out.indexOf('{');
+  if (at < 0) return null;
+  try { return JSON.parse(out.slice(at)); } catch { return null; }
 }
 
 // Review the approach. `brief` is a parsed brief with its text (sources.readBrief), `files` the Diff tab's
 // list, `earlier` the open findings of earlier reviews to check, `final` the review before the merge.
 // Resolves { verdict, summary, findings, checks, core, done, startedAt, finishedAt, error? }. `signal` aborts it.
-export async function reviewApproach(cwd, { brief, files = [], earlier = [], codeFindings = [], final = false, signal, timeoutMs = 540_000 } = {}) {
+export async function reviewApproach(cwd, { brief, files = [], earlier = [], codeFindings = [], final = false, signal, timeoutMs = 540_000, host = 'claude' } = {}) {
   const startedAt = Date.now();
   const result = { startedAt, ...reviewedState(brief), findings: [] };
+  const grok = host === 'grok';
+  const who = grok ? 'Grok' : 'Claude';
   const prompt = `You are a staff engineer reviewing the approach this branch takes. You are not reviewing its code line by line: `
     + 'a separate code review checks correctness at the end of the session. The branch\'s brief states its goal and its plan '
     + 'in chunks; as each chunk is finished, a "Done:" line says what changed and why and a "Files:" line lists the files it touched.\n\n'
@@ -86,41 +97,49 @@ export async function reviewApproach(cwd, { brief, files = [], earlier = [], cod
     + '- cost: effort, runtime cost (model calls, processes, polling) or upkeep that a cheaper path avoids\n'
     + '- goal-gap: part of the Problem or Solution that the plan or the finished chunks don\'t cover\n'
     + '- elegance: an approach that will be hard to understand, change or extend\n'
-    + 'Only raise what would change the approach; leave style and line-level bugs to the code review. Read code (Read, Grep, '
-    + 'git diff) only to check a claim before making it. With no finished chunks yet, review the plan alone. Say on-track with '
+    + `Only raise what would change the approach; leave style and line-level bugs to the code review. Read code (${grok ? 'read_file, grep, list_dir' : 'Read, Grep, git diff'}) `
+    + 'only to check a claim before making it. With no finished chunks yet, review the plan alone. Say on-track with '
     + 'no findings when the approach is sound: don\'t invent findings.\n\n'
     + `The brief:\n<brief>\n${brief.text}\n</brief>\n\n`
     + `Files changed since the branch forked (lines added and removed), and the chunk that lists each:\n${fileTable(brief, files)}\n\n`
     + (final ? 'This is the final review before the branch merges: judge the whole branch, as finished, against the Problem and Solution.\n\n' : '')
-    + (earlier.length ? 'Earlier reviews raised these findings, and Claude was asked to apply each one. Check each against the code and the '
-      + 'brief and return a check for it: applied (the work now does it), declined (Claude\'s reply gives a sound reason not to; say '
+    + (earlier.length ? `Earlier reviews raised these findings, and ${who} was asked to apply each one. Check each against the code and the `
+      + `brief and return a check for it: applied (the work now does it), declined (${who}'s reply gives a sound reason not to; say `
       + 'why you accept it) or open (not done, and no sound reason). Don\'t raise them again as new findings.\n'
-      + `${earlierList(earlier)}\n\n` : '')
-    + (codeFindings.length ? 'The code review (/code-review --fix) raised these findings. As the staff engineer, judge what its fixer did about each '
+      + `${earlierList(earlier, who)}\n\n` : '')
+    + (codeFindings.length ? `The code review (${grok ? '/review' : '/code-review --fix'}) raised these findings. As the staff engineer, judge what its fixer did about each `
       + 'and return a check for it: applied (a claimed fix really landed in the code), declined (a skip or "no change needed" is sound; '
       + 'say why) or open (the fix didn\'t land, or it should be fixed after all; say why). Read the code to check. Don\'t raise them again as new findings.\n'
-      + `${codeList(codeFindings)}\n\n` : '')
+      + `${codeList(codeFindings, who)}\n\n` : '')
     + (earlier.length || codeFindings.length ? '' : 'There are no earlier findings to check: return an empty checks list.\n\n')
     + 'Return a verdict (on-track, simpler-path or off-goal), a summary of at most two sentences, and the findings, most '
     + 'important first, each with its chunk number (null when it is about the whole plan).';
   // Read-only whatever the user's settings say: no Edit/Write at all, Bash only for git, and dontAsk denies
   // anything else instead of waiting on a prompt nobody can answer (or allowing it under bypass settings).
-  const argv = ['-p', prompt, '--output-format', 'json', '--json-schema', SCHEMA,
-    '--no-session-persistence', '--strict-mcp-config', '--permission-mode', 'dontAsk',
-    '--tools', 'Read,Grep,Glob,Bash', '--allowedTools', 'Read', 'Grep', 'Glob', 'Bash(git *)'];
+  // Claude stays on its read-only dontAsk run. Grok uses a read-only tool list and a session with no
+  // controlling terminal, so the review's own hooks don't open panes on the desk that launched it.
+  const argv = grok
+    ? ['-p', prompt, '--output-format', 'json', '--json-schema', SCHEMA, '--always-approve', '--max-turns', '12',
+      '--tools', 'read_file,grep,list_dir', '--disallowed-tools', 'write,search_replace,run_terminal_command,web_search,web_fetch']
+    : ['-p', prompt, '--output-format', 'json', '--json-schema', SCHEMA,
+      '--no-session-persistence', '--strict-mcp-config', '--permission-mode', 'dontAsk',
+      '--tools', 'Read,Grep,Glob,Bash', '--allowedTools', 'Read', 'Grep', 'Glob', 'Bash(git *)'];
   return new Promise((resolve) => {
     let out = '', err = '', settled = false, timer;
     const done = (r) => { if (!settled) { settled = true; clearTimeout(timer); resolve({ ...result, finishedAt: Date.now(), ...r }); } };
     let child;
-    try { child = spawn('claude', argv, { cwd, stdio: ['ignore', 'pipe', 'pipe'], signal }); }
-    catch (e) { return done({ error: `Couldn't start claude: ${e.message}` }); }
+    const bin = grok ? 'grok' : 'claude';
+    try {
+      child = spawn(bin, argv, { cwd, stdio: ['ignore', 'pipe', 'pipe'], signal, detached: grok,
+        env: grok ? { ...process.env, SESSION_RAIL_HEADLESS: '1' } : process.env });
+    }
+    catch (e) { return done({ error: `Couldn't start ${bin}: ${e.message}` }); }
     timer = setTimeout(() => { child.kill(); done({ error: 'Review timed out' }); }, timeoutMs);
     child.stdout.on('data', (b) => { out += b; });
     child.stderr.on('data', (b) => { err += b; });
-    child.on('error', (e) => done({ error: e.name === 'AbortError' ? 'Review cancelled' : `Couldn't start claude: ${e.message}` }));
+    child.on('error', (e) => done({ error: e.name === 'AbortError' ? 'Review cancelled' : `Couldn't start ${bin}: ${e.message}` }));
     child.on('close', (code) => {
-      let j = null;
-      try { j = JSON.parse(out); } catch {}
+      const j = parseReply(out);
       if (j?.is_error) return done({ error: String(j.result || 'Review failed').slice(0, 200) });
       const o = j?.structured_output, findings = normalise(o?.findings);
       if (findings) {
@@ -130,7 +149,7 @@ export async function reviewApproach(cwd, { brief, files = [], earlier = [], cod
         return done({ findings, checks, verdict: VERDICTS.includes(o.verdict) ? o.verdict : findings.length ? 'simpler-path' : 'on-track',
           summary: typeof o.summary === 'string' ? o.summary : '' });
       }
-      done({ error: code ? (err.trim().split('\n').pop() || `claude exited with ${code}`).slice(0, 200) : 'The reviewer replied without a findings list' });
+      done({ error: code ? (err.trim().split('\n').pop() || `${bin} exited with ${code}`).slice(0, 200) : 'The reviewer replied without a findings list' });
     });
   });
 }
@@ -168,7 +187,7 @@ export async function saveReviews(path, runs) {
 // whether the tree was dirty, its findings start open, and its checks mark the earlier findings. `notes`
 // ([{ id, note }]) are Claude's replies to earlier findings it chose not to apply. The desk passes the brief
 // and files it already has, and `manual` (its on-demand review isn't a chunk's). Resolves the saved run with the branch's runs, or { error }.
-export async function reviewAndSave(cwd, { final = false, manual = false, notes = [], brief, files, signal } = {}) {
+export async function reviewAndSave(cwd, { final = false, manual = false, notes = [], brief, files, signal, host = 'claude' } = {}) {
   const path = await reviewsPath(cwd);
   brief ??= await readBrief(cwd);
   if (!path || !brief?.text) return { error: 'This branch has no brief to review' };
@@ -178,7 +197,7 @@ export async function reviewAndSave(cwd, { final = false, manual = false, notes 
   const withReplies = (runs) => runs.map((r) => ({ ...r, findings: r.findings.map((f) => (replies.has(f.id) ? { ...f, reply: replies.get(f.id) } : f)) }));
   const prior = withReplies(await loadReviews(path));
   const earlier = openFindings(prior).approach, codeFindings = staffCheck(prior);
-  const run = await reviewApproach(cwd, { brief, files, earlier, codeFindings, final, signal });
+  const run = await reviewApproach(cwd, { brief, files, earlier, codeFindings, final, signal, host });
   if (run.error === 'Review cancelled') return run;
   const { checks = [], ...rest } = run;
   const saved = { ...rest, type: 'approach', final, ...(manual ? { manual: true } : {}), head: head?.trim() ?? null, dirty: status === null || Boolean(status.trim()), // unknown counts as dirty
@@ -222,6 +241,7 @@ if (process.argv[1] && process.argv.includes('--run') && isMain()) {
   const at = process.argv.indexOf('--notes');
   let notes = [];
   try { notes = at > 0 ? JSON.parse(process.argv[at + 1]) : []; } catch {}
-  reviewAndSave(process.cwd(), { final: process.argv.includes('--final'), notes })
+  const hostAt = process.argv.indexOf('--host');
+  reviewAndSave(process.cwd(), { final: process.argv.includes('--final'), notes, host: hostAt > 0 ? process.argv[hostAt + 1] : 'claude' })
     .then((r) => process.stdout.write(reviewText(r) + '\n'));
 }

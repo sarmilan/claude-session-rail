@@ -200,6 +200,15 @@ In Claude Code, run:
 
 Say `y` to add the marketplace. Start a new `claude` session in iTerm2 and the desk and the rail open on the right.
 
+The same plugin does this for Grok. In a terminal:
+
+```
+grok plugin marketplace add <this folder>
+grok plugin install <this folder> --trust
+```
+
+Start a new `grok` in iTerm2. The desk and the rail open on the right, and the brief, the reviews and **+ new** work the same way. `/rail` and `/desk` are in the slash menu, and the two panels use Grok's colours. A session that is already open does not pick the plugin up until you start another one. The install copies this folder; refresh it with `grok plugin uninstall session-rail --confirm`, then the install again.
+
 If macOS asks whether to allow controlling iTerm2, allow it. That's how the panels open their panes and how the rail switches between sessions.
 
 ## Use
@@ -230,6 +239,7 @@ It has these parts:
 
 - It only works in iTerm2 on a Mac. Elsewhere it stays out of the way.
 - When a session starts, the iTerm window fills the screen (without switching to macOS full screen). The desk takes 28% of the width, the rail 18.5%, and Claude keeps the rest. `/rail` and `/desk` take their share from Claude's pane, and the window never grows.
+- A second Claude login (`CLAUDE_CONFIG_DIR=~/.claude-work claude`, or any `~/.claude-<name>`) works too: the rail lists its sessions and reads its context, plan, background tasks, account and rate limits from that dir. The panes, the pet and the settings stay shared.
 - Context shows tokens and the model, but not cost.
 - It reads Claude Code's own files, which can change between Claude Code versions.
 - Worktrees made by **+ new** stay after their branch is merged; remove one with `git worktree remove <path>`. Claude keeps a separate project memory for each worktree, since it's a different folder.

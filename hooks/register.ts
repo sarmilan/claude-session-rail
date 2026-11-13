@@ -510,7 +510,8 @@ export const register: Register = on => {
     return { text: `${r.text}\n\n${reportOutcomes(run.token)}` }
   })
 
-  // Rate limits are per account, so one file serves every rail; the newest reading wins.
+  // Rate limits are per account: one file per Claude config dir (usage.json for ~/.claude,
+  // usage-<name>.json for CLAUDE_CONFIG_DIR=~/.claude-<name>); the newest reading wins.
   // sh resolves $HOME (no Node APIs here) and the mv keeps a rail from reading half a file.
   on('session.measure', async ($, e, next) => {
     if (e.changed.includes('rateLimits'))
@@ -518,7 +519,7 @@ export const register: Register = on => {
         .run([
           '/bin/sh',
           '-c',
-          'd="$HOME/.claude/session-rail"; mkdir -p "$d" && printf %s "$0" > "$d/usage.json.tmp" && mv "$d/usage.json.tmp" "$d/usage.json"',
+          'd="$HOME/.claude/session-rail"; f=usage; c="${CLAUDE_CONFIG_DIR%/}"; if [ -n "$c" ] && [ "$c" != "$HOME/.claude" ]; then b="${c##*/}"; f="usage-${b#.}"; fi; mkdir -p "$d" && printf %s "$0" > "$d/$f.json.tmp" && mv "$d/$f.json.tmp" "$d/$f.json"',
           JSON.stringify({ rateLimits: e.rateLimits }),
         ])
         .catch(() => {})
