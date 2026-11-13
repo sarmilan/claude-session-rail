@@ -428,11 +428,72 @@ function buildMain(W) {
     }
     rule();
 
-    // This branch: uncommitted work, its commits newest first, and the default-branch commit it forked from.
+    // This checkout: where you are, the branch it proposes, and where that merges, then its commits.
     if (env?.isGit) {
+      const here = (wt?.items ?? []).find((w) => w.current);
+      const mine = prFor(env.branch);
       const diff = env.added || env.removed ? `${fg(C.green, `+${env.added}`)} ${fg(C.red, `−${env.removed}`)}` : '';
-      const label = trunc(clean(env.branch ?? '(detached)'), inner - 12 - (diff ? width(diff) + 1 : 0));
-      spread(`${bold('This branch')} ${dim(label)}`, diff, env.branch ? item('branch', () => branchMenu(env)) : undefined);
+      const pad = (n) => ' '.repeat(Math.max(0, n));
+      const dot = fg(C.accent, '●');
+      const paint = (plain) => plain.replaceAll('●', dot);
+      // The spine's last ● is where a fork leaves. Shrink the spine, then the name, so the right label fits.
+      const spine = (name, right, id) => {
+        const SPINES = ['●━━━━━●━━━━━●', '●━━━●━━━●', '●━━●━━●', '●━●━●', '●━━●', '●'];
+        const full = clean(name);
+        // Keep the whole name while the spine still fits; only then shorten the name.
+        let marks = SPINES.find((s) => width(`${full} ${s}`) + 2 + width(right) <= inner);
+        let label = full;
+        if (!marks) {
+          marks = '●';
+          label = trunc(full, Math.max(1, inner - width(right) - width(marks) - 3));
+        }
+        const left = `${label} ${marks}`;
+        if (width(left) + width(right) > inner) {
+          const plain = trunc(left, Math.max(1, inner - width(right) - 1));
+          line(plain.replaceAll('●', dot) + pad(inner - width(plain) - width(right)) + dim(right), id);
+          return Math.max(0, width(plain) - 1);
+        }
+        line(label + ' ' + paint(marks) + pad(inner - width(left) - width(right)) + dim(right), id);
+        return width(left) - 1;
+      };
+      const fork = (tip, ahead) => {
+        const tail = ` you${mine ? ` · #${mine.number}` : ''}`;
+        const marks = ahead > 0 ? '●━━●' : '●';
+        let at = Math.max(0, tip - 1);
+        if (at + width(marks + tail) > inner) at = Math.max(0, inner - width(marks + tail));
+        line(pad(Math.max(0, Math.min(at - 1, inner - 1))) + dim('╲'));
+        line(pad(at) + paint(marks) + bold(' you') + (mine ? dim(` · #${mine.number}`) : ''));
+      };
+      if (!env.branch) {
+        const sha = here?.sha ? clean(here.sha) : '';
+        line(trunc(sha ? `detached at ${sha}` : 'detached', inner));
+        line(dim('not on a branch'));
+      } else if (env.branch === env.base) {
+        spine(env.base, 'you are here', item('branch', () => branchMenu(env)));
+        line(dim('a session branch would fork'));
+        line(dim('from here and merge back'));
+        const into = `into ${clean(env.base)}`;
+        if (diff) spread(dim(trunc(into, inner - width(diff) - 1)), diff);
+        else line(dim(trunc(into, inner)));
+      } else {
+        const intoName = clean(mine?.baseRefName || env.base || '');
+        const ahead = here?.ahead;
+        fork(spine(intoName || '…', 'merges here'), ahead);
+        const name = trunc(clean(env.branch), inner - (diff ? width(diff) + 1 : 0));
+        spread(bold(name), diff, item('branch', () => branchMenu(env)));
+        const target = intoName;
+        if (ahead > 0) {
+          const extra = mine ? (mine.isDraft ? 'draft' : 'open') : (target ? `merges into ${target}` : '');
+          const text = `↑${ahead}${extra ? ` · ${extra}` : ''}`;
+          line(width(text) > inner ? dim(trunc(text, inner)) : fg(C.green, `↑${ahead}`) + (extra ? dim(` · ${extra}`) : ''));
+        } else if (ahead === 0) {
+          line(dim('nothing ahead yet'));
+          if (mine) line(dim(mine.isDraft ? 'draft' : 'open'));
+          else if (target) line(dim(trunc(`merges into ${target}`, inner)));
+        } else if (target || mine) {
+          line(dim(trunc(mine ? `${mine.isDraft ? 'draft' : 'open'}${target ? ` · merges into ${target}` : ''}` : `merges into ${target}`, inner)));
+        }
+      }
       if (env.dirty) line(fg(C.yellow, '◌') + dim(` ${env.dirty} uncommitted`));
       for (const c of env.commits ?? []) {
         const age = dim(ago(c.at)), tag = c.fork && env.base ? `  ${fg(C.blue, trunc(clean(env.base), Math.floor(inner / 3)))}` : '';

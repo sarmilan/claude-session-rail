@@ -605,7 +605,7 @@ export async function connectors(host) {
 // ── Changes: your open PRs in this repo ────────────────────────────────────────
 export async function prs(cwd, limit = 15) {
   const out = await run('gh', ['pr', 'list', '--author', '@me', '--state', 'open', '--limit', String(limit),
-    '--json', 'number,title,state,isDraft,url,headRefName,updatedAt,statusCheckRollup'], { cwd, timeout: 15_000 });
+    '--json', 'number,title,state,isDraft,url,headRefName,baseRefName,updatedAt,statusCheckRollup'], { cwd, timeout: 15_000 });
   if (out == null) return { ok: false, items: [] };
   try {
     return { ok: true, items: JSON.parse(out).map(({ statusCheckRollup, ...p }) => ({ ...p, checks: (statusCheckRollup ?? []).map(check) })) };

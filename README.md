@@ -76,7 +76,11 @@ The rail has two tabs: **Session**, what Claude is doing, and **Git**, where all
      ↑4 ↓1 · clean · #51 ◌
    ○ old-spike     feature/38-cache
      ✓ merged · clean
- This branch fix/42-login…  +42 −7
+ main ●━━━━━●━━━━━●       merges here
+              ╲
+               ●━━● you
+ fix/42-login                 +42 −7
+ ↑2 · merges into main
  ◌ 3 uncommitted
  ● 9f2c1ab Stop the redirect loop 2m
  ◆ 11b48b1 Merge pull #40   main 3h
@@ -88,7 +92,7 @@ The rail has two tabs: **Session**, what Claude is doing, and **Git**, where all
 ```
 
 - **Worktrees:** every checkout of the repo, this one first (▸). Each card shows its branch (or the commit it's detached at), how far it is ahead (↑) of and behind (↓) the default branch, or ✓ merged once its work is in, how many files are uncommitted, and its pull request with a badge for its checks: ✓ passing, ✗ failing, ◌ running. Open a card to go to the Claude session working in it (or start one there), open its pull request or its failing check, or copy its branch name.
-- **This branch:** the lines added and removed, uncommitted files, and the branch's commits since it forked, down to the default-branch commit it started from (◆).
+- **Branch map:** where this checkout is, the branch it proposes, and the branch that work merges into. On the default branch it says a session branch would fork from here and merge back, and it does not invent a name. On any other branch it draws that branch leaving the merge target (the pull request's base, when there is one, otherwise the default branch), with the proposed branch's name and the lines added and removed, how far ahead it is or `nothing ahead yet`, and `#N` when a pull request is open. A detached checkout says `detached at <sha>` and merges nowhere. Under the map: uncommitted files, and the commits since the fork, down to the default-branch commit it started from (◆).
 - **PR:** this branch's pull request and each of its checks, failing first. Open a check to see its run.
 - **Pull requests:** your open pull requests in this repo.
 
