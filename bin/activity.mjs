@@ -38,6 +38,23 @@ export function refused(a, tool, file, now) {
 export function agentStarted(a, id, agent) {
   return { ...a, updatedAt: agent.since, agents: { ...a.agents, [id]: agent } };
 }
+// Grok's Stop event lists what is still in flight (shell, subagent, monitor). The rail reads `tasks`
+// the way it reads Claude's task index: shells are babies, subagents are fliers, and any of them keeps
+// the pet busy after the turn has ended. A missing list leaves the previous one alone.
+export function trackTasks(a, list, now) {
+  if (!Array.isArray(list)) return a;
+  const prior = new Map((a.tasks ?? []).map((t) => [t.id, t]));
+  const tasks = [];
+  for (const t of list) {
+    if (!t?.id) continue;
+    const kind = t.type === 'subagent' ? 'agent' : t.type === 'shell' ? 'shell' : t.type === 'monitor' ? 'monitor' : null;
+    if (!kind) continue;
+    const id = String(t.id);
+    const label = String(t.command || t.description || t.agentType || kind).replace(/\s+/g, ' ').trim().slice(0, 120);
+    tasks.push({ id, kind, label, agentType: t.agentType || null, startedAt: prior.get(id)?.startedAt || now, state: 'running' });
+  }
+  return { ...a, updatedAt: now, tasks };
+}
 export function agentEnded(a, id, now) {
   const agent = a.agents?.[id];
   if (!agent || agent.endedAt) return a;

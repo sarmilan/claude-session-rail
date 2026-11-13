@@ -40,33 +40,49 @@ export const FLIERS = [
 ];
 export const MAX_VISITORS = 4;
 const SPOTS = [-1, 1, -2, 2]; // where each one hovers: either side of the pet, the second pair further out
+// The body letter of each flier, swapped for its subagent's colour so the strip matches the Now list.
+const TINT = { bee: 'Y', butterfly: 'F', dragonfly: 'T', ladybird: 'R' };
 
-// The flock: `want(n)` adds or sends off visitors to match n, `step` moves them a tick, and `sprites`
-// says where to draw them: `x` in columns from the strip's left, `alt` 0 (low) … 1 (high).
+// The flock. `want` takes a count or a list of `{ id, colour }`. It draws at most four and remembers how
+// many more there are (`overflow`). `spook` sends them off the pet for a moment; `calm` settles them low.
 export function createVisitors() {
   let next = 0; // which flier comes next, in turn
-  const flock = []; // { kind, x, alt, dir, seed, leaving, spot }
+  const flock = []; // { id, kind, colour, x, alt, dir, seed, leaving, spot, spook }
+  let overflow = 0, calm = false;
   return {
-    want(n, W) {
-      n = Math.max(0, Math.min(MAX_VISITORS, n | 0));
+    want(entries, W) {
+      const list = Array.isArray(entries)
+        ? entries.filter((e) => e && e.id != null)
+        : Array.from({ length: Math.max(0, entries | 0) }, (_, i) => ({ id: `n${i}`, colour: null }));
+      overflow = Math.max(0, list.length - MAX_VISITORS);
+      const show = list.slice(0, MAX_VISITORS), ids = new Set(show.map((e) => e.id));
       const staying = flock.filter((v) => !v.leaving);
-      for (let i = staying.length; i < n; i++) {
+      for (const v of staying) if (!ids.has(v.id)) v.leaving = true;
+      for (const e of show) {
+        const have = flock.find((v) => v.id === e.id && !v.leaving);
+        if (have) { have.colour = e.colour ?? null; continue; }
         const spot = SPOTS.find((o) => !staying.some((v) => v.spot === o)) ?? 0, from = next % 2 ? W + 2 : -8;
-        const v = { kind: next++ % FLIERS.length, x: from, alt: 0.5, dir: from < 0 ? 1 : -1, seed: next * 2.3, leaving: false, spot };
+        const v = { id: e.id, kind: next++ % FLIERS.length, colour: e.colour ?? null, x: from, alt: 0.5, dir: from < 0 ? 1 : -1, seed: next * 2.3, leaving: false, spot, spook: 0 };
         flock.push(v); staying.push(v);
       }
-      staying.slice(0, Math.max(0, staying.length - n)).forEach((v) => { v.leaving = true; });
     },
+    spook(tick) { for (const v of flock) if (!v.leaving) v.spook = tick + 12; },
+    setCalm(on) { calm = Boolean(on); },
     // `centre` and `half` are the pet's middle column and half its width; `vw` is a flier's width in columns.
     step(centre, W, tick, half, vw = 4) {
       for (const v of flock) {
-        const wobble = 3 * Math.sin(tick * 0.09 + v.seed);
+        const spooked = v.spook > tick;
+        const wobble = (calm && !spooked ? 1 : 3) * Math.sin(tick * 0.09 + v.seed);
+        const hover = Math.max(1, Math.min(W - 1 - vw, centre + Math.sign(v.spot) * (half + 1 + (Math.abs(v.spot) - 1) * 9) - (v.spot < 0 ? vw : 0) + wobble));
         const target = v.leaving ? (v.x < W / 2 ? -12 : W + 6) // no wobble, so it always clears the edge and goes
-          : Math.max(1, Math.min(W - 1 - vw, centre + Math.sign(v.spot) * (half + 1 + (Math.abs(v.spot) - 1) * 9) - (v.spot < 0 ? vw : 0) + wobble));
-        const dx = (target - v.x) * (v.leaving ? 0.12 : 0.08);
+          : spooked ? (v.x >= centre ? W + 4 : -8)
+          : hover;
+        const dx = (target - v.x) * (v.leaving || spooked ? 0.18 : calm ? 0.05 : 0.08);
         v.x += Math.max(-1.5, Math.min(1.5, dx));
         if (Math.abs(dx) > 0.05) v.dir = dx > 0 ? 1 : -1;
-        v.alt = 0.5 + 0.45 * Math.sin(tick * 0.17 + v.seed * 1.7);
+        v.alt = spooked ? 0.95
+          : calm ? 0.22 + 0.12 * Math.sin(tick * 0.1 + v.seed)
+          : 0.5 + 0.45 * Math.sin(tick * 0.17 + v.seed * 1.7);
       }
       for (let i = flock.length - 1; i >= 0; i--) if (flock[i].leaving && (flock[i].x < -10 || flock[i].x > W + 4)) flock.splice(i, 1);
     },
@@ -74,9 +90,12 @@ export function createVisitors() {
       return flock.map((v) => {
         const f = FLIERS[v.kind], frame = Math.floor(tick / f.flap) % 2;
         const rows = f.frames[frame].map((r) => (v.dir < 0 ? [...r].reverse().join('') : r));
-        return { x: v.x, alt: v.alt, rows, palette: f.palette };
+        const key = TINT[f.name];
+        const palette = v.colour == null || !key ? f.palette : { ...f.palette, [key]: v.colour };
+        return { x: v.x, alt: v.alt, rows, palette };
       });
     },
     get size() { return flock.length; },
+    get overflow() { return overflow; },
   };
 }

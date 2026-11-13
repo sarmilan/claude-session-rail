@@ -143,7 +143,7 @@ export async function activity(sessionId) {
   const review = desk?.review && desk.pid && alive(desk.pid) ? desk.review : null;
   if (!feed?.claude) return review ? { claude: null, running: [], recent: [], desk: review } : null;
   return { claude: feed.claude, running: feed.running ?? [], recent: feed.recent ?? [], gate: feed.gate ?? null, compacted: feed.compacted ?? null,
-    agents: feed.agents ?? {}, desk: review };
+    agents: feed.agents ?? {}, tasks: feed.tasks ?? [], desk: review };
 }
 
 // ── Brief: the branch's goal, design and engineering chunks (see brief.mjs) ───
@@ -360,7 +360,8 @@ export async function sessions() {
 // A session is blocked when the brief gate refused an edit in the last 2 minutes, busy while Claude works,
 // waiting when its turn ended in the last hour (it's the person's move), else idle.
 const GATE_HOLD = 2 * 60_000, WAIT_FRESH = 60 * 60_000;
-// Whether the brief gate is holding the session: it refused an edit in the last 2 minutes (the rail's pet too).
+// Whether the brief gate is holding the session: it refused an edit in the last 2 minutes.
+// The pet's ? is wider than this: it stands still the whole time the brief is unapproved.
 export const gateHeld = (act, now = Date.now()) => Boolean(act?.gate && now - act.gate.at < GATE_HOLD);
 export function sessionState(s, act, now = Date.now()) {
   const rel = (p) => (p && s.cwd && p.startsWith(s.cwd + '/') ? p.slice(s.cwd.length + 1) : p ?? '');
@@ -483,7 +484,8 @@ export async function sessionFiles(session) {
     const dir = await grokSessionDir(session.cwd, session.sessionId);
     return {
       transcriptPath: null, tasksDir: null, host: 'grok',
-      planPath: null, // the brief is the plan; plan.json is Grok's own todo list, not a document
+      // Plan mode writes plan.md here, the same role as Claude's ~/.claude/plans file. plan.json is Grok's todo list.
+      planPath: dir ? join(dir, 'plan.md') : null,
       signalsPath: dir ? join(dir, 'signals.json') : null,
       summaryPath: dir ? join(dir, 'summary.json') : null,
       usagePath: dir ? join(dir, 'usage.json') : null,

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // The desk: a wider iTerm panel between Claude and the rail, with tabs for the work itself.
 //   Plan  the branch's brief (brief.mjs) with its Approve button; without one, the board's Todo issues, then
-//         the plan plan mode is writing (live, from the session's transcript) or recent work
+//         the plan plan mode is writing (Claude: the session transcript; Grok: the session's plan.md) or recent work
 //   Diff  every file changed since the branch forked from the default branch, grouped by the brief's chunks,
 //         and each file's diff
 //   Review  the branch's review record: the approach reviews (reviewer.mjs) Claude runs before each commit, or
@@ -57,7 +57,9 @@ const loaders = {
     data.claude = current;
     const files = await src.sessionFiles(current);
     if (current?.host !== 'grok') await taskIndex.update(files.transcriptPath);
-    [data.plan, data.brief] = await Promise.all([src.readPlan(taskIndex.planPath), src.readBrief(cwd)]);
+    // Claude's plan is discovered in the transcript. Grok writes it at a fixed path in the session directory.
+    const planPath = current?.host === 'grok' ? files.planPath : taskIndex.planPath;
+    [data.plan, data.brief] = await Promise.all([src.readPlan(planPath), src.readBrief(cwd)]);
     if (changed('plan', `${data.plan ? `${data.plan.path}:${data.plan.mtime}` : ''}|${data.brief?.mtime ?? ''}`)) {
       ui.scroll.plan = 0;
     }

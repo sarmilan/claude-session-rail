@@ -26,7 +26,9 @@ If you have a `/start` command of your own, it runs as soon as the session start
 │  ● Reading src/auth/login.ts      │ ⎇  feature/l… +42 −7 · 3 changed │
 │  ● Editing src/auth/redirect.ts   │ ◌  Remote Control  /remote-cont… │
 │                                   │ ──────────────────────────────── │
-│                                   │ Context ▸          33% ▰▰▰▱▱▱▱▱  │
+│                                   │ Context ▾          33% ▰▰▰▱▱▱▱▱  │
+│                                   │   Model    Opus 4.6              │
+│                                   │   Tokens   66k / 200k            │
 │                                   │ ──────────────────────────────── │
 │                                   │ Connectors ▸         4 connected │
 │                                   │ ──────────────────────────────── │
@@ -52,7 +54,7 @@ The rail has two tabs: **Session**, what Claude is doing, and **Git**, where all
 
 - **Sessions:** every Claude session on your Mac, this one first (▸), then the ones that need you. Each shows its brief's title (or its branch), whether it's busy, waiting for you, blocked (the brief gate just held an edit) or idle, and underneath, its repo, branch and what it's doing right now. Every rail shows the same list.
 - **Environment:** your computer, account, repo, and branch, with the lines added and removed since the branch forked from the default branch (committed plus uncommitted; untracked files are not counted)
-- **Context:** how full Claude's context window is
+- **Context:** how full the context window is. It starts open, with the model, the token count, and the usage windows.
 - **Connectors:** your MCP servers and whether they're connected
 - **Now:** who is doing what this second, and for how long:
   - **Claude:** thinking (with the model), the tool it's running and on what, waiting on its subagents, or waiting for you
@@ -207,7 +209,7 @@ grok plugin marketplace add <this folder>
 grok plugin install <this folder> --trust
 ```
 
-Start a new `grok` in iTerm2. The desk and the rail open on the right, and the brief, the reviews and **+ new** work the same way. `/rail` and `/desk` are in the slash menu, and the two panels use Grok's colours. A session that is already open does not pick the plugin up until you start another one. The install copies this folder; refresh it with `grok plugin uninstall session-rail --confirm`, then the install again.
+Start a new `grok` in iTerm2. The desk and the rail open on the right, and the brief, the reviews and **+ new** work the same way. Plan shows the branch brief, and before there is one it shows the `plan.md` plan mode writes in the Grok session, the same way Claude's plan file shows up. The pet follows the activity feed, since a Grok session file never says busy. `/rail` and `/desk` are in the slash menu, and the two panels use Grok's colours. A session that is already open does not pick the plugin up until you start another one. The install copies this folder; refresh it with `grok plugin uninstall session-rail --confirm`, then the install again.
 
 If macOS asks whether to allow controlling iTerm2, allow it. That's how the panels open their panes and how the rail switches between sessions.
 
@@ -218,11 +220,11 @@ If macOS asks whether to allow controlling iTerm2, allow it. That's how the pane
 - They close when you quit Claude.
 - Keys: `↑` `↓` to move, `Enter` to open, `Esc` to go back, `c` to change creature, `q` to close the rail.
 - **⚙ settings**, in the rail's bottom-right corner, opens three rows under the creature: `←` `→` on **Font size** makes the Claude pane, the desk and the rail bigger or smaller together (`Enter` for Reset), `←` `→` on **Pet** picks the creature, and `←` `→` on **Auto-compact** turns auto-compaction off or on. The font size is remembered and comes back with the next session. It works by switching the panes to iTerm profiles it generates (`session-rail 15pt` and so on), which show up in iTerm's Profiles menu.
-- A little pixel creature wanders along the bottom: a snail, a turtle (with a bright green shell, warm amber when heavy) or a crab. It walks through its own habitat (woodland for the snail, a pond for the turtle, a beach for the crab) on speckled ground (soil, mud or sand), with plants swaying gently behind it in iTerm2. It hurries while Claude is busy and falls asleep when things go quiet. Your pick is remembered.
-- The strip is the branch's road, left to right: the creature paces around a spot that moves right as the brief's chunks get Done, from the left edge before approval to the right edge when all of them are, and walks briskly to its new spot after each one. With no brief it wanders the whole strip.
-- Each running subagent brings a visitor, a bee, butterfly, dragonfly or ladybird in turn (up to 4), which flutters around the creature and flies off when its subagent finishes.
-- A little one, a baby of the creature, trails behind it for each running background command (up to 3). When a tool call fails the creature flinches and a red puff pops over it. While the brief gate is holding edits (an edit was refused in the last 2 minutes and the brief isn't approved), it stands still with a yellow `?` over its head.
-- The creature grows as the branch heads toward its compaction: a hatchling until the branch's brief is approved, then juvenile, adult after the first Done chunk (faster, hopping), and heavy once every chunk is Done (bigger, shaking, fuming: merge it and let it compact). After the compaction the next branch starts again with a hatchling. Each creature has a drawing for each stage, from a pale little hatchling to a spiked, scowling heavy.
+- A little pixel creature wanders along the bottom: a snail, a turtle (with a bright green shell, warm amber when heavy) or a crab. It walks through its own habitat (woodland for the snail, a pond for the turtle, a beach for the crab) on speckled ground (soil, mud or sand), with plants swaying gently behind it in iTerm2. Sand puffs under the crab, and the reeds bend when the turtle hops. It hurries while the agent is busy, looks left and fidgets while it is waiting for you, and falls asleep only after a real lull. Your pick is remembered.
+- The strip is the branch's road, left to right: the creature paces around a spot that moves right as the brief's chunks get Done, from the left edge before approval to the right edge when all of them are, and walks briskly to its new spot after each one. Each Done chunk leaves a marker behind it (a mushroom, a lily pad or a shell) and the creature hops with a gold sparkle. With no brief it wanders the whole strip.
+- Each running subagent brings a visitor, a bee, butterfly, dragonfly or ladybird in turn, tinted with that subagent's colour (up to 4, and a `+n` when more are running). They flutter around the creature, settle when things are quiet, scatter when a tool fails, and fly off when their subagent finishes.
+- A little one, a baby of the creature, trails behind it for each running background command (up to 3, then a `+n`). Babies tuck in when it sleeps, pile up while the brief is unapproved, and hide behind it when it flinches. A failed tool makes it flinch, pop a red puff, and stay drooped until the next tool succeeds. While the brief is not approved yet it stands still with a yellow `?` over its head.
+- The creature grows as the branch heads toward its compaction: a hatchling until the branch's brief is approved, then juvenile, adult after the first Done chunk (faster, hopping), and heavy once every chunk is Done (bigger, shaking, a gold mark: merge it and let it compact). After the compaction the next branch starts again with a hatchling. Each creature has a drawing for each stage, from a pale little hatchling to a spiked, scowling heavy. Now and then it fidgets: the snail stretches, the turtle peeks, the crab snaps a claw. Waking up is a little stretch.
 
 ## How it works
 

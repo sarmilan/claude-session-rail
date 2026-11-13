@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { callFinished, callStarted, fresh, turnEnded, turnStarted } from '../bin/activity.mjs';
+import { callFinished, callStarted, fresh, trackTasks, turnEnded, turnStarted } from '../bin/activity.mjs';
+import { attentionFor } from '../bin/mascot.mjs';
 import { editReason, slashCommand } from '../bin/grok-hook.mjs';
 import { C, fg, paneBgOff, paneBgOn, usePalette } from '../bin/term.mjs';
 import { connectorsFrom, contextFrom, rowFromActive, usageFromBilling } from '../bin/sources.mjs';
@@ -55,6 +56,35 @@ test('a turn ending clears the main call and leaves a background agent', () => {
   a = turnEnded(a, 5);
   assert.equal(a.claude.state, 'waiting');
   assert.equal(a.running.length, 0);
+});
+
+test('Grok never reports busy, so the pet follows the activity feed', () => {
+  const session = { status: 'unknown', statusSince: 1_000, host: 'grok' };
+  const tool = { claude: { state: 'tool', since: 4_000 }, running: [{ id: 'c', tool: 'read_file' }] };
+  assert.equal(attentionFor({ activity: tool, session, now: 5_000 }), 'busy');
+  assert.equal(attentionFor({ activity: { claude: { state: 'waiting', since: 4_000 } }, session, now: 5_000 }), 'waiting');
+  assert.equal(attentionFor({ activity: null, session, now: 1_000 + 2 * 60 * 60 * 1000 }), 'idle');
+  const shell = [{ id: 'sh', kind: 'shell' }];
+  assert.equal(attentionFor({ activity: { claude: { state: 'waiting', since: 4_000 } }, tasks: shell, session, now: 5_000 }), 'busy');
+});
+
+test('a stop keeps the shells and subagents that are still running', () => {
+  const a = trackTasks(fresh(1), [
+    { id: 's1', type: 'shell', command: 'npm test' },
+    { id: 'a1', type: 'subagent', description: 'review the diff', agentType: 'general' },
+    { id: 'm1', type: 'monitor', description: 'watch the build' },
+  ], 10);
+  assert.deepEqual(a.tasks.map((t) => [t.id, t.kind, t.label]), [
+    ['s1', 'shell', 'npm test'],
+    ['a1', 'agent', 'review the diff'],
+    ['m1', 'monitor', 'watch the build'],
+  ]);
+  assert.equal(a.tasks[0].startedAt, 10);
+  const kept = trackTasks(a, [{ id: 's1', type: 'shell', command: 'npm test' }], 20);
+  assert.equal(kept.tasks.length, 1);
+  assert.equal(kept.tasks[0].startedAt, 10);
+  assert.deepEqual(trackTasks(a, [], 30).tasks, []);
+  assert.equal(trackTasks(a, undefined, 30), a);
 });
 
 test('go-ahead waits for an approval newer than the one already seen', () => {
