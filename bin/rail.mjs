@@ -131,7 +131,7 @@ const restoreTab = (sid) => {
   if (tabSwitched) return saveTab(sid); // a switch before the session was known wins over the saved tab, and is kept
   try { const t = JSON.parse(readFileSync(railFile(sid), 'utf8')).tab; if (TABS.includes(t) && t !== ui.tab) showTab(t); } catch {}
 };
-const ui = { sel: null, open: { environment: true, context: true, connectors: false, more: false, settings: false }, expanded: {}, scroll: 0, tick: 0,
+const ui = { sel: null, open: { environment: true, context: true, connectors: false, more: false, settings: false }, expanded: {}, reviewLines: {}, scroll: 0, tick: 0,
   overlay: null, toast: null, input: null, tab: TABS.includes(startTab) ? startTab : 'session' };
 // Switch tabs; --frame doesn't touch the saved one.
 const setTab = (t) => {
@@ -269,9 +269,26 @@ const sessionFor = (path) => {
   const owner = (dir) => (data.worktrees?.items ?? []).filter((x) => inside(dir, x.path)).sort((a, b) => b.path.length - a.path.length)[0]?.path;
   return data.overview?.find((o) => owner(o.cwd) === path) ?? null;
 };
+// One gh pr view, the first time a changes-requested lane opens. The minute poll does not ask for reviews.
+const reviewAsked = new Set();
+const loadReview = async (row) => {
+  const node = data.map?.branches?.find((b) => b.name === row.branch);
+  if (!node || node.name in ui.reviewLines || node.pr?.reviewDecision !== 'CHANGES_REQUESTED' || !node.pr.number) return;
+  const key = String(node.pr.number);
+  if (reviewAsked.has(key)) return;
+  reviewAsked.add(key);
+  const line = await src.reviewLine(cwd, node.pr.number);
+  if (line == null) { reviewAsked.delete(key); return; }
+  ui.reviewLines[node.name] = line;
+  if (line) draw();
+};
 // Enter on a lane toggles it. Enter on a check or an action row runs that row. Nothing here rebases or merges.
-const activateLane = (row) => {
-  if (row.activate === 'toggle') { ui.expanded[row.branch] = !ui.expanded[row.branch]; return; }
+const activateLane = async (row) => {
+  if (row.activate === 'toggle') {
+    ui.expanded[row.branch] = !ui.expanded[row.branch];
+    if (ui.expanded[row.branch]) await loadReview(row);
+    return;
+  }
   if (row.activate === 'check' && row.url) return launch('open', [row.url], 'Opened the check');
   if (row.activate === 'pr' && row.url) return launch('open', [row.url], `Opened #${row.pr}`);
   if (row.activate === 'copy') return copy(row.branch, 'branch name');
@@ -427,7 +444,7 @@ function buildMain(W) {
     const tree = data.map?.ok ? buildTree({
       base: data.map.base,
       onTrunk: Boolean(env?.branch && env.branch === data.map.base),
-      branches: data.map.branches,
+      branches: data.map.branches.map((b) => (b.name in ui.reviewLines ? { ...b, reviewLine: ui.reviewLines[b.name] } : b)),
       detached: data.map.detached,
     }) : null;
     const view = tree ? layoutTree(tree, {
@@ -766,7 +783,10 @@ if (args.includes('--frame')) {
   mascot.setHeld(petHeld());
   if (args.includes('--flinch')) mascot.flinch();
   // e.g. --activate pr:8  or  --activate finished,opt:0  (a chain of clicks)
-  for (const id of (flag('--activate') || '').split(',').filter(Boolean)) frame(W, H).items.find((it) => it.id === id)?.activate();
+  for (const id of (flag('--activate') || '').split(',').filter(Boolean)) {
+    const run = frame(W, H).items.find((it) => it.id === id)?.activate;
+    if (run) await run();
+  }
   console.log(frame(W, H).lines.join('\n'));
   process.exit(0);
 }

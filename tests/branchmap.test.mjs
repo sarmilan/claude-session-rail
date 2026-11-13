@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { buildTree, layoutTree } from '../bin/branchmap.mjs';
+import { buildTree, layoutTree, reviewLineFrom } from '../bin/branchmap.mjs';
 import { branchMap, conflictNames, worktrees } from '../bin/sources.mjs';
 import { width } from '../bin/term.mjs';
 
@@ -65,6 +65,27 @@ test('the current trunk pull request is held before a cleaner sibling', () => {
   assert.equal(tree.banner.kind, 'held');
   assert.equal(tree.banner.branch, 'mine');
   assert.equal(tree.banner.tone, 'red');
+});
+
+test('a child that keeps editing its parent does not hold the stack', () => {
+  const tree = treeOf([
+    branch('parent', { current: true, files: ['rail.mjs', 'desk.mjs'], pr: pull(35) }),
+    branch('child', { parent: 'parent', files: ['rail.mjs'], pr: pull(36) }),
+    branch('grandchild', { parent: 'child', files: ['rail.mjs'] }),
+    branch('sibling', { files: ['desk.mjs'], pr: pull(40) }),
+  ]);
+  assert.equal(tree.banner.kind, 'held');
+  assert.equal(tree.banner.other, 'sibling');
+  assert.equal(tree.banner.file, 'desk.mjs');
+  assert.deepEqual(tree.branches.find((b) => b.name === 'child').clashFiles, []);
+  assert.deepEqual(tree.branches.find((b) => b.name === 'grandchild').clashFiles, []);
+  const stacked = treeOf([
+    branch('parent', { current: true, files: ['rail.mjs'], pr: pull(35) }),
+    branch('child', { parent: 'parent', files: ['rail.mjs'], pr: pull(36) }),
+  ]);
+  assert.equal(stacked.banner.kind, 'next');
+  assert.equal(stacked.banner.child, 'child');
+  assert.deepEqual(stacked.branches.map((b) => b.clashFiles), [[], []]);
 });
 
 test('a shared file holds the banner, and a clean conflict list leaves that file in place', () => {
@@ -227,6 +248,28 @@ test('a child with no pull request is named, not numbered', () => {
   assert.equal(text(layoutTree(tree).banner), '▌ Next  merge #35 · rebase colours');
 });
 
+test('the review line is the first line of the latest changes request, under the checks', () => {
+  assert.equal(reviewLineFrom([
+    { state: 'APPROVED', body: 'ship it', submittedAt: '2024-01-02T00:00:00Z' },
+    { state: 'CHANGES_REQUESTED', body: 'the spine is not the stack\nmore', submittedAt: '2024-01-01T00:00:00Z' },
+    { state: 'CHANGES_REQUESTED', body: '\n  newer line\n', submittedAt: '2024-02-01T00:00:00Z' },
+  ]), 'newer line');
+  assert.equal(reviewLineFrom([]), null);
+  assert.equal(reviewLineFrom([{ state: 'COMMENTED', body: 'a note' }]), null);
+  const tree = treeOf([branch('a', {
+    pr: pull(35, { reviewDecision: 'CHANGES_REQUESTED', checks: [{ name: 'test', state: 'pass', url: 'u' }, { name: 'lint', state: 'fail', url: 'u' }] }),
+    reviewLine: 'the spine is not the stack',
+  })]);
+  const closed = text(lane(layoutTree(tree), 'a').left) + text(lane(layoutTree(tree), 'a').right);
+  assert.equal(closed.includes('changes'), false);
+  const rows = layoutTree(tree, { open: { a: true } }).rows.filter((r) => r.branch === 'a');
+  const labels = rows.map((r) => text(r.left));
+  const at = (s) => labels.findIndex((l) => l.includes(s));
+  assert.ok(at('lint') < at('test') && at('test') < at('changes requested') && at('changes requested') < at('the spine is not the stack'));
+  assert.equal(rows.find((r) => text(r.left).includes('the spine is not the stack')).left.at(-1).style, 'plain');
+  assert.equal(rows.find((r) => text(r.left).includes('changes requested')).left.at(-1).style, 'yellow');
+});
+
 test('conflict names are the file list after the tree id', () => {
   assert.deepEqual(conflictNames('abc123\nrail.mjs\ndesk.mjs\n\nCONFLICT (content): Merge conflict in rail.mjs\n'), ['rail.mjs', 'desk.mjs']);
   assert.deepEqual(conflictNames('abc123\n'), []);
@@ -299,8 +342,9 @@ test('a real repo parents a branch on its ancestor and keeps both file lists', a
     assert.equal(by['feature-ghost'].files, null);
     const view = layoutTree(buildTree({ base: map.base, branches: map.branches, detached: map.detached }), { open: { 'feature-a': true } });
     assert.equal(view.banner.find((p) => p.text === ' Held').style, 'red');
-    const rows = view.rows.map((r) => text(r.left));
-    assert.ok(rows.some((r) => r.includes('clash  shared.txt')));
+    assert.equal(text(view.banner).includes('unique-a.txt'), true);
+    const rows = view.rows.filter((r) => r.branch === 'feature-a').map((r) => text(r.left));
+    assert.equal(rows.some((r) => r.includes('clash  ')), false);
     assert.ok(rows.some((r) => r.includes('conflict  unique-a.txt')));
     const ghost = view.rows.find((r) => r.branch === 'feature-ghost');
     assert.equal(text(ghost.right), 'not checked out');

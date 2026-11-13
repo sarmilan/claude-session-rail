@@ -16,24 +16,52 @@ const pending = (b) => checksOf(b).some((c) => c.state === 'pending');
 const dirty = (b) => b.pr?.mergeStateStatus === 'DIRTY';
 const conflicted = (b) => Boolean(b.conflict) || (b.conflictFiles?.length ?? 0) > 0 || dirty(b);
 
+// Names above this branch, walking parent pointers. A cycle stops. The default branch is not a node.
+function ancestorsOf(branch, byName, base) {
+  const out = new Set();
+  let name = branch.parent;
+  const seen = new Set([branch.name]);
+  while (name && name !== base && !seen.has(name)) {
+    seen.add(name);
+    out.add(name);
+    name = byName.get(name)?.parent;
+  }
+  return out;
+}
+
+// A parent and the child that keeps editing its files are one stack. That overlap is not a clash:
+// the banner still says to merge the parent and rebase the child. Clash is a shared file with a
+// branch that is neither above nor below this one.
+function outsideStack(branch, branches, base) {
+  const byName = new Map(branches.map((b) => [b.name, b]));
+  const ancestors = ancestorsOf(branch, byName, base);
+  const skip = new Set(ancestors);
+  for (const other of branches) {
+    if (other !== branch && ancestorsOf(other, byName, base).has(branch.name)) skip.add(other.name);
+  }
+  return skip;
+}
+
 // Files this branch changed that another open branch also changed. A branch with no checkout has no list.
-function clashFiles(branch, branches) {
+function clashFiles(branch, branches, base) {
   if (!branch.files) return [];
   const own = new Set(branch.files);
+  const skip = outsideStack(branch, branches, base);
   const hit = new Set();
   for (const other of branches) {
-    if (other === branch || !other.files) continue;
+    if (other === branch || !other.files || skip.has(other.name)) continue;
     for (const file of other.files) if (own.has(file)) hit.add(file);
   }
   return [...hit].sort();
 }
 
-function clashWith(branch, branches) {
+function clashWith(branch, branches, base) {
   if (!branch.files) return [];
   const own = new Set(branch.files);
+  const skip = outsideStack(branch, branches, base);
   const hits = [];
   for (const other of branches) {
-    if (other === branch || !other.files) continue;
+    if (other === branch || !other.files || skip.has(other.name)) continue;
     const shared = other.files.filter((file) => own.has(file)).sort();
     if (shared.length) hits.push({ other, file: shared[0] });
   }
@@ -50,7 +78,7 @@ function bannerSubject(branches, base) {
   const pool = branches.filter((b) => b.pr && trunkChild(b, base)).sort((a, b) => (b.current - a.current) || ((a.pr.updatedAt || '').localeCompare(b.pr.updatedAt || '')));
   let ready = null;
   for (const b of pool) {
-    const held = conflicted(b) || clashFiles(b, branches).length > 0;
+    const held = conflicted(b) || b.clashFiles.length > 0;
     if (held) return { branch: b, held: true };
     if (!ready && !b.pr.isDraft && passing(b) && b.pr.mergeStateStatus === 'CLEAN') ready = b;
   }
@@ -93,6 +121,14 @@ function link(branches, base) {
   return roots.filter((n, i) => roots.indexOf(n) === i);
 }
 
+// The first line of the latest review that asked for changes. Anything else is not that line.
+export function reviewLineFrom(reviews) {
+  const hits = (reviews ?? []).filter((r) => r?.state === 'CHANGES_REQUESTED' && String(r.body ?? '').trim());
+  hits.sort((a, b) => String(b.submittedAt ?? '').localeCompare(String(a.submittedAt ?? '')));
+  const line = String(hits[0]?.body ?? '').split('\n').map((s) => s.trim()).find(Boolean) ?? '';
+  return line ? clean(line) : null;
+}
+
 const findNode = (list, name) => {
   for (const n of list) {
     if (n.name === name) return n;
@@ -110,7 +146,7 @@ const findNode = (list, name) => {
 export function buildTree(input) {
   const base = input.base ?? null;
   const branches = (input.branches ?? []).map((b) => ({ ...b }));
-  for (const b of branches) b.clashFiles = clashFiles(b, branches);
+  for (const b of branches) b.clashFiles = clashFiles(b, branches, base);
   const subject = bannerSubject(branches, base);
   for (const b of branches) {
     const fail = failing(b) || conflicted(b);
@@ -122,7 +158,7 @@ export function buildTree(input) {
     const b = subject.branch;
     const child = findNode(roots, b.name)?.children[0] ?? null;
     if (subject.held) {
-      const hit = clashWith(b, branches)[0];
+      const hit = clashWith(b, branches, base)[0];
       const file = hit?.file || b.conflictFiles?.[0] || null;
       banner = { kind: 'held', tone: b.tone === 'red' ? 'red' : 'yellow', branch: b.name, other: hit?.other.name ?? null, file, child: null };
     } else banner = { kind: 'next', tone: 'green', branch: b.name, other: null, file: null, child: child?.name ?? null };

@@ -4,7 +4,7 @@ import { readFile, readdir, lstat, stat, open } from 'node:fs/promises';
 import { hostname, homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { parseBrief, briefStatus, NO_BRIEF_BRANCHES } from './brief.mjs';
-import { buildTree } from './branchmap.mjs';
+import { buildTree, reviewLineFrom } from './branchmap.mjs';
 
 const HOME = homedir();
 const CLAUDE = join(HOME, '.claude');
@@ -617,6 +617,13 @@ export async function prs(cwd, limit = 15) {
   try {
     return { ok: true, items: JSON.parse(out).map(({ statusCheckRollup, ...p }) => ({ ...p, checks: (statusCheckRollup ?? []).map(check) })) };
   } catch { return { ok: false, items: [] }; }
+}
+
+// The first line of a changes-requested review, fetched when that lane is opened. Not part of the minute poll.
+export async function reviewLine(cwd, number) {
+  const out = await run('gh', ['pr', 'view', String(number), '--json', 'reviews'], { cwd, timeout: 15_000 });
+  if (out == null) return null;
+  try { return reviewLineFrom(JSON.parse(out).reviews) ?? ''; } catch { return null; }
 }
 
 // One entry of a PR's statusCheckRollup (a CheckRun or a commit StatusContext) as { name, state, url },
