@@ -34,6 +34,9 @@ const data = { env: null, brief: null, account: null, usage: [], agents: [], ove
   tasks: { running: [], finished: 0, done: [] } };
 // A grok rail with nothing picked yet still belongs to Grok. Otherwise the account loaders fall through to Claude.
 const hostOf = () => data.current?.host || (hostFlag === 'grok' || hostFlag === 'claude' ? hostFlag : null);
+// env() runs from collect() before the interactive runners exist (--frame, --json). Filled in once they do.
+let seenBranch;
+let refreshWorktrees = () => {};
 
 const loaders = {
   async fast() {
@@ -55,6 +58,9 @@ const loaders = {
   async env() {
     const [env, brief] = await Promise.all([src.environment(cwd), src.readBrief(cwd)]);
     data.env = env; data.brief = brief?.status ? { status: brief.status, chunks: brief.chunks } : null; // what the pet needs
+    const branch = env?.branch ?? '';
+    if (seenBranch !== undefined && branch !== seenBranch) refreshWorktrees();
+    seenBranch = branch;
   },
   async sessions() { data.overview = await src.sessionsOverview(data.agents, data.current?.pid, data.current?.sessionId); },
   async account() {
@@ -456,13 +462,14 @@ function buildMain(W) {
         line(label + ' ' + paint(marks) + pad(inner - width(left) - width(right)) + dim(right), id);
         return width(left) - 1;
       };
-      const fork = (tip, ahead) => {
-        const tail = ` you${mine ? ` · #${mine.number}` : ''}`;
-        const marks = ahead > 0 ? '●━━●' : '●';
+      // marks is the commit glyph (●━━● or ●), or '' when there is no count to draw.
+      const fork = (tip, marks) => {
+        const you = mine ? `you · #${mine.number}` : 'you';
+        const tail = marks ? ` ${you}` : you;
         let at = Math.max(0, tip - 1);
         if (at + width(marks + tail) > inner) at = Math.max(0, inner - width(marks + tail));
         line(pad(Math.max(0, Math.min(at - 1, inner - 1))) + dim('╲'));
-        line(pad(at) + paint(marks) + bold(' you') + (mine ? dim(` · #${mine.number}`) : ''));
+        line(pad(at) + paint(marks) + (marks ? bold(' you') : bold('you')) + (mine ? dim(` · #${mine.number}`) : ''));
       };
       if (!env.branch) {
         const sha = here?.sha ? clean(here.sha) : '';
@@ -477,21 +484,30 @@ function buildMain(W) {
         else line(dim(trunc(into, inner)));
       } else {
         const intoName = clean(mine?.baseRefName || env.base || '');
-        const ahead = here?.ahead;
-        fork(spine(intoName || '…', 'merges here'), ahead);
+        // The card counts against the default branch, and only the card for this checkout. A pull request
+        // into another branch, or a card that still names the previous branch, does not lend that count.
+        const counted = here?.branch === env.branch && Boolean(intoName) && intoName === env.base;
+        const ahead = counted ? here.ahead : null;
+        const merged = Boolean(counted && here.merged);
+        const marks = merged ? '' : ahead > 0 ? '●━━●' : ahead === 0 ? '●' : '';
+        fork(spine(intoName || '…', 'merges here'), marks);
         const name = trunc(clean(env.branch), inner - (diff ? width(diff) + 1 : 0));
         spread(bold(name), diff, item('branch', () => branchMenu(env)));
         const target = intoName;
-        if (ahead > 0) {
-          const extra = mine ? (mine.isDraft ? 'draft' : 'open') : (target ? `merges into ${target}` : '');
+        const prState = mine ? (mine.isDraft ? 'draft' : 'open') : '';
+        if (merged) {
+          line(fg(C.green, '✓ merged'));
+          if (prState) line(dim(prState));
+        } else if (ahead > 0) {
+          const extra = prState || (target ? `merges into ${target}` : '');
           const text = `↑${ahead}${extra ? ` · ${extra}` : ''}`;
           line(width(text) > inner ? dim(trunc(text, inner)) : fg(C.green, `↑${ahead}`) + (extra ? dim(` · ${extra}`) : ''));
         } else if (ahead === 0) {
           line(dim('nothing ahead yet'));
-          if (mine) line(dim(mine.isDraft ? 'draft' : 'open'));
+          if (prState) line(dim(prState));
           else if (target) line(dim(trunc(`merges into ${target}`, inner)));
-        } else if (target || mine) {
-          line(dim(trunc(mine ? `${mine.isDraft ? 'draft' : 'open'}${target ? ` · merges into ${target}` : ''}` : `merges into ${target}`, inner)));
+        } else if (target || prState) {
+          line(dim(trunc(prState ? `${prState}${target ? ` · merges into ${target}` : ''}` : `merges into ${target}`, inner)));
         }
       }
       if (env.dirty) line(fg(C.yellow, '◌') + dim(` ${env.dirty} uncommitted`));
@@ -895,6 +911,7 @@ const refresh = (name) => {
 };
 const schedule = { fast: 1000, sessions: 3000, env: 5000, account: 5000, prs: 60_000, worktrees: 60_000, connectors: 300_000 };
 const runners = Object.fromEntries(Object.keys(schedule).map((k) => [k, refresh(k)]));
+refreshWorktrees = () => { if (ui.tab === 'git') runners.worktrees(); };
 for (const [k, ms] of Object.entries(schedule)) { runners[k](); setInterval(runners[k], ms); }
 setInterval(() => { ui.tick++; draw(); }, 1000);
 fontsize.baseSize(pinnedPid).then((b) => { font.base = b; draw(); });
