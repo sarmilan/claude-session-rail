@@ -4,6 +4,7 @@ import { readFile, readdir, lstat, stat, open } from 'node:fs/promises';
 import { hostname, homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { parseBrief, briefStatus, NO_BRIEF_BRANCHES } from './brief.mjs';
+import { buildTree } from './branchmap.mjs';
 
 const HOME = homedir();
 const CLAUDE = join(HOME, '.claude');
@@ -30,6 +31,12 @@ export const run = (cmd, args, { cwd, timeout = 10_000 } = {}) =>
   new Promise((resolve) => {
     execFile(cmd, args, { cwd, timeout, maxBuffer: 4 << 20 }, (err, stdout) =>
       resolve(err ? null : stdout.toString()));
+  });
+// Like run, but a non-zero exit still keeps stdout. merge-tree exits 1 when the merge conflicts.
+const runCode = (cmd, args, { cwd, timeout = 10_000 } = {}) =>
+  new Promise((resolve) => {
+    execFile(cmd, args, { cwd, timeout, maxBuffer: 4 << 20 }, (err, stdout) =>
+      resolve({ code: err ? (typeof err.code === 'number' ? err.code : 1) : 0, out: stdout?.toString() ?? '' }));
   });
 
 const readJson = async (path) => {
@@ -419,7 +426,7 @@ export async function newWorktree(cwd, problem) {
 // the default branch's first parents down from its tip ends right on it. A merged tip is reached only through a merge.
 const branchedFrom = async (cwd, tip, base) =>
   (await run('git', ['rev-list', '--first-parent', '--parents', `${tip}..${base}`], { cwd }))?.trim().split('\n').at(-1)?.split(' ')[1] === tip;
-// Cards for the rail's Git tab. `merged`: a named branch with nothing ahead whose tip is behind the default
+// Checkouts the branch map is built from. `merged`: a named branch with nothing ahead whose tip is behind the default
 // branch and got there through a merge, not by being made there. The main checkout first, as git lists it;
 // `current` is the one at cwd.
 export async function worktrees(cwd) {
@@ -445,7 +452,7 @@ export async function worktrees(cwd) {
     const merged = Boolean(w.branch) && w.branch !== baseName && ahead === 0 && behind > 0 && head != null
       && !(await branchedFrom(w.path, head, base));
     return {
-      ...w, sha: head?.slice(0, 7) ?? null, name: basename(w.path), current: w.path === top?.trim(),
+      ...w, sha: head?.slice(0, 7) ?? null, oid: head, name: basename(w.path), current: w.path === top?.trim(),
       ahead: Number.isFinite(ahead) ? ahead : null, behind: Number.isFinite(behind) ? behind : null,
       dirty: porcelain == null ? null : porcelain.split('\n').filter(Boolean).length, // null: git couldn't tell
       merged,
@@ -605,7 +612,7 @@ export async function connectors(host) {
 // ── Changes: your open PRs in this repo ────────────────────────────────────────
 export async function prs(cwd, limit = 15) {
   const out = await run('gh', ['pr', 'list', '--author', '@me', '--state', 'open', '--limit', String(limit),
-    '--json', 'number,title,state,isDraft,url,headRefName,baseRefName,updatedAt,statusCheckRollup'], { cwd, timeout: 15_000 });
+    '--json', 'number,title,state,isDraft,url,headRefName,baseRefName,updatedAt,mergeStateStatus,reviewDecision,statusCheckRollup'], { cwd, timeout: 15_000 });
   if (out == null) return { ok: false, items: [] };
   try {
     return { ok: true, items: JSON.parse(out).map(({ statusCheckRollup, ...p }) => ({ ...p, checks: (statusCheckRollup ?? []).map(check) })) };
@@ -615,6 +622,127 @@ export async function prs(cwd, limit = 15) {
 // One entry of a PR's statusCheckRollup (a CheckRun or a commit StatusContext) as { name, state, url },
 // state pass, fail or pending.
 const PASS = ['SUCCESS', 'NEUTRAL', 'SKIPPED'];
+
+// Conflicted paths from `git merge-tree --write-tree --name-only`. A clean merge is an empty list.
+// null when the command could not run. Names are the lines after the tree id, up to the first blank line.
+export function conflictNames(out) {
+  const names = [];
+  const lines = String(out ?? '').split('\n');
+  for (let i = 1; i < lines.length; i++) {
+    if (!lines[i].trim()) break;
+    names.push(lines[i].trim());
+  }
+  return names;
+}
+
+const verifyRef = async (cwd, name) => {
+  if (!name) return null;
+  for (const ref of [name, `origin/${name}`]) {
+    const sha = await run('git', ['rev-parse', '--verify', '--quiet', '--end-of-options', ref], { cwd });
+    if (sha?.trim()) return ref;
+  }
+  return null;
+};
+
+const ancestor = async (cwd, earlier, later) =>
+  earlier && later && (await runCode('git', ['merge-base', '--is-ancestor', earlier, later], { cwd })).code === 0;
+
+// The open branches the Git tab draws, from the worktree list and the one pull-request list it already fetched.
+// Ahead/behind and changed files are against each branch's parent. One merge-tree, for the branch the banner
+// is about. A pull request with no checkout is still a branch, with no file list and no ahead count.
+export async function branchMap(cwd, worktrees, prs) {
+  if (!worktrees?.ok) return { ok: false, base: worktrees?.base ?? null, branches: [], detached: [] };
+  const base = worktrees.base ?? null;
+  const prList = prs?.ok ? prs.items : [];
+  const prByHead = new Map(prList.map((p) => [p.headRefName, p]));
+  const locals = new Map();
+  const detached = [];
+  for (const w of worktrees.items ?? []) {
+    if (!w.branch) { detached.push({ sha: w.sha, path: w.path, current: w.current }); continue; }
+    const pr = prByHead.get(w.branch);
+    if (w.merged && !w.current && !pr) continue;
+    const prev = locals.get(w.branch);
+    if (!prev || w.current) locals.set(w.branch, w);
+  }
+  const nodes = new Map();
+  const ensure = (name) => {
+    if (!nodes.has(name)) nodes.set(name, {
+      name, parent: null, checkedOut: false, current: false, path: null, oid: null,
+      ahead: null, behind: null, files: null, conflict: false, conflictFiles: [], pr: null,
+    });
+    return nodes.get(name);
+  };
+  for (const p of prList) {
+    if (!p.headRefName || p.headRefName === base) continue;
+    const n = ensure(p.headRefName);
+    n.pr = p;
+    n.parent = p.baseRefName || base;
+  }
+  for (const w of locals.values()) {
+    if (w.branch === base) continue; // the default branch is the trunk line, not a node
+    const n = ensure(w.branch);
+    n.checkedOut = true;
+    n.current = Boolean(w.current);
+    n.path = w.path;
+    n.oid = w.oid ?? null;
+    if (!n.pr) { n.ahead = w.ahead; n.behind = w.behind; }
+  }
+  const localNodes = [...nodes.values()].filter((n) => n.checkedOut && n.oid);
+  for (const n of localNodes) {
+    if (n.pr) continue;
+    let nearest = null;
+    for (const other of localNodes) {
+      if (other === n) continue;
+      if (!(await ancestor(cwd, other.oid, n.oid))) continue;
+      if (!nearest || await ancestor(cwd, nearest.oid, other.oid)) nearest = other;
+    }
+    n.parent = nearest?.name ?? base;
+  }
+  for (const n of [...nodes.values()]) {
+    if (n.parent && n.parent !== base && !nodes.has(n.parent)) {
+      const missing = ensure(n.parent);
+      missing.parent = base;
+    }
+  }
+  await Promise.all([...nodes.values()].filter((n) => n.checkedOut).map(async (n) => {
+    const parentName = n.parent || base;
+    const parentIsBase = !parentName || parentName === base;
+    const parentRef = await verifyRef(n.path, parentIsBase && base ? `origin/${base}` : parentName)
+      || (parentIsBase ? await verifyRef(n.path, base) : null);
+    if (!parentIsBase && parentRef) {
+      const counts = await run('git', ['rev-list', '--left-right', '--count', `${parentRef}...HEAD`], { cwd: n.path });
+      const [behind, ahead] = counts?.trim() ? counts.trim().split(/\s+/).map(Number) : [];
+      n.ahead = Number.isFinite(ahead) ? ahead : null;
+      n.behind = Number.isFinite(behind) ? behind : null;
+    } else if (parentIsBase) {
+      const w = locals.get(n.name);
+      n.ahead = w?.ahead ?? null;
+      n.behind = w?.behind ?? null;
+    }
+    if (parentRef) {
+      const diff = await run('git', ['diff', '--name-only', `${parentRef}...HEAD`], { cwd: n.path });
+      n.files = diff == null ? null : diff.split('\n').filter(Boolean);
+    }
+  }));
+  const preview = buildTree({ base, branches: [...nodes.values()], detached });
+  const subject = preview.banner?.branch;
+  if (subject) {
+    const n = nodes.get(subject);
+    const parentName = n?.parent || base;
+    const where = n?.path || cwd;
+    const parentRef = parentName && (await verifyRef(where, parentName === base ? `origin/${base}` : parentName) || await verifyRef(where, parentName));
+    const headRef = n?.checkedOut ? 'HEAD' : await verifyRef(where, subject);
+    if (parentRef && headRef) {
+      const merged = await runCode('git', ['merge-tree', '--write-tree', '--name-only', parentRef, headRef], { cwd: where, timeout: 20_000 });
+      if (merged.code === 0 || merged.code === 1) {
+        n.conflictFiles = merged.code === 0 ? [] : conflictNames(merged.out);
+        n.conflict = n.conflictFiles.length > 0;
+      }
+    }
+  }
+  return { ok: true, base, branches: [...nodes.values()], detached };
+}
+
 export function check(c) {
   if (c?.__typename === 'StatusContext' || c?.context != null)
     return { name: String(c.context ?? 'status'), url: c.targetUrl || null,

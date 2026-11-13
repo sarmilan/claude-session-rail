@@ -65,40 +65,41 @@ The rail has two tabs: **Session**, what Claude is doing, and **Git**, where all
 ### Git
 
 ```
- ───────────────────────────────────
-  Session   Git                    ⇥
- ──────────━━━━━────────────────────
- my-app · main                  ↻ 4s
- Worktrees 3
- ▸ ● my-app-login         fix/42-lo…
-     ↑2 · 3 changed · #42 ✗
-   ○ my-app        feature/51-dark-…
-     ↑4 ↓1 · clean · #51 ◌
-   ○ old-spike     feature/38-cache
-     ✓ merged · clean
- main ●━━━━━●━━━━━●       merges here
-              ╲
-               ●━━● you
- fix/42-login                 +42 −7
- ↑2 · merges into main
- ◌ 3 uncommitted
- ● 9f2c1ab Stop the redirect loop 2m
- ◆ 11b48b1 Merge pull #40   main 3h
- PR #42 · open
- ✗ lint                      failing
- ✓ test
- Pull requests
- ⑂ Fix login redirect loop         ⋯
+ my-app · main                       ↻ 4s
+ ▌ Next  merge #35 · rebase #36
+ ────────────────────────────────────────
+ │ main
+ ┣▸ ● feature/35-branch-map    ↑4↓1 #35 ✓
+ │ └▸ feature/36-colours         ↑2 #36 ◌
+ ┣▸ feature/40-pets                 #40 ✗
+ └▸ feature/41-api        not checked out
 ```
 
-- **Worktrees:** every checkout of the repo, this one first (▸). Each card shows its branch (or the commit it's detached at), how far it is ahead (↑) of and behind (↓) the default branch, or ✓ merged once its work is in, how many files are uncommitted, and its pull request with a badge for its checks: ✓ passing, ✗ failing, ◌ running. Open a card to go to the Claude session working in it (or start one there), open its pull request or its failing check, or copy its branch name.
-- **Branch map:** where this checkout is, the branch it proposes, and the branch that work merges into. On the default branch it says a session branch would fork from here and merge back, and it does not invent a name. On any other branch it draws that branch leaving the merge target (the pull request's base, when there is one, otherwise the default branch), with the proposed branch's name, the lines added and removed, and `#N` when a pull request is open. The ↑ count, `nothing ahead yet`, and ✓ merged come from this checkout's worktree card, and only when the merge target is the default branch. A pull request into another branch says where it merges and leaves that count off. Until the card matches the branch, the fork draws no commit dots. A detached checkout says `detached at <sha>` and merges nowhere. Under the map: uncommitted files, and the commits since the fork, down to the default-branch commit it started from (◆).
-- **PR:** this branch's pull request and each of its checks, failing first. Open a check to see its run.
-- **Pull requests:** your open pull requests in this repo.
+Enter on a branch opens it in place, and Enter again closes it. The lane stays, and so does the branch stacked on it:
 
-Checks come from GitHub through `gh`; a repo without CI shows "No checks". Only your own pull requests are listed, so a worktree on someone else's shows no badge. This worktree's commits refresh every 5 seconds. The worktree cards (and the map's ahead count) and the pull requests refresh every minute, when you switch to the tab, on `r`, and the cards again when the branch changes.
+```
+ ┣▾ ● feature/35-branch-map    ↑4↓1 #35 ✓
+ │┃   +42 −7 · 3 uncommitted
+ │┃   clash  rail.mjs
+ │┃   ✗ lint                      failing
+ │┃   ✓ test
+ │┃   Go to session
+ │┃   Open PR #35
+ │┃   Copy branch name
+ │┃└▸ feature/36-colours         ↑2 #36 ◌
+```
 
-Click a row, or use the arrow keys and Enter, to open it. A session jumps to its iTerm window (a session in the Claude app gives you its details instead), pull requests open in the browser, and tasks show their output.
+One tree of the branches still open. A branch hangs under the branch it would rebase onto: its pull request's base, otherwise the nearest other open branch whose tip is an ancestor of it, otherwise the default branch. The default branch is the dim trunk. A pull request with no checkout is still there, marked `not checked out`. A detached checkout is one dim line.
+
+The banner is the only sentence. `Next` is the trunk pull request whose checks pass and whose merge is clean, then the child that rebases once it lands. `Held` is that same pull request when GitHub calls it dirty, when it shares a changed file with another open branch, or when merging it into its parent conflicts. A clean merge does not clear the shared-file list. A child does not take the line while its parent is still open. The picture never merges a parent into a child, and it never runs the rebase.
+
+A collapsed branch is one line. Names share a column. `↑` is how far it is ahead of its parent and `↓` how far behind, then the pull request number, then one lamp: `✓` passing, `✗` failing or conflicting, `◌` draft or running. The lane itself carries the colour: green for the branch `Next` names, yellow for a shared file, red for a failed check or a real conflict. This checkout's `●` and name stay the accent.
+
+Open a branch for this checkout's `+N −N` and uncommitted count, the clashing files, the conflicting files, the checks (failing first), and the actions: go to that checkout's session, open the pull request, copy the branch name. Enter on a check opens it. Enter on an action runs it.
+
+The tree refreshes about once a minute, when you switch to Git, on `r`, and again when the branch changes. `+N −N` and the uncommitted count come from this checkout every 5 seconds, so an open row updates between those minutes. Checks come from GitHub through `gh`. Only your own open pull requests are listed.
+
+Click a row, or use the arrow keys and Enter, to open it. On Git, Enter expands a branch in place. A session jumps to its iTerm window (a session in the Claude app gives you its details instead), pull requests and checks open in the browser, and tasks show their output.
 
 ### Working on several things at once
 
