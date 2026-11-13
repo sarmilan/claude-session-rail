@@ -50,9 +50,9 @@ const snail = {
   palette: { S: 71, D: 28, W: 157, B: 114, E: 231, P: 233 },
   advance: [true, false], // stretch forward, then the shell catches up
   zAt: [[20, 8], [26, 2]],
-  draw({ frame, blink, sleep }) {
+  draw({ frame, blink, sleep, fidget }) {
     const { set, span, rows } = canvas();
-    const s = frame && !sleep ? 2 : 0;
+    const s = !sleep && (fidget || frame) ? 2 : 0; // a fidget holds the long stretch
     if (sleep) { span(12, 2, 16, 'B'); span(13, 1, 17, 'B'); span(14, 1, 17, 'B'); span(15, 2, 16, 'B'); }
     else {
       span(12, 2, 30 + s, 'B'); span(13, 1, 30 + s, 'B'); span(14, 0, 29 + s, 'B'); span(15, 1, 29 + s, 'B');
@@ -87,9 +87,9 @@ const snailHatchling = {
   palette: { S: 114, D: 71, W: 194, B: 157, K: 71, E: 231, P: 233 },
   advance: [true, false],
   zAt: [[19, 4], [24, 0]],
-  draw({ frame, blink, sleep }) {
+  draw({ frame, blink, sleep, fidget }) {
     const c = canvas(), { set, span, vline, ell, eye, rows } = c;
-    const s = frame && !sleep ? 1 : 0;
+    const s = !sleep && fidget ? 2 : frame && !sleep ? 1 : 0;
     if (sleep) { span(14, 10, 18, 'B'); span(15, 9, 19, 'B'); }
     else {
       span(14, 10, 24 + s, 'B'); span(15, 9, 24 + s, 'B');
@@ -109,9 +109,9 @@ const snailAdult = {
   palette: { S: 35, D: 22, W: 121, B: 78, K: 22, E: 231, P: 233 },
   advance: [true, false],
   zAt: [[21, 6], [26, 1]],
-  draw({ frame, blink, sleep }) {
+  draw({ frame, blink, sleep, fidget }) {
     const c = canvas(), { span, vline, ell, eye, rows } = c;
-    const s = frame && !sleep ? 2 : 0;
+    const s = !sleep && (fidget || frame) ? 2 : 0;
     if (sleep) { span(13, 2, 18, 'B'); span(14, 1, 19, 'B'); span(15, 1, 19, 'B'); }
     else {
       span(12, 8, 29 + s, 'B'); span(13, 1, 30 + s, 'B'); span(14, 0, 30 + s, 'B'); span(15, 1, 30 + s, 'B');
@@ -130,12 +130,12 @@ const snailAdult = {
 const snailHeavy = {
   speed: 1,
   scale: 5, rows: 4, // drawn bigger, a row taller
-  palette: { S: 29, D: 22, W: 72, B: 107, X: 223, K: 52, E: 231, P: 160 },
+  palette: { S: 29, D: 22, W: 72, B: 107, X: 223, K: 52, E: 231, P: 233 },
   advance: [true, false],
   zAt: [[22, 6], [27, 1]],
-  draw({ frame, blink, sleep }) {
+  draw({ frame, blink, sleep, fidget }) {
     const c = canvas(), { set, span, vline, ell, eye, rows } = c;
-    const s = frame && !sleep ? 2 : 0;
+    const s = !sleep && (fidget || frame) ? 2 : 0;
     if (sleep) { span(13, 1, 20, 'B'); span(14, 0, 21, 'B'); span(15, 0, 21, 'B'); }
     else {
       span(12, 8, 30 + s, 'B'); span(13, 1, 31 + s, 'B'); span(14, 0, 31 + s, 'B'); span(15, 0, 31 + s, 'B');
@@ -162,9 +162,10 @@ const turtle = {
   palette: { S: 77, H: 28, R: 64, W: 193, L: 149, l: 106, K: 22, E: 231, P: 233 },
   advance: [true, false],
   zAt: [[24, 7], [28, 1]],
-  draw({ frame, blink, sleep }) {
+  draw({ frame, blink, sleep, fidget }) {
     const { set, span, vline, ell, eye, rows } = canvas();
     const y0 = sleep ? 2 : 0; // tucked in, the shell rests on the ground
+    const peek = fidget && !sleep ? -1 : 0; // head up, looking out
     // shell dome with plates
     ell(15, 11 + y0, 11, 9, 'S');
     for (let x = 4; x <= 26; x++) for (let y = 11 + y0; y < 16; y++) set(y, x, '.');
@@ -181,9 +182,9 @@ const turtle = {
       // tail, neck, head
       span(10, 2, 5, 'L'); set(11, 3, 'L');
       span(8, 24, 27, 'L'); span(9, 24, 28, 'L'); span(10, 24, 27, 'L');
-      ell(29.5, 7.5, 3.5, 2.8, 'L');
-      eye(29, 6, blink, 'L');
-      span(9, 31, 32, 'K');
+      ell(29.5, 7.5 + peek, 3.5, 2.8, 'L');
+      eye(29, 6 + peek, blink, 'L');
+      span(9 + peek, 31, 32, 'K');
     }
     return rows();
   },
@@ -206,9 +207,9 @@ const turtleHatchling = {
   palette: { S: 120, H: 71, R: 107, W: 194, L: 193, l: 150, K: 65, E: 231, P: 233 },
   advance: [true, false],
   zAt: [[20, 5], [25, 0]],
-  draw({ frame, blink, sleep }) {
+  draw({ frame, blink, sleep, fidget }) {
     const c = canvas(), { set, span, vline, ell, eye, rows } = c;
-    const y0 = sleep ? 2 : 0;
+    const y0 = sleep ? 2 : 0, peek = fidget && !sleep ? -1 : 0;
     turtleShell(c, 13, 12 + y0, 6.6, 5.6, [7, 19]);
     span(9 + y0, 9, 17, 'H'); vline(11, 7 + y0, 9 + y0, 'H'); vline(15, 7 + y0, 9 + y0, 'H');
     set(8 + y0, 9, 'W'); set(7 + y0, 10, 'W');
@@ -217,9 +218,9 @@ const turtleHatchling = {
       turtleLegs(c, [11 - f, 17 + f], [9 + f, 15 - f], 2, false);
       set(11, 6, 'L');
       span(10, 19, 21, 'L'); span(11, 19, 21, 'L');
-      ell(23, 9.2, 3, 2.6, 'L');                                                      // a big baby head
-      eye(23, 8, blink, 'L');
-      set(10, 25, 'K');
+      ell(23, 9.2 + peek, 3, 2.6, 'L');                                               // a big baby head
+      eye(23, 8 + peek, blink, 'L');
+      set(10 + peek, 25, 'K');
     }
     return rows();
   },
@@ -230,9 +231,9 @@ const turtleAdult = {
   palette: { S: 34, H: 22, R: 136, W: 120, L: 112, l: 70, K: 22, E: 231, P: 233 },
   advance: [true, false],
   zAt: [[25, 6], [29, 0]],
-  draw({ frame, blink, sleep }) {
+  draw({ frame, blink, sleep, fidget }) {
     const c = canvas(), { set, span, vline, ell, eye, rows } = c;
-    const y0 = sleep ? 2 : 0;
+    const y0 = sleep ? 2 : 0, peek = fidget && !sleep ? -1 : 0;
     turtleShell(c, 15, 11 + y0, 12.6, 10.4, [2, 28]);
     span(7 + y0, 5, 25, 'H');
     vline(10, 2 + y0, 7 + y0, 'H'); vline(20, 2 + y0, 7 + y0, 'H');
@@ -244,10 +245,10 @@ const turtleAdult = {
       turtleLegs(c, [11 - b, 23 - f], [5 + b, 18 + f], 3, true);
       span(10, 0, 2, 'L'); set(11, 0, 'L');
       span(8, 26, 29, 'L'); span(9, 26, 29, 'L'); span(10, 26, 28, 'L');
-      ell(30.5, 6.8, 3.3, 3, 'L');
-      eye(30, 5, blink, 'L');
-      span(4, 29, 32, 'K');                                                           // brow
-      span(8, 32, 33, 'K');
+      ell(30.5, 6.8 + peek, 3.3, 3, 'L');
+      eye(30, 5 + peek, blink, 'L');
+      span(4 + peek, 29, 32, 'K');                                                    // brow
+      span(8 + peek, 32, 33, 'K');
     }
     return rows();
   },
@@ -256,12 +257,12 @@ const turtleAdult = {
 const turtleHeavy = {
   speed: 1,
   scale: 5, rows: 4, // drawn bigger, a row taller
-  palette: { S: 172, H: 94, R: 130, X: 223, W: 221, L: 101, l: 59, K: 52, E: 231, P: 160 },
+  palette: { S: 172, H: 94, R: 130, X: 223, W: 221, L: 101, l: 59, K: 52, E: 231, P: 233 },
   advance: [true, false],
   zAt: [[25, 6], [29, 0]],
-  draw({ frame, blink, sleep }) {
+  draw({ frame, blink, sleep, fidget }) {
     const c = canvas(), { set, span, vline, ell, eye, rows } = c;
-    const y0 = sleep ? 2 : 0;
+    const y0 = sleep ? 2 : 0, peek = fidget && !sleep ? -1 : 0;
     turtleShell(c, 15, 12 + y0, 13, 10, [2, 28]);
     span(8 + y0, 5, 25, 'H');
     vline(10, 3 + y0, 8 + y0, 'H'); vline(20, 3 + y0, 8 + y0, 'H');
@@ -273,10 +274,10 @@ const turtleHeavy = {
       turtleLegs(c, [11 - b, 22 - f], [5 + b, 18 + f], 3, true);
       span(11, 0, 2, 'L'); span(12, 0, 1, 'L'); set(10, 1, 'X');                    // spiked tail
       span(9, 26, 29, 'L'); span(10, 26, 29, 'L'); span(11, 26, 28, 'L');
-      ell(30.5, 7.8, 3.4, 3.2, 'L');
-      eye(30, 6, blink, 'L');                                                         // red-eyed
-      span(5, 28, 32, 'K'); set(6, 32, 'K');                                          // heavy brow
-      span(10, 31, 33, 'K'); set(9, 33, 'K'); set(11, 33, 'X');                       // hooked beak
+      ell(30.5, 7.8 + peek, 3.4, 3.2, 'L');
+      eye(30, 6 + peek, blink, 'L');
+      span(5 + peek, 28, 32, 'K'); set(6 + peek, 32, 'K');                             // heavy brow
+      span(10 + peek, 31, 33, 'K'); set(9 + peek, 33, 'K'); set(11 + peek, 33, 'X');  // hooked beak
     }
     return rows();
   },
@@ -294,7 +295,7 @@ const crab = {
   advance: [true, true],
   sideways: true,
   zAt: [[14, 3], [18, 0]],
-  draw({ frame, blink, sleep }) {
+  draw({ frame, blink, sleep, fidget }) {
     const { set, span, vline, ell, rows } = canvas();
     // legs: three a side, tips stepping in and out
     const k = frame && !sleep ? 1 : 0;
@@ -306,9 +307,10 @@ const crab = {
     ell(17, 10, 8.5, 3.8, 'C');
     span(12, 10, 23, 'D');
     // arms and claws: open/closed with the step, tucked down asleep
-    const open = frame && !sleep;
     const cy = sleep ? 8 : 4; // claw centre row
     for (const side of [-1, 1]) {
+      // A fidget snaps the near claw and leaves the far one to the step.
+      const open = side < 0 ? fidget || (frame && !sleep) : frame && !sleep;
       const X = (x) => (side < 0 ? x : 33 - x); // draw the left claw, mirror for the right
       // arm: from the body's shoulder up to the claw
       set(10, X(9), 'C'); set(9, X(8), 'C'); set(9, X(7), 'C'); set(8, X(6), 'C'); if (!sleep) { set(7, X(6), 'C'); set(6, X(5), 'C'); }

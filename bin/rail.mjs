@@ -11,7 +11,7 @@ import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import * as src from './sources.mjs';
 import { ESC, fg, dim, bold, C, bgOpen, charWidth, width, trunc, wrap, clean, tabBar, usePalette, paneBgOn, paneBgOff } from './term.mjs';
-import { createMascot, creatureNames, stageFor, progressFor } from './mascot.mjs';
+import { createMascot, creatureNames, stageFor, progressFor, doneFor, attentionFor, visitorsFor, droopFor, flinchAt, isSubagentCall } from './mascot.mjs';
 import { isApproved } from './brief.mjs';
 import { NAMES, COLOURS } from './names.mjs';
 import * as fontsize from './fontsize.mjs';
@@ -41,15 +41,16 @@ const loaders = {
     data.current = src.pickSession(data.agents, { pid: pinnedPid, cwd, sessionId: sessionFlag });
     restoreTab(data.current?.sessionId);
     const files = await src.sessionFiles(data.current);
+    data.activity = await src.activity(data.current?.sessionId);
     if (data.current?.host === 'grok') {
       data.stats = await src.grokContext(files);
-      data.tasks = { running: [], finished: 0, done: [] };
+      // Shells and subagents still in flight, recorded by the Grok hook from Stop's backgroundTasks.
+      data.tasks = { running: data.activity?.tasks ?? [], finished: 0, done: [] };
     } else {
       await taskIndex.update(files.transcriptPath);
       data.stats = taskIndex.context();
       data.tasks = files.tasksDir ? await taskIndex.list(files.tasksDir) : { running: [], finished: 0, done: [] };
     }
-    data.activity = await src.activity(data.current?.sessionId);
   },
   async env() {
     const [env, brief] = await Promise.all([src.environment(cwd), src.readBrief(cwd)]);
@@ -114,7 +115,7 @@ const restoreTab = (sid) => {
   if (tabSwitched) return saveTab(sid); // a switch before the session was known wins over the saved tab, and is kept
   try { const t = JSON.parse(readFileSync(railFile(sid), 'utf8')).tab; if (TABS.includes(t) && t !== ui.tab) showTab(t); } catch {}
 };
-const ui = { sel: null, open: { environment: true, context: false, connectors: false, more: false, settings: false }, scroll: 0, tick: 0,
+const ui = { sel: null, open: { environment: true, context: true, connectors: false, more: false, settings: false }, scroll: 0, tick: 0,
   overlay: null, toast: null, input: null, tab: TABS.includes(startTab) ? startTab : 'session' };
 // Switch tabs; --frame doesn't touch the saved one.
 const setTab = (t) => {
@@ -152,32 +153,43 @@ const petStage = () => pinned ?? stageFor(data.brief);
 // And walks the branch's road, left to right as chunks get Done (--pet-progress F pins it for --frame).
 const progressFlag = numFlag('--pet-progress');
 const petProgress = () => progressFlag ?? progressFor(data.brief);
-// A visitor for each running subagent: the main thread's Agent calls in flight, plus background subagents,
-// whose Agent call returns at once but whose task keeps running (--visitors N pins it for --frame).
+// A visitor for each running subagent, tinted with the name colour from the activity file. The main
+// thread's Agent calls in flight, plus background subagents (--visitors N pins a count for --frame).
 const visitorsFlag = numFlag('--visitors');
-const subagents = () => visitorsFlag ?? ((data.activity?.running ?? []).filter((c) => (c.tool === 'Agent' || c.tool === 'Task') && !c.agent).length
-  + data.tasks.running.filter((t) => t.kind === 'agent').length);
+const visitorEntries = () => (visitorsFlag != null
+  ? Array.from({ length: Math.max(0, visitorsFlag) }, (_, i) => ({ id: `pin${i}`, colour: COLOURS[i % COLOURS.length] }))
+  : visitorsFor(data.activity, data.tasks.running));
 // A little one trails behind for each background shell task (background subagents are visitors).
 const companionsFlag = numFlag('--companions');
 const backgroundTasks = () => companionsFlag ?? data.tasks.running.filter((t) => t.kind === 'shell').length;
-// It stands still with a ? while the brief gate holds edits (--held for --frame); any approval lets go (the gate
-// keeps allowing edits once a brief is approved, even after it changes).
-const petHeld = () => args.includes('--held') || (src.gateHeld(data.activity) && !isApproved(data.brief?.status));
+// It stands still with a ? the whole time this branch has a brief that isn't approved yet (--held forces it).
+// An approval, including one kept after an edit, lets it walk.
+const petHeld = () => args.includes('--held') || Boolean(data.brief?.status && !isApproved(data.brief.status));
 // It flinches once at each new failed tool call; failures from before the rail started don't count, nor
 // the gate's refusals (they count as failed calls), which show the ? instead. Other failures while the gate
 // holds (a Bash command, say) still do.
 let lastFailure = Date.now();
 const checkFailure = () => {
-  const f = data.activity?.recent?.find((r) => !r.ok), at = f?.at ?? 0, gate = data.activity?.gate;
-  const refusal = gate && f?.tool === gate.tool && Math.abs(at - gate.at) < 5000;
-  if (at > lastFailure && !refusal) mascot.flinch();
-  lastFailure = Math.max(lastFailure, at);
+  if (flinchAt(data.activity, lastFailure)) mascot.flinch();
+  for (const r of data.activity?.recent ?? []) if (!r.ok) lastFailure = Math.max(lastFailure, r.at || 0);
 };
+// A failed tool leaves the pet drooped until a later call succeeds. The gate's own refusals are the ?, not this.
+const petDroop = () => args.includes('--droop') || droopFor(data.activity);
+// Busy while work is in flight. Waiting while the turn has ended and it's the person's move.
+// The activity feed wins, so a Claude session file that still says busy does not hide the waiting mood.
+const petAttention = () => (args.includes('--busy') ? 'busy' : args.includes('--waiting') ? 'waiting'
+  : attentionFor({ activity: data.activity, tasks: data.tasks.running, session: data.current }));
+let seenDone = null;
 const feedPet = (W) => {
-  mascot.setStage(petStage()); mascot.setProgress(petProgress()); mascot.setVisitors(subagents(), W);
-  mascot.setCompanions(backgroundTasks()); mascot.setHeld(petHeld()); checkFailure();
+  mascot.setStage(petStage()); mascot.setProgress(petProgress());
+  const trail = doneFor(data.brief);
+  // The first time a brief shows up is not a chunk finishing. A later increase is.
+  if (seenDone != null && trail.done > seenDone) mascot.celebrate();
+  seenDone = data.brief?.status ? trail.done : null;
+  mascot.setTrail(trail.done, trail.total);
+  mascot.setVisitors(visitorEntries(), W);
+  mascot.setCompanions(backgroundTasks()); mascot.setHeld(petHeld()); mascot.setDroop(petDroop()); checkFailure();
 };
-const claudeBusy = () => data.tasks.running.length > 0 || data.current?.status === 'busy';
 
 const toast = (text) => { ui.toast = { text, until: Date.now() + 2500 }; };
 const launch = (cmd, argv, ok, fail = `Couldn't run ${cmd}`) =>
@@ -570,8 +582,8 @@ function buildMain(W) {
     const model = (m) => (m ?? '').replace(/^claude-/, '').replace(/^grok-/, 'Grok ').replace(/-\d{8}$/, '');
     // Claude itself, from the feed when there is one, else from the session's own status.
     // Claude's own call in flight, leaving out Agent calls: those are its subagents, shown under it.
-    const main = act?.running?.filter((c) => !c.agent && c.tool !== 'Agent').at(-1);
-    const waitingOn = (act?.running ?? []).filter((c) => !c.agent && c.tool === 'Agent').length;
+    const main = act?.running?.filter((c) => !c.agent && !isSubagentCall(c)).at(-1);
+    const waitingOn = (act?.running ?? []).filter(isSubagentCall).length;
     const [state, since, busy] = !act?.claude
       ? [data.current.status === 'busy' ? 'working' : 'waiting for you', data.current.statusSince, data.current.status === 'busy']
       : act.claude.state === 'waiting' ? ['waiting for you', act.claude.since, false]
@@ -589,7 +601,7 @@ function buildMain(W) {
     // latest call in flight; then background shell tasks. A background agent's task row merges into its named row
     // (which opens its log). Agent calls with no named agent (from before the plugin loaded) keep a plain row.
     const named = Object.entries(act?.agents ?? {}).filter(([, g]) => !g.endedAt);
-    const calls = (act?.running ?? []).filter((c) => !c.agent && c.tool === 'Agent');
+    const calls = (act?.running ?? []).filter(isSubagentCall);
     const inside = (id) => (act?.running ?? []).filter((c) => c.agent === id).at(-1);
     const unnamed = calls.slice(named.filter(([, g]) => !g.background).length);
     const loose = (act?.running ?? []).filter((c) => c.agent && !act.agents?.[c.agent]).at(-1);
@@ -776,7 +788,8 @@ if (args.includes('--frame')) {
   }
   feedPet(W); mascot.setHeld(false);
   // let it walk to its spot on the road (at a past time, so no blink is left on the frame), then hold it there
-  for (let n = 0, t = Date.now() - 1000; n < W * 2; n++) mascot.step(W, false, t);
+  const pinnedAttention = args.includes('--busy') ? 'busy' : args.includes('--waiting') ? 'waiting' : false;
+  for (let n = 0, t = Date.now() - 1000; n < W * 2; n++) mascot.step(W, pinnedAttention, t);
   mascot.setHeld(petHeld());
   if (args.includes('--flinch')) mascot.flinch();
   // e.g. --activate pr:8  or  --activate finished,opt:0  (a chain of clicks)
@@ -826,7 +839,7 @@ setInterval(() => { ui.tick++; draw(); }, 1000);
 fontsize.baseSize(pinnedPid).then((b) => { font.base = b; draw(); });
 // Put the panes on the saved font size once the layout has settled (pane.mjs sizes the splits after opening them).
 if (font.size) setTimeout(() => setFont(font.size), 3000);
-setInterval(() => { feedPet(out.columns || 40); mascot.step(out.columns || 40, claudeBusy()); draw(); }, 200);
+setInterval(() => { feedPet(out.columns || 40); mascot.step(out.columns || 40, petAttention()); draw(); }, 200);
 draw();
 
 // A rail pinned to a Claude process quits (closing its pane) once that process is gone for 3s.

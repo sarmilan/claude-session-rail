@@ -266,6 +266,9 @@ export function handle(event, agent) {
     }
     if (kind === 'stop' && !event.subagentType && !event.subagent_type) {
       activity = act.turnEnded(activity, now);
+      // The same list Claude's transcript index keeps: still-running shells and subagents. An empty
+      // list clears them, so a finished shell does not leave the pet busy.
+      activity = act.trackTasks(activity, event.backgroundTasks, now);
       if (Array.isArray(event.backgroundTasks)) {
         const live = new Set(event.backgroundTasks.map((t) => t.id));
         for (const agentId of Object.keys(state.liveAgents || {})) {

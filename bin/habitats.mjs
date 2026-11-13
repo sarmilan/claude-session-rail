@@ -97,3 +97,36 @@ function layout(name, width) {
 // The habitat's pixels across `width` sprite pixels, leaning with `phase`.
 export const foliage = (name, width, phase = 0) =>
   layout(name, width).map(([x, up, c, bend]) => [x + Math.round(bend * phase), up, c]);
+
+// A small marker left on the road for one Done chunk. Short on purpose: the scenery mushrooms and
+// reeds are taller, and these have to read as the branch's trail, not as more plants.
+const marker = (name, px, x) => {
+  if (name === 'pond') {
+    for (const dx of [-2, -1, 0, 1, 2]) px.push([x + dx, 1, 29]);
+    px.push([x - 1, 2, 29], [x, 2, 34], [x + 1, 2, 29], [x, 1, 22]);
+  } else if (name === 'beach') shell(px, x, 181);
+  else {
+    px.push([x, 1, 187], [x, 2, 187]);
+    for (const dx of [-1, 0, 1]) px.push([x + dx, 3, 131]);
+    px.push([x, 4, 180]);
+  }
+};
+
+// One mark per Done chunk, spread along the strip. `width` is sprite pixels, the same space as foliage.
+export const trail = (name, done, total, width) => {
+  if (!done || !total || width < 8) return [];
+  const px = [];
+  for (let i = 0; i < Math.min(done, total); i++) marker(name, px, Math.round(4 + ((i + 0.5) / total) * (width - 8)));
+  return px;
+};
+
+// Footprints while the pet is moving. Sand puffs on the beach; a hop flicks a leaf or a ripple.
+// `kind` is 'hop', 'step' or 'still'. `foot` is a sprite-pixel column.
+export const dust = (name, foot, tick, kind) => {
+  if (kind === 'still' || foot == null) return [];
+  const h = 1 + (Math.abs(tick) % 3);
+  if (name === 'beach') return [[foot, h, 137], [foot - 2, Math.max(1, h - 1), 180], [foot + 2, 1, 137]];
+  if (kind !== 'hop') return [];
+  if (name === 'pond') return [[foot - 3, 1, 30], [foot + 3, 1, 30], [foot, 2, 37]];
+  return [[foot - 1, 1, 101], [foot + 2, 2, 94]];
+};
