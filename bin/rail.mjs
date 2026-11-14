@@ -31,8 +31,19 @@ const taskIndex = new src.TaskIndex();
 
 // ── Data ───────────────────────────────────────────────────────────────────────
 const data = { env: null, brief: null, account: null, usage: [], agents: [], overview: null, current: null, stats: null, connectors: null, prs: null,
-  worktrees: null, map: null, activity: null,
+  worktrees: null, map: null, github: null, activity: null,
   tasks: { running: [], finished: 0, done: [] } };
+// The two Git loaders both rebuild the map. A generation drops a result that started from an older pair.
+let mapGen = 0;
+const publishMap = async () => {
+  if (ui.tab !== 'git' || !data.worktrees) return;
+  const gen = ++mapGen;
+  const worktrees = data.worktrees;
+  const prsSnap = data.prs;
+  const map = await src.branchMap(cwd, worktrees, prsSnap);
+  if (gen !== mapGen) return;
+  data.map = map;
+};
 // A grok rail with nothing picked yet still belongs to Grok. Otherwise the account loaders fall through to Claude.
 const hostOf = () => data.current?.host || (hostFlag === 'grok' || hostFlag === 'claude' ? hostFlag : null);
 // env() runs from collect() before the interactive runners exist (--frame, --json). Filled in once they do.
@@ -71,13 +82,24 @@ const loaders = {
   // The branch map only shows on Git: off it, load the lists once and leave them (setTab refreshes on arrival).
   async prs() {
     if (ui.tab !== 'git' && data.prs) return;
-    data.prs = await src.prs(cwd);
-    if (ui.tab === 'git' && data.worktrees) data.map = await src.branchMap(cwd, data.worktrees, data.prs);
+    const next = await src.prs(cwd);
+    if (next.ok) {
+      data.prs = next;
+      data.github = true;
+      if (ui.tab === 'git' && data.worktrees) await publishMap();
+    } else {
+      data.github = false;
+      // A failed fetch must not wipe the list the tree is already using.
+      if (!data.prs?.ok) {
+        data.prs = next;
+        if (ui.tab === 'git' && data.worktrees) await publishMap();
+      }
+    }
   },
   async worktrees() {
     if (ui.tab !== 'git' && data.worktrees) return;
     data.worktrees = { ...(await src.worktrees(cwd)), at: Date.now() };
-    if (ui.tab === 'git' && data.prs) data.map = await src.branchMap(cwd, data.worktrees, data.prs);
+    if (ui.tab === 'git') await publishMap();
   },
   async connectors() { data.connectors = await src.connectors(hostOf()); },
 };
@@ -85,7 +107,6 @@ const loaders = {
 export async function collect() {
   await loaders.fast(); // Sessions builds on its list of sessions
   await Promise.all(Object.entries(loaders).filter(([k]) => k !== 'fast').map(([, f]) => f()));
-  if (ui.tab === 'git') data.map = await src.branchMap(cwd, data.worktrees, data.prs);
   return { cwd, ...data };
 }
 
@@ -143,7 +164,7 @@ const setTab = (t) => {
   // can't overlap a scheduled load), unless it loaded in the last 10s, so flipping tabs doesn't call GitHub each time.
   if (t === 'git' && !isFrame) {
     if (Date.now() - (data.worktrees?.at ?? 0) > 10_000) { runners.worktrees(); runners.prs(); }
-    else if (!data.map && data.worktrees) src.branchMap(cwd, data.worktrees, data.prs).then((m) => { data.map = m; draw(); });
+    else if (!data.map && data.worktrees) publishMap().then(() => draw());
   }
 };
 const stepTab = (d) => setTab(TABS[(TABS.indexOf(ui.tab) + TABS.length + d) % TABS.length]);
@@ -455,6 +476,8 @@ function buildMain(W) {
         return s ? (s.current ? 'This session' : 'Go to session') : `Open ${agentBin()} here`;
       },
     }) : null;
+    if (data.github === false) line(dim('GitHub unavailable'));
+    else if (data.prs?.truncated) line(dim('More pull requests than this map shows'));
     if (view?.banner) line(paint(view.banner));
     rule();
     if (!data.map) line(dim('Loading…'));

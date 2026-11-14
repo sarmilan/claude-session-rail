@@ -72,17 +72,15 @@ function clashWith(branch, branches, base) {
 const trunkChild = (b, base) => !b.parent || b.parent === base;
 
 // The pull request the banner is about: this checkout if it is a trunk pull request, else the one
-// that has been waiting longest. A clash or a dirty merge holds that one. Otherwise the first whose
-// checks pass and whose merge state is clean. A child of a branch that is still open is not in this pool.
+// that has been waiting longest. Stop at the first row that is held or ready, so a later sibling
+// does not replace it. A child of a branch that is still open is not in this pool.
 function bannerSubject(branches, base) {
   const pool = branches.filter((b) => b.pr && trunkChild(b, base)).sort((a, b) => (b.current - a.current) || ((a.pr.updatedAt || '').localeCompare(b.pr.updatedAt || '')));
-  let ready = null;
   for (const b of pool) {
-    const held = conflicted(b) || b.clashFiles.length > 0;
-    if (held) return { branch: b, held: true };
-    if (!ready && !b.pr.isDraft && passing(b) && b.pr.mergeStateStatus === 'CLEAN') ready = b;
+    if (conflicted(b) || b.clashFiles.length > 0) return { branch: b, held: true };
+    if (!b.pr.isDraft && passing(b) && b.pr.mergeStateStatus === 'CLEAN') return { branch: b, held: false };
   }
-  return ready ? { branch: ready, held: false } : null;
+  return null;
 }
 
 function link(branches, base) {

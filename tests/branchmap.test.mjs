@@ -67,6 +67,21 @@ test('the current trunk pull request is held before a cleaner sibling', () => {
   assert.equal(tree.banner.tone, 'red');
 });
 
+test('a ready trunk pull request is not replaced by a later held sibling', () => {
+  const current = treeOf([
+    branch('older', { files: ['desk.mjs'], pr: pull(10, { mergeStateStatus: 'DIRTY', updatedAt: '2019-01-01T00:00:00Z' }) }),
+    branch('mine', { current: true, files: ['rail.mjs'], pr: pull(35, { updatedAt: '2024-06-01T00:00:00Z' }) }),
+  ]);
+  assert.equal(current.banner.kind, 'next');
+  assert.equal(current.banner.branch, 'mine');
+  const waiting = treeOf([
+    branch('old', { pr: pull(10, { updatedAt: '2019-01-01T00:00:00Z' }) }),
+    branch('newer', { files: ['rail.mjs'], pr: pull(40, { mergeStateStatus: 'DIRTY', updatedAt: '2024-01-01T00:00:00Z' }) }),
+  ]);
+  assert.equal(waiting.banner.kind, 'next');
+  assert.equal(waiting.banner.branch, 'old');
+});
+
 test('a child that keeps editing its parent does not hold the stack', () => {
   const tree = treeOf([
     branch('parent', { current: true, files: ['rail.mjs', 'desk.mjs'], pr: pull(35) }),
@@ -278,6 +293,32 @@ test('conflict names are the file list after the tree id', () => {
 
 const git = (cwd, args) => new Promise((resolve, reject) => {
   execFile('git', args, { cwd }, (err, stdout) => (err ? reject(err) : resolve(stdout.toString())));
+});
+
+test('two branches at the same commit both hang from the trunk', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'branchmap-same-'));
+  const repo = join(root, 'repo');
+  const wtA = join(root, 'wt-a');
+  const wtB = join(root, 'wt-b');
+  try {
+    await mkdir(repo);
+    await git(repo, ['init', '-b', 'main']);
+    await git(repo, ['config', 'user.email', 'dev@example.com']);
+    await git(repo, ['config', 'user.name', 'Dev']);
+    await writeFile(join(repo, 'file.txt'), 'm\n');
+    await git(repo, ['add', '.']);
+    await git(repo, ['commit', '-m', 'base']);
+    await git(repo, ['branch', 'feature-a']);
+    await git(repo, ['branch', 'feature-b']);
+    await git(repo, ['worktree', 'add', wtA, 'feature-a']);
+    await git(repo, ['worktree', 'add', wtB, 'feature-b']);
+    const map = await branchMap(repo, await worktrees(repo), { ok: true, items: [] });
+    const by = Object.fromEntries(map.branches.map((b) => [b.name, b]));
+    assert.equal(by['feature-a'].parent, 'main');
+    assert.equal(by['feature-b'].parent, 'main');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test('a real repo parents a branch on its ancestor and keeps both file lists', async () => {

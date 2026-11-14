@@ -610,12 +610,14 @@ export async function connectors(host) {
 }
 
 // ── Changes: your open PRs in this repo ────────────────────────────────────────
-export async function prs(cwd, limit = 15) {
+// The tree's parents come from this list, so the cap has to cover the open set, not a short preview.
+export async function prs(cwd, limit = 100) {
   const out = await run('gh', ['pr', 'list', '--author', '@me', '--state', 'open', '--limit', String(limit),
     '--json', 'number,title,state,isDraft,url,headRefName,baseRefName,updatedAt,mergeStateStatus,reviewDecision,statusCheckRollup'], { cwd, timeout: 15_000 });
   if (out == null) return { ok: false, items: [] };
   try {
-    return { ok: true, items: JSON.parse(out).map(({ statusCheckRollup, ...p }) => ({ ...p, checks: (statusCheckRollup ?? []).map(check) })) };
+    const items = JSON.parse(out).map(({ statusCheckRollup, ...p }) => ({ ...p, checks: (statusCheckRollup ?? []).map(check) }));
+    return { ok: true, items, truncated: items.length >= limit };
   } catch { return { ok: false, items: [] }; }
 }
 
@@ -698,10 +700,16 @@ export async function branchMap(cwd, worktrees, prs) {
   for (const n of localNodes) {
     if (n.pr) continue;
     let nearest = null;
+    let nearestCount = Infinity;
     for (const other of localNodes) {
-      if (other === n) continue;
+      // The same commit is not a parent: two branches cut from one tip both hang from the trunk.
+      if (other === n || other.oid === n.oid) continue;
       if (!(await ancestor(cwd, other.oid, n.oid))) continue;
-      if (!nearest || await ancestor(cwd, nearest.oid, other.oid)) nearest = other;
+      const out = await run('git', ['rev-list', '--count', `${other.oid}..${n.oid}`], { cwd });
+      const count = out == null ? NaN : Number(out);
+      if (!Number.isFinite(count)) continue;
+      const closer = count < nearestCount || (count === nearestCount && other.name.localeCompare(nearest.name) < 0);
+      if (!nearest || closer) { nearest = other; nearestCount = count; }
     }
     n.parent = nearest?.name ?? base;
   }

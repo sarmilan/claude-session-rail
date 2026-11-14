@@ -97,7 +97,7 @@ A collapsed branch is one line. Names share a column. `↑` is how far it is ahe
 
 Open a branch for this checkout's `+N −N` and uncommitted count, the clashing files, the conflicting files, the checks (failing first), and the actions: go to that checkout's session, open the pull request, copy the branch name. When a review asked for changes, that row is yellow and the first line of the review is under the checks. That line comes from one `gh pr view` the moment the lane opens, not from the minute refresh. Enter on a check opens it. Enter on an action runs it.
 
-The tree refreshes about once a minute, when you switch to Git, on `r`, and again when the branch changes. `+N −N` and the uncommitted count come from this checkout every 5 seconds, so an open row updates between those minutes. Checks come from GitHub through `gh`. Only your own open pull requests are listed.
+The tree refreshes about once a minute, when you switch to Git, on `r`, and again when the branch changes. `+N −N` and the uncommitted count come from this checkout every 5 seconds, so an open row updates between those minutes. Checks come from GitHub through `gh`. Only your own open pull requests are listed, up to 100. When that list cannot be fetched, the last one stays and the tab says GitHub is unavailable.
 
 Click a row, or use the arrow keys and Enter, to open it. On Git, Enter expands a branch in place. A session jumps to its iTerm window (a session in the Claude app gives you its details instead), pull requests and checks open in the browser, and tasks show their output.
 
