@@ -10,6 +10,7 @@ import { openSync, readSync, fstatSync, closeSync, readFileSync, writeFileSync, 
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import * as src from './sources.mjs';
+import { buildTree, layoutTree } from './branchmap.mjs';
 import { ESC, fg, dim, bold, C, bgOpen, charWidth, width, trunc, wrap, clean, tabBar, usePalette, paneBgOn, paneBgOff } from './term.mjs';
 import { createMascot, creatureNames, stageFor, progressFor, doneFor, attentionFor, visitorsFor, droopFor, flinchAt, isSubagentCall } from './mascot.mjs';
 import { isApproved } from './brief.mjs';
@@ -30,8 +31,19 @@ const taskIndex = new src.TaskIndex();
 
 // ── Data ───────────────────────────────────────────────────────────────────────
 const data = { env: null, brief: null, account: null, usage: [], agents: [], overview: null, current: null, stats: null, connectors: null, prs: null,
-  worktrees: null, activity: null,
+  worktrees: null, map: null, github: null, activity: null,
   tasks: { running: [], finished: 0, done: [] } };
+// The two Git loaders both rebuild the map. A generation drops a result that started from an older pair.
+let mapGen = 0;
+const publishMap = async () => {
+  if (ui.tab !== 'git' || !data.worktrees) return;
+  const gen = ++mapGen;
+  const worktrees = data.worktrees;
+  const prsSnap = data.prs;
+  const map = await src.branchMap(cwd, worktrees, prsSnap);
+  if (gen !== mapGen) return;
+  data.map = map;
+};
 // A grok rail with nothing picked yet still belongs to Grok. Otherwise the account loaders fall through to Claude.
 const hostOf = () => data.current?.host || (hostFlag === 'grok' || hostFlag === 'claude' ? hostFlag : null);
 // env() runs from collect() before the interactive runners exist (--frame, --json). Filled in once they do.
@@ -67,9 +79,28 @@ const loaders = {
     const host = hostOf();
     [data.account, data.usage] = await Promise.all([src.account(host, data.current?.configDir), src.usage(host, data.current?.configDir)]);
   },
-  // The PRs and worktree cards only show on Git: off it, load them once and leave them (setTab refreshes on arrival).
-  async prs() { if (ui.tab !== 'git' && data.prs) return; data.prs = await src.prs(cwd); },
-  async worktrees() { if (ui.tab !== 'git' && data.worktrees) return; data.worktrees = { ...(await src.worktrees(cwd)), at: Date.now() }; },
+  // The branch map only shows on Git: off it, load the lists once and leave them (setTab refreshes on arrival).
+  async prs() {
+    if (ui.tab !== 'git' && data.prs) return;
+    const next = await src.prs(cwd);
+    if (next.ok) {
+      data.prs = next;
+      data.github = true;
+      if (ui.tab === 'git' && data.worktrees) await publishMap();
+    } else {
+      data.github = false;
+      // A failed fetch must not wipe the list the tree is already using.
+      if (!data.prs?.ok) {
+        data.prs = next;
+        if (ui.tab === 'git' && data.worktrees) await publishMap();
+      }
+    }
+  },
+  async worktrees() {
+    if (ui.tab !== 'git' && data.worktrees) return;
+    data.worktrees = { ...(await src.worktrees(cwd)), at: Date.now() };
+    if (ui.tab === 'git') await publishMap();
+  },
   async connectors() { data.connectors = await src.connectors(hostOf()); },
 };
 
@@ -121,7 +152,7 @@ const restoreTab = (sid) => {
   if (tabSwitched) return saveTab(sid); // a switch before the session was known wins over the saved tab, and is kept
   try { const t = JSON.parse(readFileSync(railFile(sid), 'utf8')).tab; if (TABS.includes(t) && t !== ui.tab) showTab(t); } catch {}
 };
-const ui = { sel: null, open: { environment: true, context: true, connectors: false, more: false, settings: false }, scroll: 0, tick: 0,
+const ui = { sel: null, open: { environment: true, context: true, connectors: false, more: false, settings: false }, expanded: {}, reviewLines: {}, scroll: 0, tick: 0,
   overlay: null, toast: null, input: null, tab: TABS.includes(startTab) ? startTab : 'session' };
 // Switch tabs; --frame doesn't touch the saved one.
 const setTab = (t) => {
@@ -129,9 +160,12 @@ const setTab = (t) => {
   tabSwitched = true;
   showTab(t);
   saveTab(data.current?.sessionId);
-  // The worktree cards and PR checks refresh every 60s, only on Git; arriving on Git brings them up to date (through the runner, so it
-  // can't overlap a scheduled load), unless they loaded in the last 10s, so flipping tabs doesn't call GitHub each time.
-  if (t === 'git' && !isFrame && Date.now() - (data.worktrees?.at ?? 0) > 10_000) { runners.worktrees(); runners.prs(); }
+  // The branch map refreshes every 60s, only on Git; arriving on Git brings it up to date (through the runner, so it
+  // can't overlap a scheduled load), unless it loaded in the last 10s, so flipping tabs doesn't call GitHub each time.
+  if (t === 'git' && !isFrame) {
+    if (Date.now() - (data.worktrees?.at ?? 0) > 10_000) { runners.worktrees(); runners.prs(); }
+    else if (!data.map && data.worktrees) publishMap().then(() => draw());
+  }
 };
 const stepTab = (d) => setTab(TABS[(TABS.indexOf(ui.tab) + TABS.length + d) % TABS.length]);
 const otherTab = () => stepTab(1);
@@ -213,12 +247,6 @@ const menu = (title, options, info = []) => {
 const viewLog = (task) => { ui.overlay = { kind: 'log', task, scroll: 0, back: ui.overlay?.back ?? ui.sel }; };
 const closeOverlay = () => { if (ui.overlay) ui.sel = ui.overlay.back; ui.overlay = null; };
 
-const prMenu = (p) => menu(`#${p.number} ${clean(p.title)}`, [
-  { label: 'Open in browser', key: 'o', run: () => launch('open', [p.url], `Opened #${p.number}`) },
-  { label: 'Copy link', key: 'y', run: () => copy(p.url, `link to #${p.number}`) },
-  { label: 'Copy branch name', run: () => copy(p.headRefName, 'branch name') },
-], [`${p.headRefName}${p.isDraft ? ' · draft' : ''} · updated ${ago(Date.parse(p.updatedAt))} ago`]);
-
 const repoMenu = (env) => menu(env.repo, [
   { label: 'Open in Finder', run: () => launch('open', [env.root], 'Opened in Finder') },
   { label: 'Open in VS Code', run: () => launch('code', [env.root], 'Opened in VS Code', 'VS Code `code` command not found') },
@@ -255,22 +283,41 @@ const startSession = async (problem) => {
 // A new iTerm window beside this session's, running command.
 const openWindow = (command, ok) => pane(['window', data.overview?.find((s) => s.current)?.tty ?? 'none', command],
   (state) => toast(state === 'opened' ? ok : "Couldn't open a window"));
-// A worktree card's menu: its session (or a new window running claude there), its PR and failing check, its branch.
-const prFor = (branch) => (branch && data.prs?.ok ? data.prs.items.find((p) => p.headRefName === branch) : null);
-const failing = (p) => p?.checks.find((c) => c.state === 'fail' && c.url);
-const worktreeMenu = (w) => {
-  // A session belongs to the deepest worktree holding its cwd (a worktree can sit inside another's folder).
+// A session belongs to the deepest worktree holding its cwd (a worktree can sit inside another's folder).
+const sessionFor = (path) => {
+  if (!path) return null;
   const inside = (dir, p) => dir === p || dir?.startsWith(p + '/');
   const owner = (dir) => (data.worktrees?.items ?? []).filter((x) => inside(dir, x.path)).sort((a, b) => b.path.length - a.path.length)[0]?.path;
-  const s = data.overview?.find((o) => owner(o.cwd) === w.path);
-  const p = prFor(w.branch), bad = failing(p), name = clean(w.name);
-  menu(name, [
-    s ? { label: s.current ? 'This session' : 'Go to session', run: () => goTo(s) }
-      : { label: `Open ${agentBin()} here`, run: () => openWindow(`cd ${sq(w.path)} && ${agentBin()}`, `Opened ${agentBin()} in ${name}`) },
-    ...(p ? [{ label: `Open PR #${p.number}`, key: 'o', run: () => launch('open', [p.url], `Opened #${p.number}`) }] : []),
-    ...(bad ? [{ label: `Open failing check: ${clean(bad.name)}`, run: () => launch('open', [bad.url], 'Opened the check') }] : []),
-    ...(w.branch ? [{ label: 'Copy branch name', key: 'y', run: () => copy(w.branch, 'branch name') }] : []),
-  ], [clean(src.tildify(w.path)), clean(w.branch ?? `detached at ${w.sha}`)]);
+  return data.overview?.find((o) => owner(o.cwd) === path) ?? null;
+};
+// One gh pr view, the first time a changes-requested lane opens. The minute poll does not ask for reviews.
+const reviewAsked = new Set();
+const loadReview = async (row) => {
+  const node = data.map?.branches?.find((b) => b.name === row.branch);
+  if (!node || node.name in ui.reviewLines || node.pr?.reviewDecision !== 'CHANGES_REQUESTED' || !node.pr.number) return;
+  const key = String(node.pr.number);
+  if (reviewAsked.has(key)) return;
+  reviewAsked.add(key);
+  const line = await src.reviewLine(cwd, node.pr.number);
+  if (line == null) { reviewAsked.delete(key); return; }
+  ui.reviewLines[node.name] = line;
+  if (line) draw();
+};
+// Enter on a lane toggles it. Enter on a check or an action row runs that row. Nothing here rebases or merges.
+const activateLane = async (row) => {
+  if (row.activate === 'toggle') {
+    ui.expanded[row.branch] = !ui.expanded[row.branch];
+    if (ui.expanded[row.branch]) await loadReview(row);
+    return;
+  }
+  if (row.activate === 'check' && row.url) return launch('open', [row.url], 'Opened the check');
+  if (row.activate === 'pr' && row.url) return launch('open', [row.url], `Opened #${row.pr}`);
+  if (row.activate === 'copy') return copy(row.branch, 'branch name');
+  if (row.activate === 'session') {
+    const s = sessionFor(row.path);
+    if (s) return goTo(s);
+    return openWindow(`cd ${sq(row.path)} && ${agentBin()}`, `Opened ${agentBin()} in ${clean(row.branch)}`);
+  }
 };
 
 const typeKey = (k) => {
@@ -394,163 +441,52 @@ function buildMain(W) {
 
   const env = data.env;
 
-  // Git: worktree cards, this branch's commits, its PR's checks, then the open pull requests.
+  // Git: one tree of the open branches, and the one line that says what can land.
   // `spread` lays out pieces already truncated to fit: styled left, styled right, padded between.
   const spread = (left, right = '', id) => line(left + ' '.repeat(Math.max(right ? 1 : 0, inner - width(left) - width(right))) + right, id);
-  const CHECK = { pass: [C.green, '✓'], fail: [C.red, '✗'], pending: [C.yellow, '◌'] };
-  const badge = (p) => {
-    if (!p) return '';
-    const states = p.checks.map((c) => c.state);
-    const st = states.includes('fail') ? 'fail' : states.includes('pending') ? 'pending' : states.length ? 'pass' : null;
-    return `#${p.number}` + (st ? ' ' + fg(CHECK[st][0], CHECK[st][1]) : '');
-  };
+  // Style names from the tree, painted when the frame is drawn so the palette is the one in force.
+  const paint = (parts) => (parts ?? []).map((p) => {
+    const text = p.text;
+    if (p.style === 'dim') return dim(text);
+    if (p.style === 'accent') return fg(C.accent, text);
+    if (p.style === 'green') return fg(C.green, text);
+    if (p.style === 'yellow') return fg(C.yellow, text);
+    if (p.style === 'red') return fg(C.red, text);
+    if (p.style === 'purple') return fg(C.purple, text);
+    if (p.style === 'gray') return fg(C.gray, text);
+    return text;
+  }).join('');
   const gitTab = () => {
     const wt = data.worktrees;
-    // Header: the repo, its default branch, and how fresh the cards are.
+    // Header: the repo, its default branch, and how fresh the tree is.
     const repo = trunc(clean(wt?.repo ?? env?.repo ?? '…'), inner - 6);
-    const baseName = wt?.base ? trunc(clean(wt.base), inner - 6 - width(repo) - 3) : '';
+    const baseName = wt?.base ? trunc(clean(wt.base), Math.max(0, inner - 6 - width(repo) - 3)) : '';
     spread(repo + (baseName ? ' · ' + dim(baseName) : ''), wt?.at ? dim(`↻ ${ago(wt.at)}`) : '');
+    const tree = data.map?.ok ? buildTree({
+      base: data.map.base,
+      onTrunk: Boolean(env?.branch && env.branch === data.map.base),
+      branches: data.map.branches.map((b) => (b.name in ui.reviewLines ? { ...b, reviewLine: ui.reviewLines[b.name] } : b)),
+      detached: data.map.detached,
+    }) : null;
+    const view = tree ? layoutTree(tree, {
+      inner, open: ui.expanded,
+      added: env?.added ?? 0, removed: env?.removed ?? 0, dirty: env?.dirty ?? 0,
+      sessionLabel: (node) => {
+        const s = sessionFor(node.path);
+        return s ? (s.current ? 'This session' : 'Go to session') : `Open ${agentBin()} here`;
+      },
+    }) : null;
+    if (data.github === false) line(dim('GitHub unavailable'));
+    else if (data.prs?.truncated) line(dim('More pull requests than this map shows'));
+    if (view?.banner) line(paint(view.banner));
     rule();
-
-    // Worktrees: this one first, then git's order.
-    const cards = [...(wt?.items ?? [])].sort((a, b) => b.current - a.current);
-    heading(`Worktrees ${dim(wt ? String(cards.length) : '…')}`);
-    if (wt && !wt.ok) line(dim('Not a git repo'));
-    for (const w of cards) {
-      const id = item(`wt:${w.path}`, () => worktreeMenu(w));
-      const where = clean(w.branch ?? `detached ${w.sha}`);
-      const right = trunc(where, Math.max(8, Math.floor(inner / 2)));
-      const name = trunc(clean(w.name), inner - 4 - width(right) - 1);
-      spread(`${w.current ? fg(C.accent, '▸ ●') : dim('  ○')} ${w.current ? bold(name) : name}`, dim(right), id);
-      const p = prFor(w.branch);
-      const sync = w.merged ? fg(C.green, '✓ merged')
-        : w.ahead == null ? '' : !w.ahead && !w.behind ? 'up to date'
-        : [w.ahead && fg(C.green, `↑${w.ahead}`), w.behind && fg(C.yellow, `↓${w.behind}`)].filter(Boolean).join(' ');
-      // This worktree's dirt from the environment, which refreshes every 5s rather than every minute.
-      const dirty = w.current && env?.isGit ? env.dirty : w.dirty;
-      const dirt = dirty == null ? fg(C.red, 'missing') : dirty ? `${dirty} changed` : 'clean';
-      const parts = [sync, dirt, badge(p)].filter(Boolean).join(dim(' · '));
-      spread(`    ${width(parts) > inner - 4 ? dim(trunc(clean(parts), inner - 4)) : parts}`, '', id);
-    }
-    rule();
-
-    // This checkout: where you are, the branch it proposes, and where that merges, then its commits.
-    if (env?.isGit) {
-      const here = (wt?.items ?? []).find((w) => w.current);
-      const mine = prFor(env.branch);
-      const diff = env.added || env.removed ? `${fg(C.green, `+${env.added}`)} ${fg(C.red, `−${env.removed}`)}` : '';
-      const pad = (n) => ' '.repeat(Math.max(0, n));
-      const dot = fg(C.accent, '●');
-      const paint = (plain) => plain.replaceAll('●', dot);
-      // The spine's last ● is where a fork leaves. Shrink the spine, then the name, so the right label fits.
-      const spine = (name, right, id) => {
-        const SPINES = ['●━━━━━●━━━━━●', '●━━━●━━━●', '●━━●━━●', '●━●━●', '●━━●', '●'];
-        const full = clean(name);
-        // Keep the whole name while the spine still fits; only then shorten the name.
-        let marks = SPINES.find((s) => width(`${full} ${s}`) + 2 + width(right) <= inner);
-        let label = full;
-        if (!marks) {
-          marks = '●';
-          label = trunc(full, Math.max(1, inner - width(right) - width(marks) - 3));
-        }
-        const left = `${label} ${marks}`;
-        if (width(left) + width(right) > inner) {
-          const plain = trunc(left, Math.max(1, inner - width(right) - 1));
-          line(plain.replaceAll('●', dot) + pad(inner - width(plain) - width(right)) + dim(right), id);
-          return Math.max(0, width(plain) - 1);
-        }
-        line(label + ' ' + paint(marks) + pad(inner - width(left) - width(right)) + dim(right), id);
-        return width(left) - 1;
-      };
-      // marks is the commit glyph (●━━● or ●), or '' when there is no count to draw.
-      const fork = (tip, marks) => {
-        const you = mine ? `you · #${mine.number}` : 'you';
-        const tail = marks ? ` ${you}` : you;
-        let at = Math.max(0, tip - 1);
-        if (at + width(marks + tail) > inner) at = Math.max(0, inner - width(marks + tail));
-        line(pad(Math.max(0, Math.min(at - 1, inner - 1))) + dim('╲'));
-        line(pad(at) + paint(marks) + (marks ? bold(' you') : bold('you')) + (mine ? dim(` · #${mine.number}`) : ''));
-      };
-      if (!env.branch) {
-        const sha = here?.sha ? clean(here.sha) : '';
-        line(trunc(sha ? `detached at ${sha}` : 'detached', inner));
-        line(dim('not on a branch'));
-      } else if (env.branch === env.base) {
-        spine(env.base, 'you are here', item('branch', () => branchMenu(env)));
-        line(dim('a session branch would fork'));
-        line(dim('from here and merge back'));
-        const into = `into ${clean(env.base)}`;
-        if (diff) spread(dim(trunc(into, inner - width(diff) - 1)), diff);
-        else line(dim(trunc(into, inner)));
-      } else {
-        const intoName = clean(mine?.baseRefName || env.base || '');
-        // The card counts against the default branch, and only the card for this checkout. A pull request
-        // into another branch, or a card that still names the previous branch, does not lend that count.
-        const counted = here?.branch === env.branch && Boolean(intoName) && intoName === env.base;
-        const ahead = counted ? here.ahead : null;
-        const merged = Boolean(counted && here.merged);
-        const marks = merged ? '' : ahead > 0 ? '●━━●' : ahead === 0 ? '●' : '';
-        fork(spine(intoName || '…', 'merges here'), marks);
-        const name = trunc(clean(env.branch), inner - (diff ? width(diff) + 1 : 0));
-        spread(bold(name), diff, item('branch', () => branchMenu(env)));
-        const target = intoName;
-        const prState = mine ? (mine.isDraft ? 'draft' : 'open') : '';
-        if (merged) {
-          line(fg(C.green, '✓ merged'));
-          if (prState) line(dim(prState));
-        } else if (ahead > 0) {
-          const extra = prState || (target ? `merges into ${target}` : '');
-          const text = `↑${ahead}${extra ? ` · ${extra}` : ''}`;
-          line(width(text) > inner ? dim(trunc(text, inner)) : fg(C.green, `↑${ahead}`) + (extra ? dim(` · ${extra}`) : ''));
-        } else if (ahead === 0) {
-          line(dim('nothing ahead yet'));
-          if (prState) line(dim(prState));
-          else if (target) line(dim(trunc(`merges into ${target}`, inner)));
-        } else if (target || prState) {
-          line(dim(trunc(prState ? `${prState}${target ? ` · merges into ${target}` : ''}` : `merges into ${target}`, inner)));
-        }
-      }
-      if (env.dirty) line(fg(C.yellow, '◌') + dim(` ${env.dirty} uncommitted`));
-      for (const c of env.commits ?? []) {
-        const age = dim(ago(c.at)), tag = c.fork && env.base ? `  ${fg(C.blue, trunc(clean(env.base), Math.floor(inner / 3)))}` : '';
-        const subject = trunc(clean(c.subject), inner - 2 - width(c.sha) - 1 - width(tag) - width(age) - 1);
-        if (c.fork && env.moreCommits) line(dim(`┆ ${env.moreCommits} more`));
-        spread(`${c.fork ? fg(C.blue, '◆') : fg(C.accent, '●')} ${dim(c.sha)} ${subject}${tag}`, age);
-      }
-      rule();
-    }
-
-    // This branch's PR and its checks, failing first; Enter opens a check's run.
-    const mine = prFor(env?.branch);
-    if (mine) {
-      heading(`PR #${mine.number} ${dim(`· ${mine.isDraft ? 'draft' : 'open'}`)}`);
-      const order = { fail: 0, pending: 1, pass: 2 };
-      const checks = [...mine.checks].sort((a, b) => order[a.state] - order[b.state]);
-      if (!checks.length) line(dim('No checks'));
-      const seen = {};
-      checks.forEach((c) => {
-        const [color, mark] = CHECK[c.state];
-        const key = `${c.name}\x1f${c.url}`, n = (seen[key] = (seen[key] ?? 0) + 1); // ids must be unique or j/k sticks on the repeat
-        const note = { fail: 'failing', pending: 'running', pass: '' }[c.state];
-        spread(`${fg(color, mark)} ${trunc(clean(c.name), inner - 2 - (note ? width(note) + 1 : 0))}`, dim(note),
-          c.url ? item(`check:${key}${n > 1 ? `#${n}` : ''}`, () => launch('open', [c.url], 'Opened the check')) : undefined); // names repeat across workflows; the run's url keeps the selection when the order changes
-      });
-      rule();
-    }
-
-    // Pull requests: yours, open in this repo
-    heading('Pull requests');
-    const pr = data.prs;
-    if (!pr) line(dim('Loading…'));
-    else if (!pr.ok) line(dim('GitHub unavailable'));
-    else if (!pr.items.length) line(dim('No open pull requests'));
-    else {
-      for (const p of ui.open.more ? pr.items : pr.items.slice(0, 5)) {
-        const id = item(`pr:${p.number}`, () => prMenu(p));
-        pair(`⑂ ${clean(p.title)}`, '⋯', id, { leftStyle: (s) => fg(p.isDraft ? C.gray : C.purple, s[0]) + s.slice(1), rightStyle: dim });
-        pair(`  ${clean(data.worktrees?.repo ?? env?.repo ?? '')} #${p.number}${p.isDraft ? ' · draft' : ''}`, '', id, { leftStyle: dim });
-      }
-      if (pr.items.length > 5) line(dim(ui.open.more ? 'Show less' : 'Show more'), item('more', () => { ui.open.more = !ui.open.more; }));
+    if (!data.map) line(dim('Loading…'));
+    else if (!data.map.ok) line(dim('Not a git repo'));
+    else for (const row of view.rows) {
+      const id = row.activate ? item(row.id, () => activateLane(row)) : undefined;
+      const right = paint(row.right);
+      if (right) spread(paint(row.left), right, id);
+      else line(paint(row.left), id);
     }
     rule();
   };
@@ -870,7 +806,10 @@ if (args.includes('--frame')) {
   mascot.setHeld(petHeld());
   if (args.includes('--flinch')) mascot.flinch();
   // e.g. --activate pr:8  or  --activate finished,opt:0  (a chain of clicks)
-  for (const id of (flag('--activate') || '').split(',').filter(Boolean)) frame(W, H).items.find((it) => it.id === id)?.activate();
+  for (const id of (flag('--activate') || '').split(',').filter(Boolean)) {
+    const run = frame(W, H).items.find((it) => it.id === id)?.activate;
+    if (run) await run();
+  }
   console.log(frame(W, H).lines.join('\n'));
   process.exit(0);
 }
@@ -937,8 +876,10 @@ const move = (d) => {
 };
 const activate = (id) => current.items.find((i) => i.id === id)?.activate();
 const selectedPr = () => {
-  const n = /^pr:(\d+)$/.exec(ui.sel ?? '')?.[1];
-  return n && data.prs?.items.find((p) => String(p.number) === n);
+  const sel = ui.sel ?? '';
+  const body = sel.startsWith('lane:') || sel.startsWith('act:') || sel.startsWith('check:') ? sel.slice(sel.indexOf(':') + 1) : '';
+  const hit = (data.map?.branches ?? []).filter((b) => body === b.name || body.startsWith(`${b.name}:`)).sort((a, b) => b.name.length - a.name.length)[0];
+  return hit?.pr ?? null;
 };
 
 const handleKey = (k) => {
