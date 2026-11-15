@@ -5,7 +5,7 @@ Side panels for Claude Code in iTerm2, like the ones in the Claude desktop app.
 When you start `claude`, two panes open on the right:
 
 - **The rail**, a narrow pane that shows what Claude is working with and what's running. `/rail` hides it or brings it back.
-- **The desk**, a wider pane between Claude and the rail, with tabs for the plan, the diff, and the branch's reviews. It opens on Plan, which shows the latest merged PRs and commits until there's a plan. `/desk` hides it or brings it back.
+- **The desk**, a wider pane between Claude and the rail, with tabs for the plan, the diff, and the branch's reviews. It opens on Plan, which shows recent work until there's a plan, and a change of the plan selects Plan again. `/desk` hides it or brings it back.
 
 If you have a `/start` command of your own, it runs as soon as the session starts.
 
@@ -140,14 +140,14 @@ Click a row, or use the arrow keys and Enter, to open it. On Session, Enter expa
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Plan:** the branch's **brief** (see below), live, with an **Approve** button when it's ready. On `main`, `master`, or a detached HEAD there is no brief and no Approve button: the tab says to create a branch, write the brief, and approve it here, then shows the plan file or recent work. Until a feature branch has a brief, it lists the **Todo** issues on the repo's GitHub project board first, so you can pick one up, then the plan, or the latest merged PRs and commits.
+- **Plan:** the plan, live. That is the branch's **brief** (see below), with an **Approve** button when it's ready, unless the session's plan file is newer, in which case that file is the body and has no button. A change of either one selects Plan and scrolls to the top. With nothing written, the tab says so (on `main`, create a branch; on a feature branch, the brief is not written yet), then lists the **Todo** issues and recent work. Diff and Review stay until you switch them.
 - **Diff:** every file changed since the branch forked from the default branch, the same base as the rail's `+N −N`, grouped under the brief's chunks with each chunk's summary. Untracked files are included, marked `new`. Open a file to see its diff.
 - **Review:** the branch's reviews and what became of each finding (see *Reviews* below).
   - **Approach:** a staff-engineer review in a separate, headless Claude. It reads the brief, each chunk's summary and files, and how much each file changed. It says whether this is the simplest, most elegant and least costly way to the goal: on track, a simpler path exists, or off the goal. Findings are things like a simpler design, work beyond the goal, avoidable cost, or part of the goal not covered.
   - **Code review:** the newest `/code-review`, finding by finding, with its file and line. `Enter` jumps to that line in the diff.
   - Each finding shows ● open, ✓ applied or ✗ declined (✓ fixed, ✓ no change or ✓ skipped for code), and a declined one shows the reason. Older runs are listed one line each. Reviews are saved per branch inside `.git`.
 
-The desk opens on Plan and stays on the tab you pick.
+The desk opens on Plan. A change of the plan selects Plan again. Diff and Review stay until you switch them.
 
 ### The session brief
 
@@ -231,7 +231,7 @@ grok plugin marketplace add <this folder>
 grok plugin install <this folder> --trust
 ```
 
-Start a new `grok` in iTerm2. The desk and the rail open on the right, and the brief, the reviews and **+ new** work the same way. Plan shows the branch brief, and before there is one it shows the `plan.md` plan mode writes in the Grok session, the same way Claude's plan file shows up. The pet follows the activity feed, since a Grok session file never says busy. `/rail` and `/desk` are in the slash menu, and the two panels use Grok's colours. A session that is already open does not pick the plugin up until you start another one. The install copies this folder; refresh it with `grok plugin uninstall session-rail --confirm`, then the install again.
+Start a new `grok` in iTerm2. The desk and the rail open on the right, and the brief, the reviews and **+ new** work the same way. Plan shows the branch brief, and a newer `plan.md` (the file plan mode writes in the Grok session) replaces it until the brief catches up. A change of either one selects Plan. Claude's plan file works the same way. The pet follows the activity feed, since a Grok session file never says busy. `/rail` and `/desk` are in the slash menu, and the two panels use Grok's colours. A session that is already open does not pick the plugin up until you start another one. The install copies this folder; refresh it with `grok plugin uninstall session-rail --confirm`, then the install again.
 
 If macOS asks whether to allow controlling iTerm2, allow it. That's how the panels open their panes and how the rail switches between sessions.
 
