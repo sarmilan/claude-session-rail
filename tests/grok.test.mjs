@@ -2,10 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { callFinished, callStarted, fresh, heard, noteReply, replied, trackTasks, turnEnded, turnStarted } from '../bin/activity.mjs';
 import { attentionFor } from '../bin/mascot.mjs';
-import { mainCheckoutNote } from '../bin/brief.mjs';
+import { checkoutName, inWorkTree, mainCheckoutNote } from '../bin/brief.mjs';
 import { armTurn, editReason, slashCommand, takeProcedure } from '../bin/grok-hook.mjs';
 import { C, fg, paneBgOff, paneBgOn, usePalette } from '../bin/term.mjs';
-import { connectorsFrom, contextFrom, rowFromActive, usageFromBilling } from '../bin/sources.mjs';
+import { connectorsFrom, contextFrom, eventsFromText, rowFromActive, usageFromBilling } from '../bin/sources.mjs';
 import { reviewPayload } from '../bin/reviewer.mjs';
 import { goAhead, startWanted, step } from '../bin/grok-watch.mjs';
 
@@ -29,6 +29,30 @@ test('edits under the brief dir and an empty brief are told apart', () => {
   assert.equal(editReason(brief, '/repo/.git/session-rail/briefs/x.md'), null);
   assert.match(editReason(brief, '/repo/a.js'), /wait for the session brief/);
   assert.equal(editReason({ ...brief, approval: { approvedAt: 1 } }, '/repo/a.js'), null);
+});
+
+test('a rebase names the branch, and the work tree is the toplevel', () => {
+  assert.equal(checkoutName('feature/x', ''), 'feature/x');
+  assert.equal(checkoutName('HEAD', 'refs/heads/feature/x'), 'feature/x');
+  assert.equal(checkoutName('HEAD', ''), 'HEAD');
+  assert.equal(inWorkTree('/repo', '/repo/src/a.ts'), true);
+  assert.equal(inWorkTree('/repo', '/tmp/plan.md'), false);
+  assert.equal(inWorkTree('/repo', 'bin/rail.mjs'), true);
+});
+
+test('a Claude transcript line is read when its type sits past the first 96 characters', () => {
+  const user = JSON.stringify({
+    parentUuid: 'u'.repeat(80), cwd: '/repo', type: 'user',
+    message: { role: 'user', content: 'show the session' },
+  });
+  const assistant = JSON.stringify({
+    parentUuid: 'a'.repeat(80), type: 'message',
+    message: { role: 'assistant', content: [{ type: 'text', text: 'The tab lists tools' }] },
+  });
+  assert.ok(user.indexOf('"type":"user"') > 96);
+  assert.equal(assistant.slice(0, 96).includes('"role":"assistant"'), false);
+  const events = eventsFromText(`${user}\n${assistant}\nnot a story line\n`);
+  assert.deepEqual(events.map((e) => e.text), ['show the session', 'The tab lists tools']);
 });
 
 test('on main a repo edit is refused and names the branch and the brief', () => {

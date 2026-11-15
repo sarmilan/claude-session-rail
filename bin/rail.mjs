@@ -462,7 +462,7 @@ function buildMain(W) {
   const spread = (left, right = '', id) => line(left + ' '.repeat(Math.max(right ? 1 : 0, inner - width(left) - width(right))) + right, id);
   // Style names from the tree, painted when the frame is drawn so the palette is the one in force.
   const paint = (parts) => (parts ?? []).map((p) => {
-    const text = p.text;
+    const text = clean(String(p.text ?? ''));
     if (p.colour != null) return fg(p.colour, text);
     if (p.style === 'bold') return bold(text);
     if (p.style === 'dim') return dim(text);

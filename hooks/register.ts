@@ -1,5 +1,5 @@
 import type { EngineInterface, Register } from 'claude-code'
-import { approvalRecord, briefFile, briefStatus, inWorkTree, mainCheckoutNote, NO_BRIEF_BRANCHES, parseBrief } from '../bin/brief.mjs'
+import { approvalRecord, briefFile, briefStatus, checkoutName, inWorkTree, mainCheckoutNote, NO_BRIEF_BRANCHES, parseBrief } from '../bin/brief.mjs'
 import * as act from './activity.ts'
 import { goAhead } from './goahead.ts'
 import * as compact from './compact.ts'
@@ -60,8 +60,23 @@ const gitHead = async ($: EngineInterface) => {
   const git = await $.process.run(['git', '-C', cwd, 'rev-parse', '--path-format=absolute', '--git-common-dir', '--abbrev-ref', 'HEAD'], {
     timeoutMs: 5_000,
   })
-  const [common, branch] = git.exitCode === 0 ? git.stdout.trim().split('\n') : []
-  return common && branch ? { cwd, common, branch } : null
+  const [common, abbrev] = git.exitCode === 0 ? git.stdout.trim().split('\n') : []
+  if (!common || !abbrev) return null
+  let branch = abbrev
+  if (branch === 'HEAD') {
+    const dirRun = await $.process.run(['git', '-C', cwd, 'rev-parse', '--path-format=absolute', '--git-dir'], { timeoutMs: 5_000 })
+    const dir = dirRun.exitCode === 0 ? dirRun.stdout.trim().split('\n')[0] : ''
+    if (dir) {
+      const read = (p: string) => $.fs.read(`${dir}/${p}`).then(t => String(t).trim(), () => '')
+      const rebase = (await read('rebase-merge/head-name')) || (await read('rebase-apply/head-name'))
+      branch = checkoutName(abbrev, rebase)
+    }
+  }
+  let root = cwd
+  const top = await $.process.run(['git', '-C', cwd, 'rev-parse', '--show-toplevel'], { timeoutMs: 5_000 })
+  const topLine = top.exitCode === 0 ? top.stdout.trim() : ''
+  if (topLine.startsWith('/') && !topLine.includes('\n')) root = topLine
+  return { cwd, common, branch, root }
 }
 const readBrief = async ($: EngineInterface): Promise<Brief | null> => {
   const head = await gitHead($)
@@ -133,7 +148,7 @@ const gate = async ($: EngineInterface, tool: string, file: string) => {
   const b = await readBrief($)
   if (!b) {
     const head = await gitHead($)
-    if (!head || !NO_BRIEF_BRANCHES.includes(head.branch) || !inWorkTree(head.cwd, file)) return null
+    if (!head || !NO_BRIEF_BRANCHES.includes(head.branch) || !inWorkTree(head.root || head.cwd, file)) return null
     const reason = mainCheckoutNote(head.branch)
     record($, a => act.refused(a, tool, file, Date.now()))
     return reason

@@ -190,11 +190,12 @@ async function readTail(path, max = 12_000_000) {
     return { text, sig: `${st.mtimeMs}:${st.size}` };
   } catch { return { text: '', sig: '0' }; } finally { if (fh) await fh.close(); }
 }
-function eventsFromText(text) {
+// Claude's log puts "type" well past the first hundred characters, and an assistant row is often
+// "type":"message" with the role later in the line. Match the tokens anywhere, then parse.
+export function eventsFromText(text) {
   const events = [];
   for (const line of text.split('\n')) {
-    const head = line.slice(0, 96);
-    if (!head.includes('"type":"user"') && !head.includes('"type":"assistant"') && !head.includes('"role":"user"') && !head.includes('"role":"assistant"')) continue;
+    if (!line.includes('"type":"user"') && !line.includes('"type":"assistant"') && !line.includes('"role":"user"') && !line.includes('"role":"assistant"')) continue;
     try { events.push(...eventsFromRecord(JSON.parse(line))); } catch { /* a torn line at the cut */ }
   }
   return events.length > 80 ? events.slice(-80) : events;

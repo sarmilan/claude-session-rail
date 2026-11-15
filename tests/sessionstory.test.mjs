@@ -139,6 +139,50 @@ test('a handoff stays in the chapter it was asked in', () => {
   assert.equal(chapters[0].handoffs.length, 0);
 });
 
+test('two subagents that share a prompt preamble stay two rows', () => {
+  const head = 'You are a meticulous code reviewer. Review code and produce structured review notes in a file.';
+  const merged = mergeAgents([
+    agent('rue', { name: 'Rue', what: 'review the diff', prompt: `${head} Target one.` }),
+    agent('sage', { name: 'Sage', what: 'review the branch', prompt: `${head} Target two.` }),
+  ], {});
+  assert.equal(merged.length, 2);
+  assert.deepEqual(merged.map((a) => a.name).sort(), ['Rue', 'Sage']);
+});
+
+test('turns already in the transcript are not a second copy of the chapter', () => {
+  const events = [
+    { kind: 'you', text: 'first' },
+    { kind: 'main', text: 'why the handoff' },
+    { kind: 'handoff', what: 'read the hooks' },
+    { kind: 'main', text: 'the answer' },
+    { kind: 'you', text: 'second' },
+  ];
+  const turns = [
+    { role: 'you', text: 'first' },
+    { role: 'main', text: 'the answer' },
+    { role: 'you', text: 'second' },
+  ];
+  const merged = mergeEvents(events, turns);
+  assert.equal(merged.filter((e) => e.kind === 'you').length, 2);
+  assert.deepEqual(chaptersFrom(merged, []).map((c) => c.you), ['second', 'first']);
+  const ahead = mergeEvents(
+    [{ kind: 'you', text: 'first' }, { kind: 'main', text: 'the answer' }],
+    [{ role: 'you', text: 'first' }, { role: 'main', text: 'the answer' }, { role: 'you', text: 'second' }],
+  );
+  assert.equal(ahead.at(-1).text, 'second');
+  assert.equal(ahead.filter((e) => e.text === 'first').length, 1);
+});
+
+test('a reply cannot carry an escape sequence into the row', () => {
+  const story = buildStory({
+    host: 'Grok', now: 10_000,
+    events: [{ kind: 'main', text: 'hello \x1b[2J\x1b]0;pwn\x07there' }],
+  });
+  const body = joined(viewOf(story)).join('\n');
+  assert.equal(body.includes('\x1b'), false);
+  assert.match(body, /hello there/);
+});
+
 test('the same ask from the file and the live feed is one agent, and a repeat of the last line is dropped', () => {
   const prompt = 'Read the hooks and explain the names';
   const merged = mergeAgents(

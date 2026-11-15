@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 import * as act from './activity.mjs';
 import { humanAsk, keep } from './sessionstory.mjs';
 import { briefInstructions } from './brief-instructions.mjs';
-import { approvalRecord, briefFile, briefStatus, inWorkTree, mainCheckoutNote, NO_BRIEF_BRANCHES, parseBrief } from './brief.mjs';
+import { approvalRecord, briefFile, briefStatus, checkoutName, inWorkTree, mainCheckoutNote, NO_BRIEF_BRANCHES, parseBrief } from './brief.mjs';
 import { codeRun, gateReason as reviewWait, keptRuns, mergesPr, reportFromText, reviewsFile } from './cadence.mjs';
 import { findAgent, railHome } from './host.mjs';
 import { pickColour, pickName } from './names.mjs';
@@ -36,11 +36,25 @@ const git = (cwd, args) => {
   try { return execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', timeout: 5_000 }).trim(); } catch { return null; }
 };
 
+function rebaseRef(dir) {
+  if (!dir) return '';
+  for (const name of ['rebase-merge/head-name', 'rebase-apply/head-name']) {
+    try { return readFileSync(join(dir, name), 'utf8').trim(); } catch { /* not this rebase */ }
+  }
+  return '';
+}
+
 export function gitHead(cwd) {
   const out = git(cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir', '--abbrev-ref', 'HEAD']);
   if (!out) return null;
-  const [common, branch] = out.split('\n');
-  return common && branch ? { cwd, common, branch } : null;
+  const [common, abbrev] = out.split('\n');
+  if (!common || !abbrev) return null;
+  const branch = abbrev === 'HEAD'
+    ? checkoutName(abbrev, rebaseRef(git(cwd, ['rev-parse', '--path-format=absolute', '--git-dir'])))
+    : abbrev;
+  const top = git(cwd, ['rev-parse', '--show-toplevel']);
+  const root = top && top.startsWith('/') ? top : cwd;
+  return { cwd, common, branch, root };
 }
 
 export function readBrief(cwd) {
@@ -331,7 +345,7 @@ export function handle(event, agent) {
       const file = resolve(cwd, raw);
       const b = readBrief(cwd);
       const head = b ? null : gitHead(cwd);
-      const checkout = head && NO_BRIEF_BRANCHES.includes(head.branch) ? { branch: head.branch, cwd: head.cwd } : null;
+      const checkout = head && NO_BRIEF_BRANCHES.includes(head.branch) ? { branch: head.branch, cwd: head.root || head.cwd } : null;
       const reason = editReason(b, file, checkout);
       if (reason) {
         if (b) writeProcedure(b); // the deny drops any attached procedure, so the reason points at the file

@@ -88,14 +88,19 @@ As a dev, I should be able to Y so I can Z.
 ### Chunk 1: first
 Do the first thing.
 `
-const briefHarness = (on: Parameters<Parameters<typeof test>[1]>[1], { branch = 'feature/x', brief = null as string | null } = {}) => {
+const briefHarness = (on: Parameters<Parameters<typeof test>[1]>[1], { branch = 'feature/x', brief = null as string | null, cwd = '/repo', rebase = '' } = {}) => {
   const base = `/repo/.git/session-rail/briefs/${encodeURIComponent(branch)}`
   const files: Record<string, string> = brief === null ? {} : { [`${base}.md`]: brief }
+  if (rebase) files['/repo/.git/rebase-merge/head-name'] = rebase.endsWith('\n') ? rebase : `${rebase}\n`
   const edits: string[] = []
   on('command.register', () => ({ value: { command: 'approve-brief' } }))
-  on('session.cwd', () => ({ value: '/repo' }))
+  on('session.cwd', () => ({ value: cwd }))
   on('process.run', (_, e) => {
-    const out = e.argv[0] === 'git' ? `/repo/.git\n${branch}\n` : '{"state":"opened"}\n'
+    const a = (e.argv ?? []).join(' ')
+    const out = e.argv[0] !== 'git' ? '{"state":"opened"}\n'
+      : a.includes('--show-toplevel') ? '/repo\n'
+      : a.includes('--git-dir') && !a.includes('--git-common-dir') ? '/repo/.git\n'
+      : `/repo/.git\n${branch}\n`
     return { value: { exitCode: 0, stdout: out, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('fs.read', (_, e) => (e.path in files ? { value: files[e.path]! } : { deny: 'ENOENT' }))
@@ -135,6 +140,21 @@ test('on main, a file outside the repo is not refused', async ($, on) => {
   const { edits } = briefHarness(on, { branch: 'main' })
   await $.tool.call(edit('/tmp/plan.md'))
   expect(edits).toEqual(['/tmp/plan.md'])
+})
+
+test('on main, a repo file outside the session cwd is still refused', async ($, on) => {
+  const { edits } = briefHarness(on, { branch: 'main', cwd: '/repo/packages/app' })
+  const r = (await $.tool.call(edit('/repo/src/a.ts'))) as { deny?: string }
+  expect(r.deny).toContain('No brief for main')
+  expect(edits).toEqual([])
+})
+
+test('a rebase keeps the feature branch, and is not told to start a branch', async ($, on) => {
+  const { edits } = briefHarness(on, { branch: 'HEAD', rebase: 'refs/heads/feature/x' })
+  const r = (await $.tool.call(edit('/repo/src/a.ts'))) as { deny?: string }
+  expect(r.deny).toContain('wait for the session brief')
+  expect(r.deny).not.toContain('detached')
+  expect(edits).toEqual([])
 })
 
 test('the brief itself can always be written, its approval file never', async ($, on) => {

@@ -10,6 +10,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { compacted as markCompacted } from './activity.mjs';
 import { briefFile, NO_BRIEF_BRANCHES, parseBrief } from './brief.mjs';
+import { gitHead } from './grok-hook.mjs';
 import { railHome } from './host.mjs';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -153,7 +154,7 @@ function loop(pid, sessionId) {
       summary: summaryOf,
       hasStart: () => START_FILES.some((p) => existsSync(p)),
       hookStartRan: Boolean(readJson(hookFile)?.startRan) || Boolean(process.env.SESSION_RAIL_STARTED),
-      branch: (dir) => git(dir, ['rev-parse', '--abbrev-ref', 'HEAD']),
+      branch: (dir) => gitHead(dir)?.branch ?? null,
       approval: (dir, branch) => {
         const common = git(dir, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
         return common ? readJson(briefFile(common, branch, 'approved.json')) : null;

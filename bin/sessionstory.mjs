@@ -1,12 +1,12 @@
 // The Session tab's story: who is working, the words they were handed, and how the problem got here.
 // Pure (no Node APIs). The hooks and sources.mjs fill the record; the rail paints the segments this returns.
 // Nothing in the banner or a row is guessed. The ask, the prompt and the reply are text that was sent.
-import { width, trunc } from './term.mjs';
+import { clean, width, trunc } from './term.mjs';
 
 const SPAWN = new Set(['Agent', 'Task', 'spawn_subagent']);
 const GATE_HOLD = 2 * 60_000;
 
-const show = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
+const show = (s) => clean(String(s ?? '')).replace(/\s+/g, ' ').trim();
 const textOf = (parts) => (parts ?? []).map((p) => p.text).join('');
 const wide = (parts) => width(textOf(parts));
 const part = (text, style, colour) => (colour == null ? { text, style } : { text, style, colour });
@@ -90,45 +90,77 @@ function asList(agents) {
 }
 
 // The file has the prompt and the reply. The live feed has the name, the colour, and whether it is still going.
-// A respawn keeps one row: the same ask, the reply from whichever copy has it, live if either copy is live.
-export function mergeAgents(fileAgents, liveAgents) {
-  const by = new Map();
-  const put = (a) => {
-    const key = a.prompt ? `p:${oneLine(a.prompt, 80)}` : (a.what ? `w:${a.what}` : `id:${a.id}`);
-    const prev = by.get(key);
-    if (!prev) { by.set(key, { ...a, prompt: a.prompt || '', reply: a.reply || '' }); return; }
-    const live = a.endedAt ? prev : a;
-    const other = live === a ? prev : a;
-    by.set(key, {
-      ...prev,
-      ...a,
-      id: live.id || other.id,
-      name: prev.name || a.name || '',
-      what: prev.what || a.what || '',
-      prompt: a.prompt || prev.prompt || '',
-      reply: a.reply || prev.reply || '',
-      colour: prev.colour ?? a.colour ?? null,
-      parent: prev.parent || a.parent || null,
-      since: prev.since || a.since || 0,
-      endedAt: live.endedAt,
-      background: Boolean(prev.background || a.background),
-    });
+// One agent can arrive from both, under two ids. The same id, or the same full prompt, is one row. A shared
+// preamble is not: the ask is the rest of the prompt. With no prompt, the ask (`what`) is the key.
+function combineAgents(prev, a) {
+  const live = a.endedAt ? prev : a;
+  const other = live === a ? prev : a;
+  return {
+    ...prev,
+    ...a,
+    id: live.id || other.id,
+    name: prev.name || a.name || '',
+    what: prev.what || a.what || '',
+    prompt: a.prompt || prev.prompt || '',
+    reply: a.reply || prev.reply || '',
+    colour: prev.colour ?? a.colour ?? null,
+    parent: prev.parent || a.parent || null,
+    since: prev.since || a.since || 0,
+    endedAt: live.endedAt,
+    background: Boolean(prev.background || a.background),
   };
-  for (const a of fileAgents || []) if (a?.id) put(a);
+}
+const contentKey = (a) => (a.prompt ? `p:${a.prompt}` : (a.what ? `w:${a.what}` : ''));
+export function mergeAgents(fileAgents, liveAgents) {
+  const byId = new Map();
+  const byContent = new Map();
+  const order = [];
+  const put = (a) => {
+    if (!a?.id) return;
+    const key = contentKey(a);
+    const prev = byId.get(a.id) || (key && byContent.get(key)) || null;
+    const next = prev ? combineAgents(prev, a) : { ...a, prompt: a.prompt || '', reply: a.reply || '' };
+    if (!prev) order.push(next);
+    else {
+      const at = order.indexOf(prev);
+      if (at >= 0) order[at] = next;
+      if (prev.id) byId.set(prev.id, next);
+      const prevKey = contentKey(prev);
+      if (prevKey) byContent.set(prevKey, next);
+    }
+    if (next.id) byId.set(next.id, next);
+    if (a.id !== next.id) byId.set(a.id, next);
+    const nextKey = contentKey(next);
+    if (nextKey) byContent.set(nextKey, next);
+    if (key && key !== nextKey) byContent.set(key, next);
+  };
+  for (const a of fileAgents || []) put(a);
   for (const a of asList(liveAgents)) put(a);
-  return [...by.values()];
+  return order;
 }
 
+// The hook's turns repeat the transcript once it has caught up, and they skip the handoff lines in between.
+// Append only the tail that is not already in the you/main events. A line the log has not written yet still lands.
 export function mergeEvents(events, turns) {
   const out = (events || []).map((e) => ({ ...e }));
+  const incoming = [];
   for (const t of turns || []) {
     const kind = t.role === 'you' ? 'you' : 'main';
     const text = oneLine(t.text);
-    if (!text) continue;
-    const last = out[out.length - 1];
-    if (last && last.kind === kind && last.text === text) continue;
-    out.push({ kind, text, at: t.at });
+    if (text) incoming.push({ kind, text, at: t.at });
   }
+  if (!incoming.length) return out;
+  const ym = out.filter((e) => e.kind === 'you' || e.kind === 'main');
+  let accounted = 0;
+  for (let start = 0; start < incoming.length; start++) {
+    let i = start;
+    for (const e of ym) {
+      if (i >= incoming.length) break;
+      if (e.kind === incoming[i].kind && e.text === incoming[i].text) i++;
+    }
+    if (i > start && i > accounted) accounted = i;
+  }
+  for (const t of incoming.slice(accounted)) out.push(t);
   return out;
 }
 
