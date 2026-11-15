@@ -12,8 +12,9 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as act from './activity.mjs';
+import { humanAsk, keep } from './sessionstory.mjs';
 import { briefInstructions } from './brief-instructions.mjs';
-import { approvalRecord, briefFile, briefStatus, NO_BRIEF_BRANCHES, parseBrief } from './brief.mjs';
+import { approvalRecord, briefFile, briefStatus, checkoutName, inWorkTree, mainCheckoutNote, NO_BRIEF_BRANCHES, parseBrief } from './brief.mjs';
 import { codeRun, gateReason as reviewWait, keptRuns, mergesPr, reportFromText, reviewsFile } from './cadence.mjs';
 import { findAgent, railHome } from './host.mjs';
 import { pickColour, pickName } from './names.mjs';
@@ -35,11 +36,25 @@ const git = (cwd, args) => {
   try { return execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', timeout: 5_000 }).trim(); } catch { return null; }
 };
 
+function rebaseRef(dir) {
+  if (!dir) return '';
+  for (const name of ['rebase-merge/head-name', 'rebase-apply/head-name']) {
+    try { return readFileSync(join(dir, name), 'utf8').trim(); } catch { /* not this rebase */ }
+  }
+  return '';
+}
+
 export function gitHead(cwd) {
   const out = git(cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir', '--abbrev-ref', 'HEAD']);
   if (!out) return null;
-  const [common, branch] = out.split('\n');
-  return common && branch ? { cwd, common, branch } : null;
+  const [common, abbrev] = out.split('\n');
+  if (!common || !abbrev) return null;
+  const branch = abbrev === 'HEAD'
+    ? checkoutName(abbrev, rebaseRef(git(cwd, ['rev-parse', '--path-format=absolute', '--git-dir'])))
+    : abbrev;
+  const top = git(cwd, ['rev-parse', '--show-toplevel']);
+  const root = top && top.startsWith('/') ? top : cwd;
+  return { cwd, common, branch, root };
 }
 
 export function readBrief(cwd) {
@@ -53,9 +68,15 @@ export function readBrief(cwd) {
   };
 }
 
-// Why an edit of `file` (absolute) is refused, or null to let it through.
-export function editReason(b, file) {
-  if (!b) return null;
+// Why an edit of `file` (absolute, or relative to the checkout) is refused, or null to let it through.
+// `checkout` is `{ branch, cwd }` when this checkout cannot hold a brief. A path outside `cwd` is not a repo edit.
+export function editReason(b, file, checkout) {
+  if (!b) {
+    const branch = checkout?.branch;
+    if (!branch || !NO_BRIEF_BRANCHES.includes(branch)) return null;
+    if (checkout.cwd && !inWorkTree(checkout.cwd, file)) return null;
+    return mainCheckoutNote(branch);
+  }
   if (file === b.approvedPath) return 'session-rail: only the person approves the brief, in the desk or with /approve-brief.';
   if ((file && file.startsWith(b.dir)) || b.approval?.approvedAt) return null;
   const where = `The brief for ${b.branch} is at ${b.path}. The procedure is in ${join(RAIL, 'grok-brief.md')}.`;
@@ -161,13 +182,31 @@ function writeProcedure(b) {
   return text;
 }
 
-// The brief procedure, once per session (again after a compaction). Null when there's nothing to attach.
+/** The next tool call of this turn attaches the procedure. A user prompt and a compaction both arm it. */
+export function armTurn(state) {
+  state.briefSent = false;
+}
+
+/** The procedure text for this turn's first tool call, or null once this turn has already attached it. */
+export function takeProcedure(state, text) {
+  if (state.briefSent || !text) return null;
+  state.briefSent = true;
+  return text;
+}
+
+// The note for a checkout that cannot hold a brief, or null when this folder is not one of those.
+function checkoutNote(cwd) {
+  const head = gitHead(cwd);
+  if (!head || !NO_BRIEF_BRANCHES.includes(head.branch)) return null;
+  return mainCheckoutNote(head.branch);
+}
+
+// The brief procedure, on the first tool call of each turn. On main, master, or a detached HEAD the note
+// says to branch first. Null outside a git checkout, and null again until the next user prompt.
 function procedure(cwd, state) {
   if (state.briefSent) return null;
   const b = readBrief(cwd);
-  if (!b) return null;
-  state.briefSent = true;
-  return writeProcedure(b);
+  return takeProcedure(state, b ? writeProcedure(b) : checkoutNote(cwd));
 }
 
 function recordCodeReview(cwd, report) {
@@ -236,16 +275,20 @@ export function handle(event, agent) {
   }
 
   if (kind === 'compacted') {
-    state.briefSent = false;
+    armTurn(state);
     save();
     return null;
   }
 
   if (kind === 'prompt') {
+    armTurn(state);
     const cmd = slashCommand(promptOf(event));
+    if (cmd === 'approve-brief' || cmd === 'rail' || cmd === 'desk') save();
     if (cmd === 'approve-brief') return { decision: 'block', reason: approve(cwd) };
     if (cmd === 'rail' || cmd === 'desk') return { decision: 'block', reason: panelMessage(runPane('toggle', cmd, id), cmd) };
     if (/^\/(review|code-review)\b/.test(promptOf(event).trim())) state.codeReview = { at: now };
+    const said = humanAsk(promptOf(event));
+    if (said) activity = act.heard(activity, said, now);
     activity = act.turnStarted(activity, activity.claude?.model || modelOf(cwd, id), now);
     save();
     return null;
@@ -264,8 +307,17 @@ export function handle(event, agent) {
       const settled = report && (report.findings.length === 0 || report.findings.some((f) => typeof f.outcome === 'string'));
       if (settled) { recordCodeReview(cwd, report); state.codeReview = null; }
     }
+    if (kind === 'agent-stop') {
+      const aid = String(event.agent_id || event.agentId || event.subagent_id || event.subagentId || '');
+      if (aid && activity.agents?.[aid]) activity = act.noteReply(activity, aid, last, now);
+      else if (last) {
+        const live = Object.entries(activity.agents || {}).filter(([, g]) => !g.endedAt);
+        if (live.length === 1) activity = act.noteReply(activity, live[0][0], last, now);
+      }
+    }
     if (kind === 'stop' && !event.subagentType && !event.subagent_type) {
       activity = act.turnEnded(activity, now);
+      activity = act.replied(activity, last, now);
       // The same list Claude's transcript index keeps: still-running shells and subagents. An empty
       // list clears them, so a finished shell does not leave the pet busy.
       activity = act.trackTasks(activity, event.backgroundTasks, now);
@@ -292,7 +344,9 @@ export function handle(event, agent) {
     if (raw) {
       const file = resolve(cwd, raw);
       const b = readBrief(cwd);
-      const reason = editReason(b, file);
+      const head = b ? null : gitHead(cwd);
+      const checkout = head && NO_BRIEF_BRANCHES.includes(head.branch) ? { branch: head.branch, cwd: head.root || head.cwd } : null;
+      const reason = editReason(b, file, checkout);
       if (reason) {
         if (b) writeProcedure(b); // the deny drops any attached procedure, so the reason points at the file
         activity = act.refused(activity, tool, file, now);
@@ -321,7 +375,13 @@ export function handle(event, agent) {
       const colour = pickColour([...taken.filter((g) => !g.endedAt).map((g) => g.colour)]);
       const description = named ? what : (what ? `${name}: ${what}` : name);
       const background = input.background !== false;
-      activity = act.agentStarted(activity, use, { name, colour, what: what.replace(/^[A-Za-z]+:\s+/, ''), since: now, background });
+      const prompt = keep(input.prompt, 1500);
+      const owner = event.agent_id || event.agentId;
+      const parent = owner && activity.agents?.[owner] ? owner : undefined;
+      activity = act.agentStarted(activity, use, {
+        name, colour, what: what.replace(/^[A-Za-z]+:\s+/, ''), since: now, background,
+        ...(prompt ? { prompt } : {}), ...(parent ? { parent } : {}),
+      });
       activity = act.callStarted(activity, { id: use, tool: 'Agent', arg: description, since: now });
       state.pending = { ...(state.pending || {}), [use]: { name, background } };
       const context = procedure(cwd, state);

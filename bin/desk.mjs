@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 // The desk: a wider iTerm panel between Claude and the rail, with tabs for the work itself.
-//   Plan  the branch's brief (brief.mjs) with its Approve button; without one, the board's Todo issues, then
-//         the plan plan mode is writing (Claude: the session transcript; Grok: the session's plan.md) or recent work
+//   Plan  the plan. The branch brief when it has text and the plan file is not newer, otherwise the plan
+//         file (Claude: the transcript; Grok: the session's plan.md). A change of either selects Plan.
+//         With nothing written, a short note, then the board's Todo issues and recent work
 //   Diff  every file changed since the branch forked from the default branch, grouped by the brief's chunks,
 //         and each file's diff
 //   Review  the branch's review record: the approach reviews (reviewer.mjs) Claude runs before each commit, or
 //           you run on demand, and the code reviews the hooks record, each finding open, applied or declined
-// It opens on Plan; tabs change only when you switch them (Tab, 1 2 3, or a click).
+// It opens on Plan. A change of the plan selects Plan again. Diff and Review stay until you switch them.
 //   node desk.mjs                                   interactive panel
 //   node desk.mjs --json                            print the collected state once
 //   node desk.mjs --frame [W H] [--tab plan|diff|review] [--file N]   print one rendered frame (no TTY needed)
@@ -16,7 +17,8 @@ import * as src from './sources.mjs';
 import { reviewAndSave, loadReviews } from './reviewer.mjs';
 import { ESC, fg, dim, bold, C, bg, bgOpen, charWidth, width, trunc, clean, tabBar, usePalette, paneBgOn, paneBgOff } from './term.mjs';
 import { applySaved } from './fontsize.mjs';
-import { approvalRecord } from './brief.mjs';
+import { approvalRecord, mainCheckoutNote, NO_BRIEF_BRANCHES } from './brief.mjs';
+import { notePlan, planChoice } from './planview.mjs';
 import { codeFindings, runType } from './cadence.mjs';
 import { writeFile, mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -32,24 +34,17 @@ const agentName = () => (data.claude?.host === 'grok' || (!data.claude && hostFl
 const taskIndex = new src.TaskIndex();
 
 // ── Data ───────────────────────────────────────────────────────────────────────
-const data = { plan: null, brief: null, recent: null, todos: null, root: null, files: [], diff: null, claude: null, // diff: { path, lines } of the open file
+const data = { plan: null, brief: null, checkout: null, recent: null, todos: null, root: null, files: [], diff: null, claude: null, // diff: { path, lines } of the open file
   review: { running: null, runs: [], path: undefined } };                    // runs: the branch's saved reviews, newest first
 const TABS = ['plan', 'diff', 'review'];
 const ui = { tab: 'plan', scroll: { plan: 0, diff: 0, review: 0 }, sel: 0, open: null, toast: null,
   jump: null, rsel: 0 };
-const seen = { plan: undefined, diff: undefined }; // last signatures, to notice changes
+const seen = { plan: undefined }; // the plan signature last drawn; undefined until the first load
 const toast = (text) => { ui.toast = { text, until: Date.now() + 2500 }; };
 let draw = () => {}; // replaced by the interactive panel
 
-// Notice when a tab's content changes (not on the first load, which only records where things stand).
-const changed = (tab, sig) => {
-  const c = seen[tab] !== undefined && seen[tab] !== sig;
-  seen[tab] = sig;
-  return c;
-};
-
-// A changed plan brings up Plan and changed files bring up Diff, unless the person picked a tab themselves.
-// Plan wins a near-tie, so a file save right after the plan doesn't pull the view away from it.
+// A change of the plan file or the brief selects Plan and scrolls to the top. The first load does not,
+// and neither does a branch change that leaves both documents as they were. Diff does not select itself.
 const loaders = {
   async plan() {
     const agents = await src.sessions();
@@ -59,10 +54,10 @@ const loaders = {
     if (current?.host !== 'grok') await taskIndex.update(files.transcriptPath);
     // Claude's plan is discovered in the transcript. Grok writes it at a fixed path in the session directory.
     const planPath = current?.host === 'grok' ? files.planPath : taskIndex.planPath;
-    [data.plan, data.brief] = await Promise.all([src.readPlan(planPath), src.readBrief(cwd)]);
-    if (changed('plan', `${data.plan ? `${data.plan.path}:${data.plan.mtime}` : ''}|${data.brief?.mtime ?? ''}`)) {
-      ui.scroll.plan = 0;
-    }
+    [data.plan, data.brief, data.checkout] = await Promise.all([src.readPlan(planPath), src.readBrief(cwd), src.checkoutBranch(cwd)]);
+    const next = notePlan(seen.plan, data.plan, data.brief);
+    seen.plan = next.sig;
+    if (next.select) { ui.scroll.plan = 0; ui.tab = 'plan'; }
   },
   // What landed lately, for the Plan tab before there's a plan. gh is slow, so this refreshes rarely.
   // And the Todo issues on the repo's board, shown until the branch has a brief.
@@ -207,10 +202,12 @@ function recentLines(w) {
   }
   return out;
 }
-// The Plan tab: the branch's brief when it has one, else plan mode's plan, else recent work.
+// The Plan tab. The brief when it has text and the plan file is not newer; the plan file when that is the
+// body; otherwise the note, and nothing from a plan sits under that note.
 function planLines(w) {
-  const b = data.brief;
-  if (b?.text != null) {
+  const choice = planChoice(data.brief, data.plan);
+  if (choice === 'brief') {
+    const b = data.brief;
     const status = {
       draft: fg(C.yellow, `draft · missing: ${b.missing.join(', ')}`),
       ready: fg(C.accent, 'ready for your approval'),
@@ -220,9 +217,13 @@ function planLines(w) {
     const approve = ['ready', 'changed'].includes(b.status) ? [button(b.status === 'ready' ? 'Approve' : 'Approve again', C.green) + dim('  or A'), ''] : [];
     return [bold('Brief') + dim(' · ') + status, ...approve, dim(trunc(src.tildify(b.path), w)), '', ...markdownLines(b.text, w, { brief: true })];
   }
-  const note = [...(b ? [dim(trunc(`No brief for ${clean(b.branch)} yet: ${agentName()} writes one before editing code.`, w)), ''] : []), ...todoLines(w)];
-  if (!data.plan) return [...note, ...recentLines(w)];
-  return [...note, dim(src.tildify(data.plan.path)), '', ...markdownLines(data.plan.text, w)];
+  if (choice === 'plan') return [bold('Plan'), dim(trunc(src.tildify(data.plan.path), w)), '', ...markdownLines(data.plan.text, w)];
+  const b = data.brief;
+  const held = !b && NO_BRIEF_BRANCHES.includes(data.checkout)
+    ? [...wrapRuns(runs(mainCheckoutNote(data.checkout).replace(/^session-rail:\s*/, '')), w).map((line) => dim(line)), '']
+    : [];
+  const note = [...held, ...(b ? [dim(trunc(`No brief for ${clean(b.branch)} yet: ${agentName()} writes one before editing code.`, w)), ''] : []), ...todoLines(w)];
+  return [...note, ...recentLines(w)];
 }
 // Todo issues from the repo's project board, first thing at the start of a session.
 function todoLines(w) {
@@ -469,7 +470,7 @@ function frame(W, H) {
   if (ui.tab === 'plan') {
     body = planLines(w);
     // The Approve button, when the brief has one: the second line, at the left edge.
-    if (['ready', 'changed'].includes(data.brief?.status)) buttons = [{ row: 1, from: 0, to: data.brief.status === 'ready' ? 9 : 15, action: 'approve' }];
+    if (planChoice(data.brief, data.plan) === 'brief' && ['ready', 'changed'].includes(data.brief?.status)) buttons = [{ row: 1, from: 0, to: data.brief.status === 'ready' ? 9 : 15, action: 'approve' }];
   }
   else if (ui.tab === 'review') ({ lines: body, ids, buttons } = reviewLines(w));
   else if (ui.open) ({ lines: body, target } = fileLines(w));
@@ -612,6 +613,7 @@ const page = () => Math.max(1, (layout.bodyH ?? 10) - 2);
 // A on the Plan tab: the same as /approve-brief. Approval opens code edits on this branch (see hooks/register.ts).
 const approveBrief = async () => {
   const b = data.brief;
+  if (planChoice(b, data.plan) !== 'brief') return toast('No brief to approve');
   if (!b?.text) return toast('No brief to approve');
   if (b.status === 'draft') return toast(`Can't approve yet: missing ${b.missing.join(', ')}`);
   if (b.status === 'approved') return toast('Already approved');

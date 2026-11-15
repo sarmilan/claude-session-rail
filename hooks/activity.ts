@@ -5,7 +5,11 @@
 export type Call = { id: string; tool: string; arg: string; since: number; agent?: string }
 export type Finished = { tool: string; arg: string; ok: boolean; at: number; ms: number; agent?: string }
 // A subagent the plugin named at its spawn (bin/names.mjs): what it was asked, and when it ended, if it has.
-export type Agent = { name: string; colour: number; what: string; since: number; background: boolean; endedAt?: number }
+export type Agent = {
+  name: string; colour: number; what: string; since: number; background: boolean; endedAt?: number
+  prompt?: string; reply?: string; parent?: string
+}
+export type Turn = { at: number; role: 'you' | 'main'; text: string }
 export type Activity = {
   updatedAt: number
   // Claude itself: thinking (a model request), running a tool, or waiting for the person.
@@ -16,14 +20,18 @@ export type Activity = {
   recent: Finished[]
   // The brief gate's latest refusal.
   gate?: { at: number; tool: string; file: string }
-  // Subagents by agentId, named at their spawn: the live ones, and the last few that ended (so Just now can name them).
+  // Subagents by agentId, named at their spawn: the live ones, and the last few that ended (so the story can name them).
   agents?: Record<string, Agent>
+  // What the person asked and what the main agent answered, newest last. The transcript is the long copy.
+  turns?: Turn[]
   // The plugin's latest compaction of the session, after the branch it finished.
   compacted?: { at: number; after: string }
 }
 
 const RECENT = 8
 const ENDED = 10
+const TURNS = 30
+const oneLine = (s: unknown, n = 400) => String(s ?? '').replace(/\s+/g, ' ').trim().slice(0, n)
 
 export const fresh = (now: number): Activity => ({ updatedAt: now, claude: { state: 'waiting', since: now }, running: [], recent: [] })
 
@@ -82,4 +90,21 @@ export function agentEnded(a: Activity, id: string, now: number): Activity {
   const ended = Object.entries(agents).filter(([, g]) => g.endedAt).sort(([, x], [, y]) => y.endedAt! - x.endedAt!)
   for (const [old] of ended.slice(ENDED)) delete agents[old]
   return { ...a, updatedAt: now, agents, running: a.running.filter(c => c.agent !== id) }
+}
+export function heard(a: Activity, text: string, now: number): Activity {
+  const t = oneLine(text)
+  if (!t) return a
+  return { ...a, updatedAt: now, turns: [...(a.turns ?? []), { at: now, role: 'you' as const, text: t }].slice(-TURNS) }
+}
+export function replied(a: Activity, text: string, now: number): Activity {
+  const t = oneLine(text)
+  if (!t) return a
+  return { ...a, updatedAt: now, turns: [...(a.turns ?? []), { at: now, role: 'main' as const, text: t }].slice(-TURNS) }
+}
+// What a subagent said when its turn ended. A missing agent, or an empty answer, leaves the record alone.
+export function noteReply(a: Activity, id: string, text: string, now: number): Activity {
+  const agent = a.agents?.[id]
+  const t = oneLine(text, 800)
+  if (!agent || !t) return a
+  return { ...a, updatedAt: now, agents: { ...a.agents, [id]: { ...agent, reply: t } } }
 }

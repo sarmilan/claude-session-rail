@@ -7,11 +7,47 @@
 //   <git common dir>/session-rail/briefs/<branch>.approved.json  { approvedAt, core } once the person approves
 // Its sections are fixed headings (## Problem, Solution, Design, Mockups, Engineering). Engineering holds
 // "### Chunk N: name" blocks, each an outline plus, once built, "Done: summary" and "Files: a, b".
-// main/master and a detached HEAD have no brief.
+// main/master and a detached HEAD have no brief. A repo edit there is refused until the work is on a branch.
 
 export const BRIEF_SECTIONS = ['problem', 'solution', 'design', 'mockups', 'engineering'];
 export const NO_BRIEF_BRANCHES = ['main', 'master', 'HEAD', 'detached'];
 const REQUIRED = { problem: 'problem', solution: 'user story', engineering: 'engineering outline' };
+
+/**
+ * The branch a checkout is on. `git rev-parse --abbrev-ref HEAD` prints `HEAD` for the whole of a
+ * rebase; `rebaseRef` is `rebase-merge/head-name` (or rebase-apply), and a `refs/heads/` ref keeps
+ * that branch. Anything else detached stays `HEAD`.
+ * @param {string} abbrev
+ * @param {string} [rebaseRef]
+ */
+export function checkoutName(abbrev, rebaseRef) {
+  const name = typeof abbrev === 'string' ? abbrev.trim() : '';
+  const ref = typeof rebaseRef === 'string' ? rebaseRef.trim() : '';
+  if (name && name !== 'HEAD') return name;
+  if (ref.startsWith('refs/heads/')) return ref.slice(11);
+  return name || 'HEAD';
+}
+
+/**
+ * What to tell the agent on a checkout that cannot hold a brief. The same sentence is the prompt note
+ * and the reason a repo edit is refused: branch, then the brief, then Approve in the Plan tab.
+ * @param {string} branch `main`, `master`, `HEAD`, or `detached`
+ */
+export function mainCheckoutNote(branch) {
+  const name = branch === 'HEAD' || branch === 'detached' || !branch ? 'a detached HEAD' : branch;
+  return `session-rail: No brief for ${name}. Create a branch, write the brief, then Approve it in the desk's Plan tab.`;
+}
+
+/**
+ * True when `file` is in this repo: a relative path, or an absolute path inside `root`.
+ * Callers pass the git toplevel (the session cwd when that lookup fails). A path outside is not a repo edit.
+ */
+export function inWorkTree(root, file) {
+  if (!root || !file) return false;
+  if (!file.startsWith('/')) return true;
+  const base = root.endsWith('/') ? root.slice(0, -1) : root;
+  return file === base || file.startsWith(`${base}/`);
+}
 
 /** @param {string} common the git common dir @param {string} branch @param {'md' | 'approved.json'} ext */
 export const briefFile = (common, branch, ext) => `${common}/session-rail/briefs/${encodeURIComponent(branch)}.${ext}`;

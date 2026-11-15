@@ -25,8 +25,8 @@ Each channel carries one fact. They stack: a heavy crab can be hurrying, trailed
 | What you see | What it means |
 | --- | --- |
 | Which creature, and its habitat | Your pick. Nothing about the session. |
-| Where it lives on the strip, left to right | How much of the branch's brief is Done. |
-| How grown-up it looks | How close the branch is to being finished and compacted. |
+| Where it lives on the strip, left to right | How much of the branch's brief is Done. With no brief, how full the context window is. |
+| How grown-up it looks | How close the branch is to being finished and compacted. With no brief, how full this sitting's window is. |
 | Walking, hurrying, fidgeting, or asleep | Whether work is happening, or it is your move, or nothing is. |
 | Where it faces | Waiting for you: it looks left, toward the agent pane, and fidgets. |
 | A hop, a shake, a gold mark | The branch is far along. Heavy means ready to merge. |
@@ -39,7 +39,8 @@ Each channel carries one fact. They stack: a heavy crab can be hurrying, trailed
 
 The floor is the branch's road.
 
-- No brief: it wanders the whole strip.
+- No brief, and the window's size is known: its home is the context fill, left when the sitting has just started, right as the window fills.
+- No brief, and the window's size is not known yet: it wanders the whole strip.
 - A brief that is not approved yet: it stays at the left edge.
 - Approved, or approved and then edited: its home moves right by the share of chunks marked Done. It paces a few columns either side of that home, and walks straight there when a chunk flips. Each Done chunk also leaves a marker on the road behind it: a mushroom in the woodland, a lily pad on the pond, a shell on the beach. The moment a chunk flips, the pet hops and a gold sparkle pops.
 
@@ -47,13 +48,13 @@ Position and the trail are the fine reading of progress. The stage is the coarse
 
 ## Stages
 
-The same four stages for every creature. After a compaction the next branch has no approved brief, so the pet hatches again.
+The same four stages for every creature. A brief grows it toward the merge. A checkout with no brief grows it from the context window, and a compaction drops that window, so the pet hatches again. Heavy is only the finished brief. A full window does not put on the gold mark.
 
 | Stage | When | How it looks | How it moves |
 | --- | --- | --- | --- |
-| Hatchling | The brief is missing or not approved | Pale and small. Big head on the turtle, nubs on the crab, a little coiled shell on the snail. | Slowest walk. No hop. |
-| Juvenile | Approved, nothing Done yet | The everyday creature: green shell, orange crab, woodland snail. | Normal walk. |
-| Adult | At least one chunk Done, not all of them | Darker, with a brow. The turtle grows a ridge, the crab grows shell spots and a fourth pair of legs. | Faster, and a small hop now and then. |
+| Hatchling | The brief is not approved, or there is no brief and the window is under 5% full | Pale and small. Big head on the turtle, nubs on the crab, a little coiled shell on the snail. | Slowest walk. No hop. |
+| Juvenile | Approved, nothing Done yet. Or no brief, and the window is under 20% full | The everyday creature: green shell, orange crab, woodland snail. | Normal walk. |
+| Adult | At least one chunk Done, not all of them. Or no brief, and the window is 20% full or more | Darker, with a brow. The turtle grows a ridge, the crab grows shell spots and a fourth pair of legs. | Faster, and a small hop now and then. |
 | Heavy | Every chunk Done | Bigger, a row taller. Spikes, a scowl. The turtle's shell goes amber, the crab wears a gold crown. | Bigger hops, the body shakes, and a gold mark pops over it. The prompt is: merge it and let the session compact. |
 
 A stage change is instant. The drawing swaps. There is no grow animation. From adult on, the hop is shared by every creature. The gold mark and the shake belong only to heavy.
@@ -93,7 +94,7 @@ These are true of the session and invisible on the strip.
 - **Which thing failed.** The droop says a call failed and has not been followed by a success. The rail's activity list is where the failed call stays, with its name.
 - **Which subagent is which, by name.** The flier's colour matches the Now list. The name itself stays in that list. Past four, the extras are only a count.
 - **How the middle of a stage feels.** Two chunks of eight and seven of eight are both "adult". The home spot and the trail of markers are what separate them. The pet still paces around its spot, so the trail is the clearer of the two.
-- **Reviews, checks, context, or rate limits.** Those stay in the rest of the rail and the desk. The pet never mentions them.
+- **The exact token count, reviews, checks, or rate limits.** The count stays in Context. With no brief, the pet's size and its place on the strip are that fill, and nothing finer. A brief's stages ignore the window. The pet never mentions reviews, checks, or rate limits.
 
 Red is only a failed tool. Gold is only "ready to merge" and "a chunk just finished". Yellow is only the unapproved brief.
 

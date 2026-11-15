@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { callFinished, callStarted, fresh, trackTasks, turnEnded, turnStarted } from '../bin/activity.mjs';
+import { callFinished, callStarted, fresh, heard, noteReply, replied, trackTasks, turnEnded, turnStarted } from '../bin/activity.mjs';
 import { attentionFor } from '../bin/mascot.mjs';
-import { editReason, slashCommand } from '../bin/grok-hook.mjs';
+import { checkoutName, inWorkTree, mainCheckoutNote } from '../bin/brief.mjs';
+import { armTurn, editReason, slashCommand, takeProcedure } from '../bin/grok-hook.mjs';
 import { C, fg, paneBgOff, paneBgOn, usePalette } from '../bin/term.mjs';
-import { connectorsFrom, contextFrom, rowFromActive, usageFromBilling } from '../bin/sources.mjs';
+import { connectorsFrom, contextFrom, eventsFromText, rowFromActive, usageFromBilling } from '../bin/sources.mjs';
 import { reviewPayload } from '../bin/reviewer.mjs';
 import { goAhead, startWanted, step } from '../bin/grok-watch.mjs';
 
@@ -28,6 +29,55 @@ test('edits under the brief dir and an empty brief are told apart', () => {
   assert.equal(editReason(brief, '/repo/.git/session-rail/briefs/x.md'), null);
   assert.match(editReason(brief, '/repo/a.js'), /wait for the session brief/);
   assert.equal(editReason({ ...brief, approval: { approvedAt: 1 } }, '/repo/a.js'), null);
+});
+
+test('a rebase names the branch, and the work tree is the toplevel', () => {
+  assert.equal(checkoutName('feature/x', ''), 'feature/x');
+  assert.equal(checkoutName('HEAD', 'refs/heads/feature/x'), 'feature/x');
+  assert.equal(checkoutName('HEAD', ''), 'HEAD');
+  assert.equal(inWorkTree('/repo', '/repo/src/a.ts'), true);
+  assert.equal(inWorkTree('/repo', '/tmp/plan.md'), false);
+  assert.equal(inWorkTree('/repo', 'bin/rail.mjs'), true);
+});
+
+test('a Claude transcript line is read when its type sits past the first 96 characters', () => {
+  const user = JSON.stringify({
+    parentUuid: 'u'.repeat(80), cwd: '/repo', type: 'user',
+    message: { role: 'user', content: 'show the session' },
+  });
+  const assistant = JSON.stringify({
+    parentUuid: 'a'.repeat(80), type: 'message',
+    message: { role: 'assistant', content: [{ type: 'text', text: 'The tab lists tools' }] },
+  });
+  assert.ok(user.indexOf('"type":"user"') > 96);
+  assert.equal(assistant.slice(0, 96).includes('"role":"assistant"'), false);
+  const events = eventsFromText(`${user}\n${assistant}\nnot a story line\n`);
+  assert.deepEqual(events.map((e) => e.text), ['show the session', 'The tab lists tools']);
+});
+
+test('on main a repo edit is refused and names the branch and the brief', () => {
+  const main = { branch: 'main', cwd: '/repo' };
+  const reason = editReason(null, '/repo/bin/rail.mjs', main);
+  assert.match(reason, /No brief for main/);
+  assert.match(reason, /brief/);
+  assert.match(reason, /Plan tab/);
+  assert.equal(editReason(null, '/Users/me/.grok/sessions/x/plan.md', main), null);
+  assert.match(editReason(null, 'bin/rail.mjs', main), /No brief for main/);
+  assert.match(editReason(null, '/repo/a.js', { branch: 'master', cwd: '/repo' }), /No brief for master/);
+  assert.match(editReason(null, '/repo/a.js', { branch: 'HEAD', cwd: '/repo' }), /detached HEAD/);
+  assert.match(mainCheckoutNote('detached'), /detached HEAD/);
+  assert.match(editReason(brief, '/repo/a.js'), /wait for the session brief/);
+  assert.equal(editReason({ ...brief, approval: { approvedAt: 1 } }, '/repo/a.js'), null);
+});
+
+test('a second user prompt hears the procedure again', () => {
+  const state = {};
+  assert.equal(takeProcedure(state, 'write the brief'), 'write the brief');
+  assert.equal(takeProcedure(state, 'write the brief'), null);
+  assert.equal(state.briefSent, true);
+  armTurn(state);
+  assert.equal(state.briefSent, false);
+  assert.equal(takeProcedure(state, 'write the brief'), 'write the brief');
 });
 
 test('slash commands are the rail, the desk and approve', () => {
@@ -94,6 +144,22 @@ test('a stop keeps the shells and subagents that are still running', () => {
   assert.equal(kept.tasks[0].startedAt, 10);
   assert.deepEqual(trackTasks(a, [], 30).tasks, []);
   assert.equal(trackTasks(a, undefined, 30), a);
+});
+
+test('a turn remembers what was asked and what was answered', () => {
+  let a = heard(fresh(1), '  bring the attitude  ', 2);
+  a = heard(a, '', 3);
+  a = replied(a, 'the tab now opens each handoff', 4);
+  assert.deepEqual(a.turns.map((t) => t.role), ['you', 'main']);
+  assert.equal(a.turns[0].text, 'bring the attitude');
+  a = noteReply(a, 'missing', 'nope', 5);
+  assert.equal(a.agents, undefined);
+  a = { ...a, agents: { w: { name: 'Wren', what: 'look', since: 1, background: false } } };
+  a = noteReply(a, 'w', 'names come from names.mjs', 6);
+  assert.equal(a.agents.w.reply, 'names come from names.mjs');
+  for (let i = 0; i < 40; i++) a = heard(a, `ask ${i}`, 10 + i);
+  assert.equal(a.turns.length, 30);
+  assert.equal(a.turns[0].text, 'ask 10');
 });
 
 test('go-ahead waits for an approval newer than the one already seen', () => {

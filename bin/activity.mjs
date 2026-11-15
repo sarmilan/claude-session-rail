@@ -4,6 +4,8 @@
 
 const RECENT = 8;
 const ENDED = 10;
+const TURNS = 30;
+const oneLine = (s, n = 400) => String(s ?? '').replace(/\s+/g, ' ').trim().slice(0, n);
 
 export const fresh = (now) => ({ updatedAt: now, claude: { state: 'waiting', since: now }, running: [], recent: [] });
 
@@ -62,4 +64,21 @@ export function agentEnded(a, id, now) {
   const ended = Object.entries(agents).filter(([, g]) => g.endedAt).sort(([, x], [, y]) => y.endedAt - x.endedAt);
   for (const [old] of ended.slice(ENDED)) delete agents[old];
   return { ...a, updatedAt: now, agents, running: (a.running ?? []).filter((c) => c.agent !== id) };
+}
+export function heard(a, text, now) {
+  const t = oneLine(text);
+  if (!t) return a;
+  return { ...a, updatedAt: now, turns: [...(a.turns ?? []), { at: now, role: 'you', text: t }].slice(-TURNS) };
+}
+export function replied(a, text, now) {
+  const t = oneLine(text);
+  if (!t) return a;
+  return { ...a, updatedAt: now, turns: [...(a.turns ?? []), { at: now, role: 'main', text: t }].slice(-TURNS) };
+}
+// What a subagent said when its turn ended. A missing agent, or an empty answer, leaves the record alone.
+export function noteReply(a, id, text, now) {
+  const agent = a.agents?.[id];
+  const t = oneLine(text, 800);
+  if (!agent || !t) return a;
+  return { ...a, updatedAt: now, agents: { ...a.agents, [id]: { ...agent, reply: t } } };
 }

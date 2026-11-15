@@ -1,9 +1,10 @@
 import type { EngineInterface, Register } from 'claude-code'
-import { approvalRecord, briefFile, briefStatus, NO_BRIEF_BRANCHES, parseBrief } from '../bin/brief.mjs'
+import { approvalRecord, briefFile, briefStatus, checkoutName, inWorkTree, mainCheckoutNote, NO_BRIEF_BRANCHES, parseBrief } from '../bin/brief.mjs'
 import * as act from './activity.ts'
 import { goAhead } from './goahead.ts'
 import * as compact from './compact.ts'
 import { pickColour, pickName } from '../bin/names.mjs'
+import { keep } from '../bin/sessionstory.mjs'
 import { codeRun, gateReason as reviewWait, keptRuns, mergesPr, reportFromText, reviewsFile } from '../bin/cadence.mjs'
 
 // The controller (bin/pane.mjs) does the iTerm work; this module only decides when to call it.
@@ -39,10 +40,11 @@ const runStart = async ($: EngineInterface) => {
 }
 
 // ── The session brief (bin/brief.mjs) ─────────────────────────────────────────
-// On any branch but main/master, Claude writes the branch's brief before editing code, and the person
-// approves it in the desk (Approve, or A) or with /approve-brief. Until then Edit, Write and NotebookEdit are refused,
+// On a feature branch, Claude writes the branch's brief before editing code, and the person approves it
+// in the desk (Approve, or A) or with /approve-brief. Until then Edit, Write and NotebookEdit are refused,
 // except on the brief itself. Once approved, edits stay allowed even if the brief changes later: the desk
-// shows "changed since approval" and a review of the change. Bash isn't gated.
+// shows "changed since approval" and a review of the change. On main, master, or a detached HEAD there is
+// no brief: the prompt says to branch first, and a repo edit is refused with that note. Bash isn't gated.
 type Brief = {
   branch: string
   common: string
@@ -58,8 +60,23 @@ const gitHead = async ($: EngineInterface) => {
   const git = await $.process.run(['git', '-C', cwd, 'rev-parse', '--path-format=absolute', '--git-common-dir', '--abbrev-ref', 'HEAD'], {
     timeoutMs: 5_000,
   })
-  const [common, branch] = git.exitCode === 0 ? git.stdout.trim().split('\n') : []
-  return common && branch ? { cwd, common, branch } : null
+  const [common, abbrev] = git.exitCode === 0 ? git.stdout.trim().split('\n') : []
+  if (!common || !abbrev) return null
+  let branch = abbrev
+  if (branch === 'HEAD') {
+    const dirRun = await $.process.run(['git', '-C', cwd, 'rev-parse', '--path-format=absolute', '--git-dir'], { timeoutMs: 5_000 })
+    const dir = dirRun.exitCode === 0 ? dirRun.stdout.trim().split('\n')[0] : ''
+    if (dir) {
+      const read = (p: string) => $.fs.read(`${dir}/${p}`).then(t => String(t).trim(), () => '')
+      const rebase = (await read('rebase-merge/head-name')) || (await read('rebase-apply/head-name'))
+      branch = checkoutName(abbrev, rebase)
+    }
+  }
+  let root = cwd
+  const top = await $.process.run(['git', '-C', cwd, 'rev-parse', '--show-toplevel'], { timeoutMs: 5_000 })
+  const topLine = top.exitCode === 0 ? top.stdout.trim() : ''
+  if (topLine.startsWith('/') && !topLine.includes('\n')) root = topLine
+  return { cwd, common, branch, root }
 }
 const readBrief = async ($: EngineInterface): Promise<Brief | null> => {
   const head = await gitHead($)
@@ -125,10 +142,17 @@ const gateReason = (b: Brief) => {
 }
 
 // Why an edit of `file` is refused, or null to let it through. The brief itself (anything under
-// .git/session-rail/) can always be written, except its approval file.
+// .git/session-rail/) can always be written, except its approval file. On a checkout with no brief,
+// a path inside the work tree is refused; a path outside it is left alone.
 const gate = async ($: EngineInterface, tool: string, file: string) => {
   const b = await readBrief($)
-  if (!b) return null
+  if (!b) {
+    const head = await gitHead($)
+    if (!head || !NO_BRIEF_BRANCHES.includes(head.branch) || !inWorkTree(head.root || head.cwd, file)) return null
+    const reason = mainCheckoutNote(head.branch)
+    record($, a => act.refused(a, tool, file, Date.now()))
+    return reason
+  }
   const reason =
     file === b.approvedPath ? 'session-rail: only the person approves the brief, in the desk or with /approve-brief.'
     : file.startsWith(b.dir) || b.approval?.approvedAt ? null
@@ -401,11 +425,15 @@ export const register: Register = on => {
   on('command.run', { command: 'approve-brief' }, async $ => ({ text: await approveCommand($) }))
 
   // Tell Claude about the brief on any branch that has one. The text names the branch and the path only,
-  // so it stays the same for the whole branch and doesn't break the prompt cache.
+  // so it stays the same for the whole branch and doesn't break the prompt cache. On main, master, or a
+  // detached HEAD the same slot carries the note to branch first.
   on('prompt.compose', async ($, e, next) => {
     const composed = await next(e)
     const b = await readBrief($).catch(() => null)
-    return b ? { sections: [...composed.sections, { id: 'session-rail-brief', text: briefInstructions(b), scope: 'session' as const }] } : composed
+    if (b) return { sections: [...composed.sections, { id: 'session-rail-brief', text: briefInstructions(b), scope: 'session' as const }] }
+    const head = await gitHead($).catch(() => null)
+    if (!head || !NO_BRIEF_BRANCHES.includes(head.branch)) return composed
+    return { sections: [...composed.sections, { id: 'session-rail-brief', text: mainCheckoutNote(head.branch), scope: 'session' as const }] }
   })
 
   // Every new subagent gets a name and colour (bin/names.mjs), and its task reads "Name: description", which is
@@ -416,7 +444,7 @@ export const register: Register = on => {
     const known = e.resume && activity.agents?.[e.resume.agentId]
     if (known) {
       const r = await next(e)
-      if (!r.deny) record($, a => act.agentStarted(a, e.resume!.agentId, { ...known, since: Date.now(), background: e.background === true, endedAt: undefined }))
+      if (!r.deny) record($, a => act.agentStarted(a, e.resume!.agentId, { ...known, since: Date.now(), background: e.background === true, endedAt: undefined, ...(e.prompt ? { prompt: keep(e.prompt) } : {}) }))
       return r
     }
     const agents = Object.values(activity.agents ?? {})
@@ -426,7 +454,7 @@ export const register: Register = on => {
     naming.set(name, colour)
     try {
       const r = await next(e.workflow || e.resume ? e : { ...e, description: what ? `${name}: ${what}` : name })
-      if (!r.deny && r.agentId) record($, a => act.agentStarted(a, r.agentId!, { name, colour, what, since: Date.now(), background: e.background === true }))
+      if (!r.deny && r.agentId) record($, a => act.agentStarted(a, r.agentId!, { name, colour, what, since: Date.now(), background: e.background === true, ...(e.prompt ? { prompt: keep(e.prompt) } : {}) }))
       return r
     } finally {
       naming.delete(name)
@@ -443,8 +471,9 @@ export const register: Register = on => {
     return next(e)
   })
   on('turn.complete', async ($, e, next) => {
-    if (!e.agentId) record($, a => act.turnEnded(a, Date.now()))
-    else record($, a => act.agentEnded(a, e.agentId!, Date.now()))
+    const answer = typeof e.answer === 'string' ? e.answer : ''
+    if (!e.agentId) record($, a => act.replied(act.turnEnded(a, Date.now()), answer, Date.now()))
+    else record($, a => act.noteReply(act.agentEnded(a, e.agentId!, Date.now()), e.agentId!, answer, Date.now()))
     if (!e.isAborted) await finishCodeReview($, e.answer).catch(() => {})
     return next(e)
   })
