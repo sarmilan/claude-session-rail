@@ -7,11 +7,29 @@
 //   <git common dir>/session-rail/briefs/<branch>.approved.json  { approvedAt, core } once the person approves
 // Its sections are fixed headings (## Problem, Solution, Design, Mockups, Engineering). Engineering holds
 // "### Chunk N: name" blocks, each an outline plus, once built, "Done: summary" and "Files: a, b".
-// main/master and a detached HEAD have no brief.
+// main/master and a detached HEAD have no brief. A repo edit there is refused until the work is on a branch.
 
 export const BRIEF_SECTIONS = ['problem', 'solution', 'design', 'mockups', 'engineering'];
 export const NO_BRIEF_BRANCHES = ['main', 'master', 'HEAD', 'detached'];
 const REQUIRED = { problem: 'problem', solution: 'user story', engineering: 'engineering outline' };
+
+/**
+ * What to tell the agent on a checkout that cannot hold a brief. The same sentence is the prompt note
+ * and the reason a repo edit is refused: branch, then the brief, then Approve in the Plan tab.
+ * @param {string} branch `main`, `master`, `HEAD`, or `detached`
+ */
+export function mainCheckoutNote(branch) {
+  const name = branch === 'HEAD' || branch === 'detached' || !branch ? 'a detached HEAD' : branch;
+  return `session-rail: No brief for ${name}. Create a branch, write the brief, then Approve it in the desk's Plan tab.`;
+}
+
+/** True when `file` is this checkout: a relative path, or an absolute path inside `cwd`. A path outside is not a repo edit. */
+export function inWorkTree(cwd, file) {
+  if (!cwd || !file) return false;
+  if (!file.startsWith('/')) return true;
+  const root = cwd.endsWith('/') ? cwd.slice(0, -1) : cwd;
+  return file === root || file.startsWith(`${root}/`);
+}
 
 /** @param {string} common the git common dir @param {string} branch @param {'md' | 'approved.json'} ext */
 export const briefFile = (common, branch, ext) => `${common}/session-rail/briefs/${encodeURIComponent(branch)}.${ext}`;

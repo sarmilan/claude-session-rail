@@ -1,6 +1,6 @@
 // What Grok is told about the session brief. The Claude plugin puts the same procedure in the system
 // prompt (hooks/register.ts). Grok has no prompt.compose hook, so the Grok hook writes this file and
-// attaches it to the first tool call of a session (and again after a compaction).
+// attaches it to the first tool call of each turn (and again after a compaction).
 
 const SHAPE = `# <title>
 ## Problem

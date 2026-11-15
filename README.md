@@ -20,47 +20,64 @@ If you have a `/start` command of your own, it runs as soon as the session start
 │                                   │   ◆ Dark mode toggle     waiting │
 │                                   │     my-app · feature/51 · waiti… │
 │                                   │ ──────────────────────────────── │
-│                                   │ Environment                      │
-│  > fix the login redirect         │ ▭  my-macbook                    │
-│                                   │ ▢  my-app · ~/code               │
-│  ● Reading src/auth/login.ts      │ ⎇  feature/l… +42 −7 · 3 changed │
-│  ● Editing src/auth/redirect.ts   │ ◌  Remote Control  /remote-cont… │
+│                                   │ ▌ Now  Wren · find the callers   │
+│  > fix the login redirect         │ ▸ ● Claude                       │
+│                                   │   the redirect drops the query   │
+│  ● Reading src/auth/login.ts      │   └▸ ◆ Wren                  38s │
+│  ● Editing src/auth/redirect.ts   │ ▾ you  fix the login redirect    │
+│                                   │ │  ├▸ ◆ Wren  find the callers   │
+│                                   │ │  └  Claude  the redirect drops │
 │                                   │ ──────────────────────────────── │
+│                                   │ Environment ▾                    │
 │                                   │ Context ▾          33% ▰▰▰▱▱▱▱▱  │
 │                                   │   Model    Opus 4.6              │
 │                                   │   Tokens   66k / 200k            │
 │                                   │ ──────────────────────────────── │
 │                                   │ Connectors ▸         4 connected │
-│                                   │ ──────────────────────────────── │
-│                                   │ Now                              │
-│                                   │ ◉ Claude  Edit src/auth/redi… 4s │
-│                                   │   ├ ◆ Explore: find callers  38s │
-│                                   │   └ ◇ Run test suite          2m │
-│                                   │ ◉ Desk  approach review      40s │
-│                                   │ ──────────────────────────────── │
-│                                   │ Just now                         │
-│                                   │ ✔ Read src/auth/login.ts      6s │
-│                                   │ ✗ Bash npm test              12s │
-│                                   │ ──────────────────────────────── │
 │  >                                │                                  │
 └───────────────────────────────────┴──────────────────────────────────┘
 ```
 
 ## What it shows
 
-The rail has two tabs: **Session**, what Claude is doing, and **Git**, where all your work stands. `Tab` or `]` goes to the next tab, `Shift-Tab` or `[` to the previous one, or click one. Each rail remembers its own tab.
+The rail has two tabs: **Session**, how this session is thinking, and **Git**, where all your work stands. `Tab` or `]` goes to the next tab, `Shift-Tab` or `[` to the previous one, or click one. Each rail remembers its own tab.
 
 ### Session
 
-- **Sessions:** every Claude session on your Mac, this one first (▸), then the ones that need you. Each shows its brief's title (or its branch), whether it's busy, waiting for you, blocked (the brief gate just held an edit) or idle, and underneath, its repo, branch and what it's doing right now. Every rail shows the same list.
+```
+ ▌ Now  Wren and Otto
+ ────────────────────────────────────────
+ ▸ ● Grok
+   the tab now opens each handoff
+   ├▾ ◆ Wren    how the session tab is drawn
+   │    asked   how the session tab is drawn
+   │    prompt  Read the session tab and say what a person can learn
+   │    said    It lists tool calls. The ask itself is missing.
+   └▸ ◆ Otto    run the tests                 running
+ ▸ ◆ Rue     read the pet stages            2h
+ ▾ you   bring that attitude to the session tab
+ │    why     I'll look at the session tab first
+ │  ├▸ ◆ Wren  how the session tab is drawn
+ │  └  the tab now opens each handoff
+ ▸ you   the pet should follow the session
+```
+
+The banner is the only status. `Now` names who is working and the ask they were given. Two people read `Wren and Otto`. `Held` means the brief just stopped an edit. `waiting for you` means the turn has ended. A tool with no handoff names the file, as in `reading rail.mjs`. That sentence is not repeated on the row below.
+
+Under it is this second. Grok or Claude is the root, with no second status beside the name. The latest reply sits under the name, without the name again, and Enter opens the whole text. Each subagent hangs under the one that asked it. When one agent is working, the banner already has the ask, so the row is the name and what it is doing. With several, each row keeps its ask. A shell still running is a `◇` under the root, and Enter opens its output. The desk's review is a row while it runs.
+
+Open an agent. `asked` is the one line it was given. `prompt` is the handoff itself, the words that were actually sent. `said` is what came back. `doing` is the call in flight. Enter on `prompt` or `said` opens the whole text. The calls sit under that. Nothing here is inferred.
+
+A subagent that has finished stays on its own row under the live ones: the name, the task it was given, and how long ago it finished. Newest first. Enter opens the prompt and what it answered. The list is every subagent this session spun up.
+
+Under that, each thing you typed is a chapter, newest first. Open it for what the agent said it was going to do (`why`) and what it answered. The reply already under Now is not printed again. `⟲ compacted after <branch>` stays for an hour after the session compacts itself.
+
+The words come from the session itself. The hook keeps the prompt, the reply and your turns in the activity file as they happen. The rail also reads the transcript: Grok's `chat_history.jsonl` and `subagents/<id>/meta.json`, and Claude's session log. A subagent's prompt is the `prompt` it was spawned with. Its reply is what it returned.
+
+- **Sessions:** every session on your Mac, this one first (▸), then the ones that need you. Each shows its brief's title (or its branch), whether it's busy, waiting for you, blocked (the brief gate just held an edit) or idle, and underneath, its repo, branch and what it's doing right now. Every rail shows the same list.
 - **Environment:** your computer, account, repo, and branch, with the lines added and removed since the branch forked from the default branch (committed plus uncommitted; untracked files are not counted)
 - **Context:** how full the context window is. It starts open, with the model, the token count, and the usage windows.
 - **Connectors:** your MCP servers and whether they're connected
-- **Now:** who is doing what this second, and for how long:
-  - **Claude:** thinking (with the model), the tool it's running and on what, waiting on its subagents, or waiting for you
-  - nested under it, its **subagents** and **background tasks**. Every subagent gets a name and a colour when it starts (Wren, Otto, Juno… from `bin/names.mjs`), and its row shows what it was asked and the call it's running now. Its task and its completion notification read `Name: description`, so you can tell who a response is from. Open a background task or agent to see its output.
-  - the **Desk** while it runs an approach review, and the **Gate** when it has just held an edit because the brief isn't approved
-- **Just now:** the last few finished tool calls, with ✔ or ✗ (a subagent's start with its name, in its colour), the session's finished background tasks, and `⟲ compacted after <branch>` for an hour after the session compacted itself
 
 ### Git
 
@@ -99,7 +116,7 @@ Open a branch for this checkout's `+N −N` and uncommitted count, the clashing 
 
 The tree refreshes about once a minute, when you switch to Git, on `r`, and again when the branch changes. `+N −N` and the uncommitted count come from this checkout every 5 seconds, so an open row updates between those minutes. Checks come from GitHub through `gh`. Only your own open pull requests are listed, up to 100. When that list cannot be fetched, the last one stays and the tab says GitHub is unavailable.
 
-Click a row, or use the arrow keys and Enter, to open it. On Git, Enter expands a branch in place. A session jumps to its iTerm window (a session in the Claude app gives you its details instead), pull requests and checks open in the browser, and tasks show their output.
+Click a row, or use the arrow keys and Enter, to open it. On Session, Enter expands an agent or a chapter, and Enter on a prompt or a reply opens the text. On Git, Enter expands a branch in place. A session jumps to its iTerm window (a session in the Claude app gives you its details instead), pull requests and checks open in the browser, and tasks show their output.
 
 ### Working on several things at once
 
@@ -123,7 +140,7 @@ Click a row, or use the arrow keys and Enter, to open it. On Git, Enter expands 
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Plan:** the branch's **brief** (see below), live, with an **Approve** button when it's ready. Until the branch has a brief, and on `main`, it lists the **Todo** issues on the repo's GitHub project board first, so you can pick one up, then the plan Claude writes in plan mode, or the latest merged PRs and commits.
+- **Plan:** the branch's **brief** (see below), live, with an **Approve** button when it's ready. On `main`, `master`, or a detached HEAD there is no brief and no Approve button: the tab says to create a branch, write the brief, and approve it here, then shows the plan file or recent work. Until a feature branch has a brief, it lists the **Todo** issues on the repo's GitHub project board first, so you can pick one up, then the plan, or the latest merged PRs and commits.
 - **Diff:** every file changed since the branch forked from the default branch, the same base as the rail's `+N −N`, grouped under the brief's chunks with each chunk's summary. Untracked files are included, marked `new`. Open a file to see its diff.
 - **Review:** the branch's reviews and what became of each finding (see *Reviews* below).
   - **Approach:** a staff-engineer review in a separate, headless Claude. It reads the brief, each chunk's summary and files, and how much each file changed. It says whether this is the simplest, most elegant and least costly way to the goal: on track, a simpler path exists, or off the goal. Findings are things like a simpler design, work beyond the goal, avoidable cost, or part of the goal not covered.
@@ -134,7 +151,7 @@ The desk opens on Plan and stays on the tab you pick.
 
 ### The session brief
 
-On any branch but `main` or `master`, Claude keeps a brief for the branch: what the session sets out to do, and what the work is checked against at the end. It lives inside `.git` (`.git/session-rail/briefs/`), so it's never committed.
+On any branch but `main` or `master`, Claude keeps a brief for the branch: what the session sets out to do, and what the work is checked against at the end. It lives inside `.git` (`.git/session-rail/briefs/`), so it's never committed. On `main`, `master`, or a detached HEAD there is no brief. Claude and Grok are told to create a branch first, and an edit of a file in the repo is refused until that branch has a brief you have approved in the Plan tab. A file outside the repo is left alone.
 
 ```
 # <title>
@@ -226,21 +243,21 @@ If macOS asks whether to allow controlling iTerm2, allow it. That's how the pane
 - Keys: `↑` `↓` to move, `Enter` to open, `Esc` to go back, `c` to change creature, `q` to close the rail.
 - **⚙ settings**, in the rail's bottom-right corner, opens three rows under the creature: `←` `→` on **Font size** makes the Claude pane, the desk and the rail bigger or smaller together (`Enter` for Reset), `←` `→` on **Pet** picks the creature, and `←` `→` on **Auto-compact** turns auto-compaction off or on. The font size is remembered and comes back with the next session. It works by switching the panes to iTerm profiles it generates (`session-rail 15pt` and so on), which show up in iTerm's Profiles menu.
 - A little pixel creature wanders along the bottom: a snail, a turtle (with a bright green shell, warm amber when heavy) or a crab. It walks through its own habitat (woodland for the snail, a pond for the turtle, a beach for the crab) on speckled ground (soil, mud or sand), with plants swaying gently behind it in iTerm2. Sand puffs under the crab, and the reeds bend when the turtle hops. It hurries while the agent is busy, looks left and fidgets while it is waiting for you, and falls asleep only after a real lull. Your pick is remembered.
-- The strip is the branch's road, left to right: the creature paces around a spot that moves right as the brief's chunks get Done, from the left edge before approval to the right edge when all of them are, and walks briskly to its new spot after each one. Each Done chunk leaves a marker behind it (a mushroom, a lily pad or a shell) and the creature hops with a gold sparkle. With no brief it wanders the whole strip.
+- The strip is the branch's road, left to right: the creature paces around a spot that moves right as the brief's chunks get Done, from the left edge before approval to the right edge when all of them are, and walks briskly to its new spot after each one. Each Done chunk leaves a marker behind it (a mushroom, a lily pad or a shell) and the creature hops with a gold sparkle. With no brief, that spot is how full the context window is. Until the window's size is known, it wanders the whole strip.
 - Each running subagent brings a visitor, a bee, butterfly, dragonfly or ladybird in turn, tinted with that subagent's colour (up to 4, and a `+n` when more are running). They flutter around the creature, settle when things are quiet, scatter when a tool fails, and fly off when their subagent finishes.
 - A little one, a baby of the creature, trails behind it for each running background command (up to 3, then a `+n`). Babies tuck in when it sleeps, pile up while the brief is unapproved, and hide behind it when it flinches. A failed tool makes it flinch, pop a red puff, and stay drooped until the next tool succeeds. While the brief is not approved yet it stands still with a yellow `?` over its head.
-- The creature grows as the branch heads toward its compaction: a hatchling until the branch's brief is approved, then juvenile, adult after the first Done chunk (faster, hopping), and heavy once every chunk is Done (bigger, shaking, a gold mark: merge it and let it compact). After the compaction the next branch starts again with a hatchling. Each creature has a drawing for each stage, from a pale little hatchling to a spiked, scowling heavy. Now and then it fidgets: the snail stretches, the turtle peeks, the crab snaps a claw. Waking up is a little stretch.
+- The creature grows as the branch heads toward its compaction: a hatchling until the branch's brief is approved, then juvenile, adult after the first Done chunk (faster, hopping), and heavy once every chunk is Done (bigger, shaking, a gold mark: merge it and let it compact). With no brief, the same drawings follow the context window instead: a hatchling under 5%, a juvenile under 20%, and an adult from there. The gold mark stays the finished brief. After a compaction the window drops and the pet hatches again. Each creature has a drawing for each stage, from a pale little hatchling to a spiked, scowling heavy. Now and then it fidgets: the snail stretches, the turtle peeks, the crab snaps a claw. Waking up is a little stretch.
 
 ## How it works
 
-The rail only reads files Claude Code already keeps on your Mac: the list of running sessions, the session's conversation log (for context and background tasks), and the output of each background task. It also asks `git` (worktrees, ahead/behind, commits), `gh` (your pull requests and their checks, in one call), and `claude mcp list` for the rest.
+The rail only reads files the agent already keeps on your Mac: the list of running sessions, the session's conversation log (for context, background tasks, and the story of who was asked what), each subagent's prompt and reply, and the output of each background task. It also asks `git` (worktrees, ahead/behind, commits), `gh` (your pull requests and their checks, in one call), and `claude mcp list` for the rest.
 
 It has these parts:
 
-1. **The rail** (`bin/rail.mjs`) draws the narrow panel in the terminal. It's plain Node with no dependencies.
+1. **The rail** (`bin/rail.mjs`) draws the narrow panel in the terminal. It's plain Node with no dependencies. `bin/sessionstory.mjs` turns the activity feed and the transcript into the Session tab's tree: the banner, the cast, and the chapters.
 2. **The desk** (`bin/desk.mjs`) draws the wider panel. It reads the branch's brief (`bin/brief.mjs`), finds the plan file in the session's conversation log, asks `git` for the diff and `gh` for the board's Todo issues. Its reviewer (`bin/reviewer.mjs`) runs the approach review through `claude -p` with a JSON schema for the findings, read-only tools, no MCP servers and no saved session, and keeps each branch's reviews in `.git/session-rail/reviews/`. Claude runs the same reviewer through its CLI (`node bin/reviewer.mjs --run [--final] [--notes …]`), which the plugin's `review_approach` tool calls. `bin/cadence.mjs` holds the rules: finding statuses, what's open, and when a merge must wait.
 3. **The pane opener** (`bin/pane.mjs`) uses iTerm2's AppleScript support to fill the screen, split Claude's pane, run each panel (desk next to Claude, rail on the far right), size them in one pass, and hand focus back to Claude. The rail also uses it to bring another session's window to the front and to open the window for a new session.
-4. **The plugin** (`hooks/register.ts`) keeps a live record of what the session is doing (`hooks/activity.ts`: turns, every tool call, subagents with the names it gave them at `agent.spawn`, the brief gate) in `~/.claude/session-rail/activity/<session id>.json`, which the rail reads every second; the desk adds its running review beside it. It also opens both panels when a session starts, adds `/rail`, `/desk` and `/approve-brief`, and closes them when the session ends. On a feature branch it adds the brief's instructions to Claude's system prompt, refuses code edits until the brief is approved, watches for the approval (`hooks/goahead.ts`) to tell Claude to start, compacts the session after a finished, merged branch (`hooks/compact.ts`), serves `review_approach`, records each `/code-review` report in the branch's reviews, and refuses `gh pr merge` until the final reviews are in. Settings shared by the rail and the hooks (font size, auto-compact) live in `~/.claude/session-rail/settings.json`; each rail keeps its open tab in `<session id>.rail.json` beside the session's activity file.
+4. **The plugin** (`hooks/register.ts`) keeps a live record of what the session is doing (`hooks/activity.ts`: turns, every tool call, subagents with the names it gave them at `agent.spawn`, the prompt each one was handed, what it answered, and the brief gate) in `~/.claude/session-rail/activity/<session id>.json`, which the rail reads every second; the desk adds its running review beside it. Grok's hook (`bin/grok-hook.mjs`) writes the same file. It also opens both panels when a session starts, adds `/rail`, `/desk` and `/approve-brief`, and closes them when the session ends. On a feature branch it adds the brief's instructions to Claude's system prompt, refuses code edits until the brief is approved, watches for the approval (`hooks/goahead.ts`) to tell Claude to start, compacts the session after a finished, merged branch (`hooks/compact.ts`), serves `review_approach`, records each `/code-review` report in the branch's reviews, and refuses `gh pr merge` until the final reviews are in. Settings shared by the rail and the hooks (font size, auto-compact) live in `~/.claude/session-rail/settings.json`; each rail keeps its open tab in `<session id>.rail.json` beside the session's activity file.
 
 ## Good to know
 

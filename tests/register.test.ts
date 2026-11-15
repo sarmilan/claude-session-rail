@@ -122,10 +122,19 @@ test('on a feature branch, code edits wait for a brief', async ($, on) => {
   expect(edits).toEqual([])
 })
 
-test('on main, edits go through with no brief', async ($, on) => {
+test('on main, a repo edit waits for a branch and a brief', async ($, on) => {
   const { edits } = briefHarness(on, { branch: 'main' })
-  await $.tool.call(edit('/repo/src/a.ts'))
-  expect(edits).toEqual(['/repo/src/a.ts'])
+  const r = (await $.tool.call(edit('/repo/src/a.ts'))) as { deny?: string }
+  expect(r.deny).toContain('No brief for main')
+  expect(r.deny).toContain('Create a branch')
+  expect(r.deny).toContain('brief')
+  expect(edits).toEqual([])
+})
+
+test('on main, a file outside the repo is not refused', async ($, on) => {
+  const { edits } = briefHarness(on, { branch: 'main' })
+  await $.tool.call(edit('/tmp/plan.md'))
+  expect(edits).toEqual(['/tmp/plan.md'])
 })
 
 test('the brief itself can always be written, its approval file never', async ($, on) => {
@@ -189,7 +198,7 @@ test('approving the brief tells Claude to start, once', async ($, on) => {
   expect(sent[0]).toContain('The brief for feature/x is approved. Start on chunk 1')
 })
 
-test('the system prompt explains the brief on a feature branch, not on main', async ($, on) => {
+test('the system prompt explains the brief on a feature branch', async ($, on) => {
   briefHarness(on)
   on('prompt.compose', () => ({ sections: [] }))
   const { sections } = await $.prompt.compose(COMPOSE)
@@ -203,11 +212,15 @@ test('the system prompt explains the brief on a feature branch, not on main', as
   expect(s?.scope).toBe('session')
 })
 
-test('main gets no brief section', async ($, on) => {
+test('main is told to branch, and hears no brief procedure', async ($, on) => {
   briefHarness(on, { branch: 'main' })
   on('prompt.compose', () => ({ sections: [] }))
   const { sections } = await $.prompt.compose(COMPOSE)
-  expect(sections.some(x => x.id === 'session-rail-brief')).toBe(false)
+  const s = sections.find(x => x.id === 'session-rail-brief')
+  expect(s?.text).toContain('No brief for main')
+  expect(s?.text).toContain('Plan tab')
+  expect(s?.text).not.toContain("Don't wait to be asked")
+  expect(s?.scope).toBe('session')
 })
 
 test('/start runs once per session, even when session.start runs again after a reload', async ($, on) => {
@@ -256,7 +269,8 @@ const withActivity = (on: Parameters<Parameters<typeof test>[1]>[1], opts: { bra
 }
 
 test('a finished tool call shows in the activity as just done, with its path relative to the repo', async ($, on) => {
-  const { files } = withActivity(on, { branch: 'main' })
+  const { files } = withActivity(on, { brief: COMPLETE })
+  await approve($)
   await $.tool.call(edit('/repo/src/a.ts'))
   const a = await activityOf(files)
   expect(a.running).toEqual([])
@@ -318,12 +332,13 @@ test('a spawned subagent gets a name and colour, its task reads "Name: descripti
   let a = await activityOf(files)
   const [one, two] = [a.agents.ag1, a.agents.ag2]
   expect(seen).toEqual([`${one.name}: explore hooks`, `${two.name}: run tests`])
-  expect(one).toMatchObject({ what: 'explore hooks', background: expect.any(Boolean) })
+  expect(one).toMatchObject({ what: 'explore hooks', prompt: 'p', background: expect.any(Boolean) })
   expect(one.name).not.toBe(two.name)
   expect(one.colour).not.toBe(two.colour)
   await $.turn.complete(done('ag1', 'all done'))
   a = await activityOf(files)
   expect(a.agents.ag1.endedAt).toEqual(expect.any(Number))
+  expect(a.agents.ag1.reply).toBe('all done')
   expect(a.agents.ag2.endedAt).toBeUndefined()
 })
 

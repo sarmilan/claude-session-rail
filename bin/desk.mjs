@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // The desk: a wider iTerm panel between Claude and the rail, with tabs for the work itself.
-//   Plan  the branch's brief (brief.mjs) with its Approve button; without one, the board's Todo issues, then
-//         the plan plan mode is writing (Claude: the session transcript; Grok: the session's plan.md) or recent work
+//   Plan  the branch's brief (brief.mjs) with its Approve button. On main, master, or a detached HEAD, a note
+//         to branch first and no Approve button. Otherwise the board's Todo issues, then the plan plan mode
+//         is writing (Claude: the session transcript; Grok: the session's plan.md) or recent work
 //   Diff  every file changed since the branch forked from the default branch, grouped by the brief's chunks,
 //         and each file's diff
 //   Review  the branch's review record: the approach reviews (reviewer.mjs) Claude runs before each commit, or
@@ -16,7 +17,7 @@ import * as src from './sources.mjs';
 import { reviewAndSave, loadReviews } from './reviewer.mjs';
 import { ESC, fg, dim, bold, C, bg, bgOpen, charWidth, width, trunc, clean, tabBar, usePalette, paneBgOn, paneBgOff } from './term.mjs';
 import { applySaved } from './fontsize.mjs';
-import { approvalRecord } from './brief.mjs';
+import { approvalRecord, mainCheckoutNote, NO_BRIEF_BRANCHES } from './brief.mjs';
 import { codeFindings, runType } from './cadence.mjs';
 import { writeFile, mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -32,7 +33,7 @@ const agentName = () => (data.claude?.host === 'grok' || (!data.claude && hostFl
 const taskIndex = new src.TaskIndex();
 
 // ── Data ───────────────────────────────────────────────────────────────────────
-const data = { plan: null, brief: null, recent: null, todos: null, root: null, files: [], diff: null, claude: null, // diff: { path, lines } of the open file
+const data = { plan: null, brief: null, checkout: null, recent: null, todos: null, root: null, files: [], diff: null, claude: null, // diff: { path, lines } of the open file
   review: { running: null, runs: [], path: undefined } };                    // runs: the branch's saved reviews, newest first
 const TABS = ['plan', 'diff', 'review'];
 const ui = { tab: 'plan', scroll: { plan: 0, diff: 0, review: 0 }, sel: 0, open: null, toast: null,
@@ -59,8 +60,8 @@ const loaders = {
     if (current?.host !== 'grok') await taskIndex.update(files.transcriptPath);
     // Claude's plan is discovered in the transcript. Grok writes it at a fixed path in the session directory.
     const planPath = current?.host === 'grok' ? files.planPath : taskIndex.planPath;
-    [data.plan, data.brief] = await Promise.all([src.readPlan(planPath), src.readBrief(cwd)]);
-    if (changed('plan', `${data.plan ? `${data.plan.path}:${data.plan.mtime}` : ''}|${data.brief?.mtime ?? ''}`)) {
+    [data.plan, data.brief, data.checkout] = await Promise.all([src.readPlan(planPath), src.readBrief(cwd), src.checkoutBranch(cwd)]);
+    if (changed('plan', `${data.plan ? `${data.plan.path}:${data.plan.mtime}` : ''}|${data.brief?.mtime ?? ''}|${data.checkout ?? ''}`)) {
       ui.scroll.plan = 0;
     }
   },
@@ -220,7 +221,10 @@ function planLines(w) {
     const approve = ['ready', 'changed'].includes(b.status) ? [button(b.status === 'ready' ? 'Approve' : 'Approve again', C.green) + dim('  or A'), ''] : [];
     return [bold('Brief') + dim(' · ') + status, ...approve, dim(trunc(src.tildify(b.path), w)), '', ...markdownLines(b.text, w, { brief: true })];
   }
-  const note = [...(b ? [dim(trunc(`No brief for ${clean(b.branch)} yet: ${agentName()} writes one before editing code.`, w)), ''] : []), ...todoLines(w)];
+  const held = !b && NO_BRIEF_BRANCHES.includes(data.checkout)
+    ? [...wrapRuns(runs(mainCheckoutNote(data.checkout).replace(/^session-rail:\s*/, '')), w).map((line) => dim(line)), '']
+    : [];
+  const note = [...held, ...(b ? [dim(trunc(`No brief for ${clean(b.branch)} yet: ${agentName()} writes one before editing code.`, w)), ''] : []), ...todoLines(w)];
   if (!data.plan) return [...note, ...recentLines(w)];
   return [...note, dim(src.tildify(data.plan.path)), '', ...markdownLines(data.plan.text, w)];
 }

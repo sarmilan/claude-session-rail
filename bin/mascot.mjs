@@ -1,8 +1,9 @@
 // The rail's mascot: a little pixel creature (see creatures.mjs) wandering along a floor line at the
 // bottom of the rail. It walks, turns at the edges, blinks, hurries while the agent is busy, looks left
 // and fidgets while it waits for the person, and falls asleep after a minute of real quiet. It grows
-// through four stages as the branch's brief heads toward its compaction (`setStage`, `stageFor`): hopping
-// from the adult on, and shaking with a gold mark when heavy, which means the branch is ready to merge.
+// through four stages (`setStage`, `stageFor`). A brief grows it toward compaction: hopping from the
+// adult on, and shaking with a gold mark when heavy, which means the branch is ready to merge. With no
+// brief, the session's context fill grows it instead, and heavy stays out of reach.
 //
 // Sprites are 34×16 pixel maps. In iTerm2 the creature and its floor are one inline PNG strip, three rows
 // tall (four for a stage drawn bigger) and as wide as the rail, so each sprite pixel is a ~2pt square and
@@ -53,19 +54,28 @@ const MOOD = [
 ];
 // Stage from the branch's brief (sources.readBrief): a hatchling until it's approved, a juvenile once it is,
 // an adult after its first Done chunk, and heavy when every chunk is Done (ready to merge and compact).
-// After the compaction the next branch has no approved brief, so the pet hatches again.
+// With no brief, `contextPct` (0–100) is the life of this sitting: a hatchling under 5, a juvenile under 20,
+// and an adult from there. Heavy is never reached that way. The gold mark stays "ready to merge".
+// After a compaction the window drops, so the pet hatches again.
 // The share of Done chunks of an approved (or approved, then edited) brief, else null.
 const doneShare = (brief) => {
   if (!isApproved(brief?.status)) return null; // an edited plan keeps its growth
   return brief.chunks?.length ? brief.chunks.filter((c) => c.done).length / brief.chunks.length : 0;
 };
-export const stageFor = (brief) => {
+const contextStage = (pct) => (pct < 5 ? 0 : pct < 20 ? 1 : 2);
+export const stageFor = (brief, contextPct = null) => {
   const f = doneShare(brief);
-  return f == null ? 0 : f === 0 ? 1 : f < 1 ? 2 : 3;
+  if (f != null) return f === 0 ? 1 : f < 1 ? 2 : 3;
+  if (brief?.status) return 0;
+  return Number.isFinite(contextPct) ? contextStage(contextPct) : 0;
 };
-// How far along the branch's road the pet lives (0 left … 1 right): the share of Done chunks of an approved
-// (or approved, then edited) brief, 0 before approval, and null with no brief, to pace the whole strip.
-export const progressFor = (brief) => (brief?.status ? doneShare(brief) ?? 0 : null);
+// How far along the road the pet lives (0 left … 1 right): the share of Done chunks of an approved
+// (or approved, then edited) brief, 0 before approval, the context fill when there is no brief, and null
+// when that fill is unknown, so it paces the whole strip.
+export const progressFor = (brief, contextPct = null) => {
+  if (brief?.status) return doneShare(brief) ?? 0;
+  return Number.isFinite(contextPct) ? Math.min(1, Math.max(0, contextPct / 100)) : null;
+};
 // How many chunks are Done, for the trail of markers. Nothing is counted before approval.
 export const doneFor = (brief) => {
   const chunks = brief?.chunks ?? [];

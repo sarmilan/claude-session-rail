@@ -11,8 +11,9 @@ import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import * as src from './sources.mjs';
 import { buildTree, layoutTree } from './branchmap.mjs';
+import { buildStory, layoutStory } from './sessionstory.mjs';
 import { ESC, fg, dim, bold, C, bgOpen, charWidth, width, trunc, wrap, clean, tabBar, usePalette, paneBgOn, paneBgOff } from './term.mjs';
-import { createMascot, creatureNames, stageFor, progressFor, doneFor, attentionFor, visitorsFor, droopFor, flinchAt, isSubagentCall } from './mascot.mjs';
+import { createMascot, creatureNames, stageFor, progressFor, doneFor, attentionFor, visitorsFor, droopFor, flinchAt } from './mascot.mjs';
 import { isApproved } from './brief.mjs';
 import { NAMES, COLOURS } from './names.mjs';
 import * as fontsize from './fontsize.mjs';
@@ -31,7 +32,7 @@ const taskIndex = new src.TaskIndex();
 
 // ── Data ───────────────────────────────────────────────────────────────────────
 const data = { env: null, brief: null, account: null, usage: [], agents: [], overview: null, current: null, stats: null, connectors: null, prs: null,
-  worktrees: null, map: null, github: null, activity: null,
+  worktrees: null, map: null, github: null, activity: null, chronicle: null,
   tasks: { running: [], finished: 0, done: [] } };
 // The two Git loaders both rebuild the map. A generation drops a result that started from an older pair.
 let mapGen = 0;
@@ -57,6 +58,7 @@ const loaders = {
     restoreTab(data.current?.sessionId);
     const files = await src.sessionFiles(data.current);
     data.activity = await src.activity(data.current?.sessionId);
+    if (ui.tab === 'session') data.chronicle = await src.chronicle(data.current);
     if (data.current?.host === 'grok') {
       data.stats = await src.grokContext(files);
       // Shells and subagents still in flight, recorded by the Grok hook from Stop's backgroundTasks.
@@ -162,6 +164,7 @@ const setTab = (t) => {
   saveTab(data.current?.sessionId);
   // The branch map refreshes every 60s, only on Git; arriving on Git brings it up to date (through the runner, so it
   // can't overlap a scheduled load), unless it loaded in the last 10s, so flipping tabs doesn't call GitHub each time.
+  if (t === 'session' && !isFrame) runners.fast();
   if (t === 'git' && !isFrame) {
     if (Date.now() - (data.worktrees?.at ?? 0) > 10_000) { runners.worktrees(); runners.prs(); }
     else if (!data.map && data.worktrees) publishMap().then(() => draw());
@@ -186,13 +189,16 @@ const saveCreature = (name) => {
   try { mkdirSync(dirname(MASCOT_FILE), { recursive: true }); writeFileSync(MASCOT_FILE, JSON.stringify({ creature: name })); } catch {}
 };
 const nextCreature = (d = 1) => saveCreature(mascot.next(d));
-// The pet grows with the branch's brief (--pet-stage N pins a stage for --frame).
+// The pet grows with the branch's brief. With no brief, it grows with how full the context window is
+// (--pet-stage N pins a stage for --frame).
 const stageFlag = flag('--pet-stage');
 const pinned = stageFlag != null && /^[0-3]$/.test(stageFlag) ? +stageFlag : null;
-const petStage = () => pinned ?? stageFor(data.brief);
-// And walks the branch's road, left to right as chunks get Done (--pet-progress F pins it for --frame).
+const petContext = () => (data.brief?.status ? null : data.stats?.contextPct);
+const petStage = () => pinned ?? stageFor(data.brief, petContext());
+// And walks the branch's road, left to right as chunks get Done. With no brief, the spot is the context fill
+// (--pet-progress F pins it for --frame).
 const progressFlag = numFlag('--pet-progress');
-const petProgress = () => progressFlag ?? progressFor(data.brief);
+const petProgress = () => progressFlag ?? progressFor(data.brief, petContext());
 // A visitor for each running subagent, tinted with the name colour from the activity file. The main
 // thread's Agent calls in flight, plus background subagents (--visitors N pins a count for --frame).
 const visitorsFlag = numFlag('--visitors');
@@ -245,6 +251,17 @@ const menu = (title, options, info = []) => {
   ui.sel = 'opt:0';
 };
 const viewLog = (task) => { ui.overlay = { kind: 'log', task, scroll: 0, back: ui.overlay?.back ?? ui.sel }; };
+// Enter on a prompt or a reply. The body is the text that was sent, already capped where it was stored.
+const viewText = (title, body) => { ui.overlay = { kind: 'text', title, body: body || '', scroll: 0, back: ui.sel }; };
+// Enter on the cast or the story toggles that row. A prompt or a reply opens. A shell opens its log.
+const activateStory = (row) => {
+  if (row.activate === 'toggle') { ui.expanded[row.key] = !ui.expanded[row.key]; return; }
+  if (row.activate === 'read') return viewText(row.title, row.body);
+  if (row.activate === 'log') {
+    const t = data.tasks.running.find((x) => x.id === row.taskId) || data.tasks.done.find((x) => x.id === row.taskId);
+    if (t) viewLog(t);
+  }
+};
 const closeOverlay = () => { if (ui.overlay) ui.sel = ui.overlay.back; ui.overlay = null; };
 
 const repoMenu = (env) => menu(env.repo, [
@@ -436,7 +453,6 @@ function buildMain(W) {
   };
   const item = (id, activate) => { items.push({ id, activate }); return id; };
   const rule = () => line(dim('─'.repeat(inner)));
-  const heading = (t) => line(bold(t));
   const caret = (open) => (open ? '▾' : '▸');
 
   const env = data.env;
@@ -447,6 +463,8 @@ function buildMain(W) {
   // Style names from the tree, painted when the frame is drawn so the palette is the one in force.
   const paint = (parts) => (parts ?? []).map((p) => {
     const text = p.text;
+    if (p.colour != null) return fg(p.colour, text);
+    if (p.style === 'bold') return bold(text);
     if (p.style === 'dim') return dim(text);
     if (p.style === 'accent') return fg(C.accent, text);
     if (p.style === 'green') return fg(C.green, text);
@@ -520,6 +538,40 @@ function buildMain(W) {
     pair(`    ${[s.repo, s.branch, clean(s.doing)].filter(Boolean).join(' · ')}`, '', id, { leftStyle: dim });
   }
 
+  // This session: who is working, the words they were handed, and how the problem got here.
+  // The banner is the one sentence. Enter opens an agent or a chapter. Enter on a prompt or a reply shows the text.
+  rule();
+  const act = data.activity;
+  if (!data.current) line(dim(`No ${agentName()} session in this folder`));
+  else {
+    const chron = data.chronicle || { agents: [], events: [] };
+    const story = buildStory({
+      host: agentName(),
+      claude: act?.claude || (data.current.status === 'busy' ? { state: 'tool', since: data.current.statusSince } : { state: 'waiting', since: data.current.statusSince }),
+      gate: src.gateHeld(act) ? act.gate : null,
+      agents: act?.agents,
+      fileAgents: chron.agents,
+      events: chron.events,
+      turns: act?.turns,
+      running: act?.running,
+      recent: act?.recent,
+      tasks: data.tasks.running,
+      desk: act?.desk,
+      compacted: act?.compacted && Date.now() - act.compacted.at < 3600_000 ? act.compacted : null,
+      now: Date.now(),
+    });
+    const told = layoutStory(story, { inner, open: ui.expanded });
+    if (told.banner) line(paint(told.banner));
+    rule();
+    for (const row of told.rows) {
+      const id = row.activate ? item(row.id, () => activateStory(row)) : undefined;
+      const right = paint(row.right);
+      if (right) spread(paint(row.left), right, id);
+      else line(paint(row.left), id);
+    }
+    if (data.tasks.finished) line(dim(`◇ ${data.tasks.finished} background task${data.tasks.finished === 1 ? '' : 's'} finished`), item('finished', finishedMenu));
+  }
+
   // Environment
   rule();
   pair(`Environment ${caret(ui.open.environment)}`, '', item('environment', () => { ui.open.environment = !ui.open.environment; }),
@@ -585,76 +637,6 @@ function buildMain(W) {
   }
   rule();
 
-  // Now: who is doing what this second (hooks/activity.ts's feed, the desk's run, the session's background tasks)
-  heading('Now');
-  const act = data.activity, { running: tasks, finished } = data.tasks;
-  if (!data.current) line(dim(`No ${agentName()} session in this folder`));
-  else {
-    const spin = (on) => (on ? fg(C.accent, ui.tick % 2 ? '●' : '◉') : dim('○'));
-    const rel = (p) => (p && p.startsWith(cwd + '/') ? p.slice(cwd.length + 1) : p ?? '');
-    const model = (m) => (m ?? '').replace(/^claude-/, '').replace(/^grok-/, 'Grok ').replace(/-\d{8}$/, '');
-    // Claude itself, from the feed when there is one, else from the session's own status.
-    // Claude's own call in flight, leaving out Agent calls: those are its subagents, shown under it.
-    const main = act?.running?.filter((c) => !c.agent && !isSubagentCall(c)).at(-1);
-    const waitingOn = (act?.running ?? []).filter(isSubagentCall).length;
-    const [state, since, busy] = !act?.claude
-      ? [data.current.status === 'busy' ? 'working' : 'waiting for you', data.current.statusSince, data.current.status === 'busy']
-      : act.claude.state === 'waiting' ? ['waiting for you', act.claude.since, false]
-      : main ? [`${main.tool} ${clean(rel(main.arg))}`, main.since, true]
-      : waitingOn ? [`waiting on ${waitingOn} subagent${waitingOn === 1 ? '' : 's'}`, act.claude.since, true]
-      : [`thinking${act.claude.model ? ` · ${model(act.claude.model)}` : ''}`, act.claude.since, true];
-    const actor = (mark, name, what, at, opts = {}) => {
-      const right = at ? ago(at) : '', l = trunc(name ? `${name}  ${what}` : what, inner - width(mark) - 1 - (right ? width(right) + 1 : 0));
-      const gap = Math.max(right ? 1 : 0, inner - width(mark) - 1 - width(l) - width(right));
-      const who = bold(l.slice(0, name.length));
-      line(`${mark} ${opts.colour ? fg(opts.colour, who) : who}${l.slice(name.length)}${' '.repeat(gap)}${dim(right)}`, opts.id);
-    };
-    actor(spin(busy), agentName(), state, since);
-    // Under Claude: its subagents, each by the name and colour it got at its spawn (hooks/register.ts), with its
-    // latest call in flight; then background shell tasks. A background agent's task row merges into its named row
-    // (which opens its log). Agent calls with no named agent (from before the plugin loaded) keep a plain row.
-    const named = Object.entries(act?.agents ?? {}).filter(([, g]) => !g.endedAt);
-    const calls = (act?.running ?? []).filter(isSubagentCall);
-    const inside = (id) => (act?.running ?? []).filter((c) => c.agent === id).at(-1);
-    const unnamed = calls.slice(named.filter(([, g]) => !g.background).length);
-    const loose = (act?.running ?? []).filter((c) => c.agent && !act.agents?.[c.agent]).at(-1);
-    const kids = [
-      ...named.map(([id, g]) => {
-        const doing = inside(id), task = tasks.find((t) => t.id === id);
-        return { mark: fg(g.colour, '◆'), name: g.name, colour: g.colour, what: clean(g.what) + (doing ? ` · ${doing.tool} ${clean(rel(doing.arg))}` : ''),
-          at: g.since, id: task ? item(`task:${task.id}`, () => viewLog(task)) : undefined };
-      }),
-      ...unnamed.map((c) => ({ mark: fg(C.accent, '◆'), what: clean(c.arg) + (unnamed.length === 1 && loose ? ` · ${loose.tool} ${clean(rel(loose.arg))}` : ''), at: c.since })),
-      ...tasks.filter((t) => !named.some(([id]) => id === t.id)).map((t) => ({ mark: fg(C.accent, t.kind === 'agent' ? '◆' : '◇'), what: t.label, at: t.startedAt, id: item(`task:${t.id}`, () => viewLog(t)) })),
-    ];
-    kids.forEach((k, i) => actor(dim(i === kids.length - 1 ? '  └' : '  ├') + ' ' + k.mark, k.name ?? '', k.what, k.at, { id: k.id, colour: k.colour }));
-    if (act?.desk) actor(spin(true), 'Desk', act.desk.kind ?? 'running', act.desk.startedAt);
-    // The gate's refusal, while it's recent.
-    if (src.gateHeld(act)) actor(fg(C.yellow, '⧗'), 'Gate', `held ${act.gate.tool} ${clean(rel(act.gate.file))}`, act.gate.at);
-  }
-  rule();
-
-  // Just now: the last finished calls, and the session's finished background tasks
-  const recent = (act?.recent ?? []).slice(0, 5);
-  const compacted = act?.compacted && Date.now() - act.compacted.at < 3600_000 ? act.compacted : null;
-  if (recent.length || finished || compacted) {
-    heading('Just now');
-    if (compacted) {
-      const right = ago(compacted.at), l = trunc(`⟲ compacted after ${clean(compacted.after)}`, inner - width(right) - 1);
-      line(fg(C.accent, l) + ' '.repeat(Math.max(1, inner - width(l) - width(right))) + dim(right));
-    }
-    const relp = (p) => (p && p.startsWith(cwd + '/') ? p.slice(cwd.length + 1) : p ?? '');
-    for (const r of recent) {
-      // A subagent's call starts with its name, in its colour.
-      const who = r.agent && act.agents?.[r.agent], name = who ? `${who.name} ` : '';
-      const right = ago(r.at), l = trunc(`${r.ok ? '✔' : '✗'} ${name}${r.tool} ${clean(relp(r.arg))}`, inner - width(right) - 1);
-      const rest = l.slice(2 + name.length), shown = l.slice(2, 2 + name.length);
-      line(fg(r.ok ? C.green : C.red, l[0]) + ' ' + (shown ? fg(who.colour, shown) : '') + dim(rest) + ' '.repeat(Math.max(1, inner - width(l) - width(right))) + dim(right));
-    }
-    if (finished) line(dim(`◇ ${finished} background task${finished === 1 ? '' : 's'} finished`), item('finished', finishedMenu));
-    rule();
-  }
-
   return { rows, items };
 }
 
@@ -679,6 +661,18 @@ function buildOverlay(W, bodyH) {
       const l = trunc(opt.label, inner - (hint ? width(hint) + 1 : 0));
       line(l + ' '.repeat(Math.max(hint ? 1 : 0, inner - width(l) - width(hint))) + dim(hint), id);
     });
+    return { rows, items };
+  }
+  if (o.kind === 'text') {
+    line(bold(trunc(clean(o.title || 'Text'), inner)));
+    line(dim('─'.repeat(inner)));
+    const body = wrap(clean(o.body || ''), inner);
+    while (body.length && !body[body.length - 1].trim()) body.pop();
+    const room = bodyH - rows.length;
+    o.scroll = Math.max(0, Math.min(o.scroll, Math.max(0, body.length - room)));
+    const end = body.length - o.scroll;
+    for (const l of body.slice(Math.max(0, end - room), end)) line(l);
+    o.maxScroll = Math.max(0, body.length - room);
     return { rows, items };
   }
   // log viewer: newest output at the bottom, live
@@ -793,7 +787,7 @@ if (args.includes('--frame')) {
     const agents = {}, running = [...a.running], recent = [...a.recent];
     for (let i = 0; i < sampleAgents; i++) {
       const [what, tool, arg] = jobs[i % jobs.length], id = `sample${i}`;
-      agents[id] = { name: NAMES[(i * 37) % NAMES.length], colour: COLOURS[i % COLOURS.length], what, since: t - (i + 1) * 9000, background: false };
+      agents[id] = { name: NAMES[(i * 37) % NAMES.length], colour: COLOURS[i % COLOURS.length], what, since: t - (i + 1) * 9000, background: false, prompt: `Look at ${arg} and say what it changes for the session.` };
       running.push({ id: `c${i}`, tool: 'Agent', arg: what, since: agents[id].since }, { id: `d${i}`, tool, arg, since: t - 2000, agent: id });
     }
     recent.unshift({ tool: 'Grep', arg: 'agent.spawn', ok: true, at: t - 3000, ms: 40, agent: 'sample0' });
@@ -869,7 +863,7 @@ if (pinnedPid) {
 }
 
 const move = (d) => {
-  if (ui.overlay?.kind === 'log') { ui.overlay.scroll = Math.max(0, Math.min(ui.overlay.maxScroll ?? 0, ui.overlay.scroll - d * 3)); return; }
+  if (ui.overlay?.kind === 'log' || ui.overlay?.kind === 'text') { ui.overlay.scroll = Math.max(0, Math.min(ui.overlay.maxScroll ?? 0, ui.overlay.scroll - d * 3)); return; }
   const ids = current.items.map((i) => i.id);
   const at = ids.indexOf(ui.sel);
   ui.sel = ids[Math.max(0, Math.min(ids.length - 1, (at < 0 ? 0 : at) + d))] ?? null;
@@ -887,7 +881,7 @@ const handleKey = (k) => {
   if (ui.input) return typeKey(k);
   if (ui.overlay) {
     if (k === '\x1b' || k === 'q' || k === '\x1b[D' || k === 'h') return closeOverlay();
-    if (ui.overlay.kind === 'log') {
+    if (ui.overlay.kind === 'log' || ui.overlay.kind === 'text') {
       if (k === 'g') ui.overlay.scroll = ui.overlay.maxScroll ?? 0;
       if (k === 'G') ui.overlay.scroll = 0;
     }

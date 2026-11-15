@@ -12,6 +12,12 @@ test('stage and progress follow the brief', () => {
   assert.equal(stageFor(brief('approved', [chunk(true), chunk(false)])), 2);
   assert.equal(stageFor(brief('changed', [chunk(true), chunk(true)])), 3);
   assert.equal(progressFor(null), null);
+  assert.equal(stageFor(null, 3), 0);
+  assert.equal(stageFor(null, 12), 1);
+  assert.equal(stageFor(null, 33), 2);
+  assert.equal(stageFor(brief('ready', [chunk(false)]), 90), 0);
+  assert.equal(progressFor(null, 33), 0.33);
+  assert.equal(progressFor(brief('ready', [chunk(false)]), 90), 0);
   assert.equal(progressFor(brief('ready', [chunk(false)])), 0);
   assert.equal(progressFor(brief('approved', [chunk(true), chunk(false)])), 0.5);
   assert.deepEqual(doneFor(brief('approved', [chunk(true), chunk(false), chunk(true)])), { done: 2, total: 3 });

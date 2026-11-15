@@ -5,6 +5,7 @@ import { hostname, homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { parseBrief, briefStatus, NO_BRIEF_BRANCHES } from './brief.mjs';
 import { buildTree, reviewLineFrom } from './branchmap.mjs';
+import { eventsFromRecord, keep, splitAsk } from './sessionstory.mjs';
 
 const HOME = homedir();
 const CLAUDE = join(HOME, '.claude');
@@ -139,6 +140,10 @@ async function branchStore(cwd) {
   return { branch, file: (kind, ext) => join(common, 'session-rail', kind, `${encodeURIComponent(branch)}.${ext}`) };
 }
 export async function reviewsPath(cwd) { return (await branchStore(cwd))?.file('reviews', 'json') ?? null; }
+/** The checked-out branch, or null outside a repo. `main` and `detached` are names readBrief returns nothing for. */
+export async function checkoutBranch(cwd) {
+  try { return (await branchStore(cwd))?.branch ?? null; } catch { return null; }
+}
 
 // ── Activity: what the session is doing right now (written by hooks/activity.ts and the desk) ─
 // null when the session has no feed yet (its hooks haven't loaded this plugin version). The desk's review
@@ -150,7 +155,105 @@ export async function activity(sessionId) {
   const review = desk?.review && desk.pid && alive(desk.pid) ? desk.review : null;
   if (!feed?.claude) return review ? { claude: null, running: [], recent: [], desk: review } : null;
   return { claude: feed.claude, running: feed.running ?? [], recent: feed.recent ?? [], gate: feed.gate ?? null, compacted: feed.compacted ?? null,
-    agents: feed.agents ?? {}, tasks: feed.tasks ?? [], desk: review };
+    agents: feed.agents ?? {}, turns: feed.turns ?? [], tasks: feed.tasks ?? [], desk: review };
+}
+
+// The session's own transcript: what the person asked, the prompt each handoff carried, and what came back.
+// Cached on the file's size and mtime. A missing store is an empty story, never a throw.
+const chronicleCache = new Map();
+const replyFromOutput = (raw) => {
+  if (!raw) return '';
+  try { return String(JSON.parse(raw).output || ''); } catch { /* a capped read can split the JSON */ }
+  const m = /"output"\s*:\s*"/.exec(raw);
+  if (!m) return '';
+  return raw.slice(m.index + m[0].length).replace(/\\n/g, '\n').replace(/\\t/g, ' ').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+};
+async function readHead(path, max = 8000) {
+  let fh;
+  try {
+    fh = await open(path, 'r');
+    const buf = Buffer.alloc(max);
+    const { bytesRead } = await fh.read(buf, 0, max, 0);
+    return buf.toString('utf8', 0, bytesRead);
+  } catch { return ''; } finally { if (fh) await fh.close(); }
+}
+async function readTail(path, max = 12_000_000) {
+  let fh;
+  try {
+    const st = await stat(path);
+    fh = await open(path, 'r');
+    const start = Math.max(0, st.size - max);
+    const buf = Buffer.alloc(st.size - start);
+    await fh.read(buf, 0, buf.length, start);
+    let text = buf.toString('utf8');
+    if (start > 0) text = text.slice(text.indexOf('\n') + 1);
+    return { text, sig: `${st.mtimeMs}:${st.size}` };
+  } catch { return { text: '', sig: '0' }; } finally { if (fh) await fh.close(); }
+}
+function eventsFromText(text) {
+  const events = [];
+  for (const line of text.split('\n')) {
+    const head = line.slice(0, 96);
+    if (!head.includes('"type":"user"') && !head.includes('"type":"assistant"') && !head.includes('"role":"user"') && !head.includes('"role":"assistant"')) continue;
+    try { events.push(...eventsFromRecord(JSON.parse(line))); } catch { /* a torn line at the cut */ }
+  }
+  return events.length > 80 ? events.slice(-80) : events;
+}
+async function grokCast(sessionDir) {
+  const agents = [];
+  const seen = new Set();
+  const walk = async (dir, parent, depth) => {
+    if (depth > 4 || !dir || seen.has(dir)) return;
+    seen.add(dir);
+    let names = [];
+    try { names = await readdir(join(dir, 'subagents')); } catch { return; }
+    for (const id of names) {
+      if (agents.length >= 40) return;
+      const meta = await readJson(join(dir, 'subagents', id, 'meta.json'));
+      if (!meta) continue;
+      const ask = splitAsk(meta.description);
+      const sid = String(meta.subagent_id || id);
+      agents.push({
+        id: sid, name: ask.name, what: ask.what, prompt: keep(meta.prompt, 1500),
+        reply: keep(replyFromOutput(await readHead(join(dir, 'subagents', id, 'output.json'))), 800),
+        parent: parent || null, since: Date.parse(meta.started_at) || 0,
+        ...(meta.completed_at || meta.status === 'completed' ? { endedAt: Date.parse(meta.completed_at) || 1 } : {}),
+        background: true,
+      });
+      await walk(join(dirname(dir), meta.child_session_id || id), sid, depth + 1);
+    }
+  };
+  await walk(sessionDir, null, 0);
+  return agents;
+}
+export async function chronicle(session) {
+  try {
+    if (!session?.sessionId || !session.cwd) return { agents: [], events: [] };
+    if (session.host === 'grok') {
+      const dir = await grokSessionDir(session.cwd, session.sessionId);
+      if (!dir) return { agents: [], events: [] };
+      const chat = join(dir, 'chat_history.jsonl');
+      const [chatSt, sub] = await Promise.all([stat(chat).catch(() => null), stat(join(dir, 'subagents')).catch(() => null)]);
+      const sig = `${dir}:${chatSt?.mtimeMs || 0}:${chatSt?.size || 0}:${sub?.mtimeMs || 0}`;
+      const hit = chronicleCache.get(session.sessionId);
+      // The live feed covers this second. The transcript is the history, so a busy chat is reread at most every 8s.
+      if (hit && (hit.sig === sig || Date.now() - hit.at < 8_000)) return hit.value;
+      const tail = await readTail(chat);
+      const value = { agents: await grokCast(dir), events: eventsFromText(tail.text) };
+      chronicleCache.set(session.sessionId, { sig, value, at: Date.now() });
+      return value;
+    }
+    const files = await sessionFiles(session);
+    if (!files.transcriptPath) return { agents: [], events: [] };
+    const st = await stat(files.transcriptPath).catch(() => null);
+    const sig = `${files.transcriptPath}:${st?.mtimeMs || 0}:${st?.size || 0}`;
+    const hit = chronicleCache.get(session.sessionId);
+    if (hit && (hit.sig === sig || Date.now() - hit.at < 8_000)) return hit.value;
+    const tail = await readTail(files.transcriptPath);
+    const value = { agents: [], events: eventsFromText(tail.text) };
+    chronicleCache.set(session.sessionId, { sig, value, at: Date.now() });
+    return value;
+  } catch { return { agents: [], events: [] }; }
 }
 
 // ── Brief: the branch's goal, design and engineering chunks (see brief.mjs) ───
