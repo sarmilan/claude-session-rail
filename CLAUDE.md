@@ -1,10 +1,10 @@
-# claude-session-rail: dev notes
+# Workbench: dev notes
 
 ## The plan
 
 The branch brief is the plan. Write it before any other edit, and the person approves it in the desk's Plan tab. The desk reads the folder the session was started in. A session started outside a repo has no brief, and a brief written in some other folder does not appear on that desk. Say the plan is in the Plan tab only after a frame of this session's desk shows the brief (`desk.mjs --frame 72 24 --tab plan` with this session's cwd, host and session id). A newer `plan.md` replaces the brief on that tab and has no Approve button, so do not write one in its place.
 
-A Claude Code plugin (repo root = plugin = marketplace) that opens a Claude-desktop-style session rail as an iTerm2 split. See README.md for behavior and architecture.
+Workbench is the rail and the desk beside Claude or Grok, opened as an iTerm2 split (repo root = plugin = marketplace). See README.md for behavior and architecture.
 
 ## Layout
 - `bin/rail.mjs`: the terminal UI, with Session and Git tabs (modes: interactive, `--json`, `--frame W H [--tab session|git] [--activate a,b] [--open-context] [--agents N]`)
@@ -48,6 +48,6 @@ node bin/desk.mjs --frame 80 40 --tab diff
 Type-check with a tsconfig that includes the engine's `claude-code.d.ts` and `hooks/` (see the header of that file).
 
 ## Local dev install
-`claude plugin marketplace add <this folder>` then `claude plugin install session-rail@claude-session-rail`. The plugin is read from this folder, so `/reload-plugins` picks up edits.
+`claude plugin marketplace add <this folder>` then `claude plugin install session-rail@workbench`. The plugin is read from this folder, so `/reload-plugins` picks up edits.
 
 Grok reads the same folder. `hooks/hooks.json` keeps the Claude module and adds command hooks that `bin/grok-hook.mjs` ignores unless the process is an interactive `grok`. Install with `grok plugin marketplace add <this folder>` then `grok plugin install <this folder> --trust`, and start a new `grok` in iTerm2. That install copies the folder. Refresh it with `grok plugin uninstall session-rail --confirm` and the install again.

@@ -1,6 +1,6 @@
-# claude-session-rail
+# Workbench
 
-Side panels for Claude Code in iTerm2, like the ones in the Claude desktop app.
+The rail and the desk beside Claude or Grok in iTerm2.
 
 When you start `claude`, two panes open on the right:
 
@@ -221,7 +221,7 @@ The gate only covers commands Claude runs, so you can always merge yourself. A `
 In Claude Code, run:
 
 ```
-/plugin install session-rail --marketplace sarmilan/claude-session-rail
+/plugin install session-rail --marketplace sarmilan/workbench
 ```
 
 Say `y` to add the marketplace. Start a new `claude` session in iTerm2 and the desk and the rail open on the right.

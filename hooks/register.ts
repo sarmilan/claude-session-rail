@@ -401,7 +401,7 @@ const message = (state: string, panel: Panel) => {
 }
 
 const COMMANDS = [
-  { name: 'rail', description: 'Open or close the session rail beside this pane' },
+  { name: 'rail', description: 'Open or close the rail beside this pane' },
   { name: 'desk', description: 'Open or close the desk (plan, diff and code review) beside this pane' },
   { name: 'approve-brief', description: "Approve this branch's session brief, so Claude can edit code" },
 ]
