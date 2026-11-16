@@ -2,6 +2,18 @@
 // prompt (hooks/register.ts). Grok has no prompt.compose hook, so the Grok hook writes this file and
 // attaches it to the first tool call of each turn (and again after a compaction).
 
+/** What to tell the agent when this session was not started inside a git repo. */
+export function outsideRepoNote(cwd) {
+  const folder = cwd || 'this folder';
+  return `session-rail: No brief for ${folder}. It is not a git repo. This session's desk reads only that folder, so a brief written in a project inside it does not show on the Plan tab. Start the session in the repo, write the brief there, then render this session's desk (desk.mjs --frame 72 24 --tab plan, with this session's cwd, host and session id) and read the frame before saying the plan is in the Plan tab.`;
+}
+
+/** The Plan tab's own line for that same case. The folder is already shortened for the pane. */
+export function deskOutsideNote(folder) {
+  const where = folder || 'this folder';
+  return `No brief here. This session is in ${where}, which is not a git repo. The Plan tab shows the brief of the repo the session was started in.`;
+}
+
 const SHAPE = `# <title>
 ## Problem
 Currently <A>; we need <B> to solve <A>.
@@ -21,7 +33,7 @@ export function briefInstructions(b, reviewer) {
   const review = reviewer || 'node <plugin>/bin/reviewer.mjs --run';
   return `Session brief (session-rail). This branch, ${b.branch}, keeps a session brief at ${b.path}. It's a local file inside .git, never committed. It's what the session sets out to do and what the work is checked against at the end.
 
-Work the brief out with the person before editing any code. Don't wait to be asked: as soon as the discussion makes the problem and the solution clear, tell the person it's scoped out and write the brief, then summarise it for them in a few lines and say it's in the desk's Plan tab. Keep filling it in as the discussion goes on (design, mockups, engineering chunks). Write it in this shape:
+Work the brief out with the person before editing any code. Don't wait to be asked: as soon as the discussion makes the problem and the solution clear, tell the person it's scoped out and write the brief, then summarise it in a few lines. This brief shows on the desk's Plan tab only when the session was started in this repo. Render this session's desk and read the frame before you say the plan is there: desk.mjs --frame 72 24 --tab plan, with this session's --cwd, --host and --session. If that frame does not show this brief, say what it shows. A plan.md from plan mode is a different file. When it is newer than the brief, the Plan tab shows that file and has no Approve button, so do not write one in place of the brief. Keep filling it in as the discussion goes on (design, mockups, engineering chunks). Write it in this shape:
 
 ${SHAPE}
 

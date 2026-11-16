@@ -18,6 +18,7 @@ import { reviewAndSave, loadReviews } from './reviewer.mjs';
 import { ESC, fg, dim, bold, C, bg, bgOpen, charWidth, width, trunc, clean, tabBar, usePalette, paneBgOn, paneBgOff } from './term.mjs';
 import { applySaved } from './fontsize.mjs';
 import { approvalRecord, mainCheckoutNote, NO_BRIEF_BRANCHES } from './brief.mjs';
+import { deskOutsideNote } from './brief-instructions.mjs';
 import { notePlan, planChoice } from './planview.mjs';
 import { codeFindings, runType } from './cadence.mjs';
 import { writeFile, mkdir } from 'node:fs/promises';
@@ -182,7 +183,7 @@ function wrapRuns(rs, w, first = '', rest = first) {
 }
 // With no plan yet, Plan shows what landed lately: merged PRs (title, first line of the body), then commits.
 function recentLines(w) {
-  const out = [dim('No plan yet: plan mode output shows up here.')];
+  const out = [];
   const { base, prs = [], commits = [] } = data.recent ?? {};
   // A tag (PR number, commit hash) and a title, cut to fit before styling, with the age on the right.
   const row = (tag, style, text, right) => {
@@ -222,7 +223,10 @@ function planLines(w) {
   const held = !b && NO_BRIEF_BRANCHES.includes(data.checkout)
     ? [...wrapRuns(runs(mainCheckoutNote(data.checkout).replace(/^session-rail:\s*/, '')), w).map((line) => dim(line)), '']
     : [];
-  const note = [...held, ...(b ? [dim(trunc(`No brief for ${clean(b.branch)} yet: ${agentName()} writes one before editing code.`, w)), ''] : []), ...todoLines(w)];
+  const outside = !b && data.checkout == null
+    ? [...wrapRuns(runs(deskOutsideNote(src.tildify(cwd))), w).map((line) => dim(line)), '']
+    : [];
+  const note = [...held, ...outside, ...(b ? [dim(trunc(`No brief for ${clean(b.branch)} yet: ${agentName()} writes one before editing code.`, w)), ''] : []), ...todoLines(w)];
   return [...note, ...recentLines(w)];
 }
 // Todo issues from the repo's project board, first thing at the start of a session.

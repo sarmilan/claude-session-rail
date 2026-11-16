@@ -3,7 +3,8 @@ import test from 'node:test';
 import { callFinished, callStarted, fresh, heard, noteReply, replied, trackTasks, turnEnded, turnStarted } from '../bin/activity.mjs';
 import { attentionFor } from '../bin/mascot.mjs';
 import { checkoutName, inWorkTree, mainCheckoutNote } from '../bin/brief.mjs';
-import { armTurn, editReason, slashCommand, takeProcedure } from '../bin/grok-hook.mjs';
+import { armTurn, editReason, procedure, slashCommand, takeProcedure } from '../bin/grok-hook.mjs';
+import { briefInstructions, deskOutsideNote, outsideRepoNote } from '../bin/brief-instructions.mjs';
 import { C, fg, paneBgOff, paneBgOn, usePalette } from '../bin/term.mjs';
 import { connectorsFrom, contextFrom, eventsFromText, rowFromActive, usageFromBilling } from '../bin/sources.mjs';
 import { reviewPayload } from '../bin/reviewer.mjs';
@@ -68,6 +69,28 @@ test('on main a repo edit is refused and names the branch and the brief', () => 
   assert.match(mainCheckoutNote('detached'), /detached HEAD/);
   assert.match(editReason(brief, '/repo/a.js'), /wait for the session brief/);
   assert.equal(editReason({ ...brief, approval: { approvedAt: 1 } }, '/repo/a.js'), null);
+});
+
+test('outside a repo the agent is told the desk cannot see a brief in another folder', () => {
+  const state = {};
+  const text = procedure('/not-a-repo', state);
+  assert.match(text, /not a git repo/);
+  assert.match(text, /\/not-a-repo/);
+  assert.match(text, /Plan tab/);
+  assert.match(text, /desk\.mjs --frame 72 24 --tab plan/);
+  assert.equal(text, outsideRepoNote('/not-a-repo'));
+  assert.equal(procedure('/not-a-repo', state), null);
+  assert.match(deskOutsideNote('~/workspace'), /not a git repo/);
+  assert.match(deskOutsideNote('~/workspace'), /started in/);
+});
+
+test('the brief procedure waits for this session desk frame', () => {
+  const text = briefInstructions({ branch: 'feature/x', path: '/repo/.git/session-rail/briefs/x.md' });
+  assert.match(text, /Don't wait to be asked/);
+  assert.match(text, /desk\.mjs --frame 72 24 --tab plan/);
+  assert.match(text, /If that frame does not show this brief/);
+  assert.match(text, /do not write one in place of the brief/);
+  assert.equal(text.includes("say it's in the desk's Plan tab"), false);
 });
 
 test('a second user prompt hears the procedure again', () => {
