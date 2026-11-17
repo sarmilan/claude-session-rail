@@ -5,6 +5,7 @@ import { goAhead } from './goahead.ts'
 import * as compact from './compact.ts'
 import { pickColour, pickName } from '../bin/names.mjs'
 import { keep } from '../bin/sessionstory.mjs'
+import { nextCache } from '../bin/cache.mjs'
 import { codeRun, gateReason as reviewWait, keptRuns, mergesPr, reportFromText, reviewsFile } from '../bin/cadence.mjs'
 
 // The controller (bin/pane.mjs) does the iTerm work; this module only decides when to call it.
@@ -476,6 +477,19 @@ export const register: Register = on => {
     else record($, a => act.noteReply(act.agentEnded(a, e.agentId!, Date.now()), e.agentId!, answer, Date.now()))
     if (!e.isAborted) await finishCodeReview($, e.answer).catch(() => {})
     return next(e)
+  })
+  // The prompt cache (bin/cache.mjs): each main-loop request renews it from its start, for the lifetime its
+  // write reports. Rate limits come only on a plan; after the first response there is a reading to go by, and
+  // the account doesn't change mid-session, so it's read once.
+  on('turn.step', async function* ($, e, next) {
+    if (e.agentId !== undefined) return yield* next(e)
+    const at = Date.now()
+    const r = yield* next(e)
+    if (r?.usage) {
+      const plan = activity.cache?.plan ?? Boolean((await $.session.usage().catch(() => null))?.rateLimits?.length)
+      record($, a => act.cached(a, nextCache(a.cache, r.usage, at, plan), Date.now()))
+    }
+    return r
   })
   on('turn.abort', ($, e, next) => {
     const agentId = (e as { agentId?: string }).agentId // its type names no agentId yet

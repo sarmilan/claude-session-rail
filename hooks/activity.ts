@@ -26,6 +26,9 @@ export type Activity = {
   turns?: Turn[]
   // The plugin's latest compaction of the session, after the branch it finished.
   compacted?: { at: number; after: string }
+  // The main conversation's prompt cache (bin/cache.mjs): when a request last renewed it, its lifetime, whether
+  // the account is on a plan, and the prompt it holds in tokens.
+  cache?: { at: number; ttl: '5m' | '1h'; plan: boolean; tokens: number }
 }
 
 const RECENT = 8
@@ -74,6 +77,9 @@ export function callFinished(a: Activity, id: string, ok: boolean, now: number):
 }
 export function compacted(a: Activity, after: string, now: number): Activity {
   return { ...a, updatedAt: now, compacted: { at: now, after } }
+}
+export function cached(a: Activity, cache: Activity['cache'], now: number): Activity {
+  return cache === a.cache ? a : { ...a, updatedAt: now, cache }
 }
 export function refused(a: Activity, tool: string, file: string, now: number): Activity {
   return { ...a, updatedAt: now, gate: { at: now, tool, file } }

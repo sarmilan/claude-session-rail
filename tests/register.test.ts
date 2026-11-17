@@ -4,6 +4,7 @@ import * as compact from '../hooks/compact.ts'
 import * as cadence from '../bin/cadence.mjs'
 import * as names from '../bin/names.mjs'
 import * as act from '../hooks/activity.ts'
+import * as cache from '../bin/cache.mjs'
 
 const cadenceRed = 167 // the rail's failure colour (C.red in bin/term.mjs)
 
@@ -670,4 +671,45 @@ test('commits go through; gh pr merge waits for the final reviews; without the t
   const r = (await $.tool.call({ tool: 'Bash', command: 'gh pr merge 25 --merge' } as never)) as { deny?: string }
   expect(r.deny).toContain('merge after a final review of the whole branch')
   expect(ran.filter(c => c.startsWith('gh pr merge')).length).toBe(1)
+})
+
+// ── The prompt cache (bin/cache.mjs) ──────────────────────────────────────────
+test('cache: the write sets the lifetime, a read renews it, and the view counts down to cold', () => {
+  expect(cache.ttlFromUsage({ ephemeral_1h_input_tokens: 900, ephemeral_5m_input_tokens: 0 })).toBe('1h')
+  expect(cache.ttlFromUsage({ ephemeral_1h_input_tokens: 10, ephemeral_5m_input_tokens: 800 })).toBe('5m')
+  expect(cache.ttlFromUsage({ input_tokens: 5 })).toBe(null)
+  const u = { input_tokens: 10, cache_read_input_tokens: 90_000, cache_creation_input_tokens: 500, ephemeral_1h_input_tokens: 500 }
+  const c = cache.nextCache(undefined, u, 1000, true)
+  expect(c).toEqual({ at: 1000, ttl: '1h', plan: true, tokens: 90_510 })
+  // A read alone keeps the lifetime and moves the clock; no read and no write leaves it.
+  expect(cache.nextCache(c, { input_tokens: 1, cache_read_input_tokens: 90_000 }, 5000, true)).toMatchObject({ at: 5000, ttl: '1h' })
+  expect(cache.nextCache(c, { input_tokens: 1 }, 5000, true)).toBe(c)
+  expect(cache.nextCache(undefined, { input_tokens: 1, cache_read_input_tokens: 9 }, 5000, false)).toBe(undefined)
+  // The view: warm, the last stretch, then cold, with the account's label.
+  expect(cache.cacheView(c, 1000 + 18 * 60_000)).toMatchObject({ state: 'warm', worth: true, text: 'plan · 1h · warm 42m left' })
+  expect(cache.cacheView(c, 1000 + 55 * 60_000)?.state).toBe('low')
+  expect(cache.cacheView(c, 1000 + 72 * 60_000)).toMatchObject({ state: 'cold', text: 'plan · 1h · cold 12m' })
+  const api = { at: 0, ttl: '5m' as const, plan: false, tokens: 20_000 }
+  expect(cache.cacheView(api, 4.5 * 60_000)).toMatchObject({ state: 'low', worth: false, text: 'API · 5m · warm 30s left' })
+  expect(cache.cacheView(undefined, 0)).toBe(null)
+})
+
+test('a main-loop request records the cache, its lifetime and plan; a subagent request does not', async ($, on) => {
+  const { files } = withActivity(on)
+  const usage = { model: 'm', input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 60_000, cache_creation_input_tokens: 400, ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 400 }
+  let agentUsage = usage
+  on('turn.step', async function* (_, e) {
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: e.agentId ? agentUsage : usage } as never
+  })
+  on('session.usage', () => ({ value: { startedAt: 0, context: {}, rateLimits: [{ kind: 'five_hour', percentUsed: 2 }] } as never }))
+  const step = async (agentId?: string) => {
+    for await (const _ of $.turn.step({ turnId: 't1', index: 0, agentId, model: 'm', messageCount: 1 } as never)) void _
+  }
+  agentUsage = { ...usage, ephemeral_1h_input_tokens: 0, ephemeral_5m_input_tokens: 400 }
+  await step('a1')
+  expect((await activityOf(files))?.cache).toBe(undefined)
+  await step()
+  const a = await activityOf(files)
+  expect(a.cache).toMatchObject({ ttl: '1h', plan: true, tokens: 60_410 })
+  expect(typeof a.cache.at).toBe('number')
 })

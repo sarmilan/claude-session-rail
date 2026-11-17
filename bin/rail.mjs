@@ -15,6 +15,7 @@ import { buildStory, layoutStory } from './sessionstory.mjs';
 import { ESC, fg, dim, bold, C, bgOpen, charWidth, width, trunc, wrap, clean, tabBar, usePalette, paneBgOn, paneBgOff } from './term.mjs';
 import { createMascot, creatureNames, stageFor, progressFor, doneFor, attentionFor, visitorsFor, droopFor, flinchAt } from './mascot.mjs';
 import { isApproved } from './brief.mjs';
+import { cacheView } from './cache.mjs';
 import { NAMES, COLOURS } from './names.mjs';
 import * as fontsize from './fontsize.mjs';
 
@@ -612,7 +613,7 @@ function buildMain(W) {
       kv('Tokens', `${tokens(st.contextTokens)} / ${tokens(st.contextSize)}`);
       if (st.costUsd != null) kv('Cost', `$${st.costUsd.toFixed(2)}${st.apiMs ? ` · API ${Math.round(st.apiMs / 60000)}m` : ''}`);
       if (st.linesAdded != null) kv('Lines', `+${st.linesAdded} −${st.linesRemoved ?? 0}`);
-      if (st.cacheWarm != null) kv('Cache', `${st.cacheWarm ? 'warm' : 'cold'}${st.cacheHit != null ? ` · ${Math.round(st.cacheHit * 100)}% hits` : ''}`);
+      kv('Cache', cacheView(data.activity?.cache, Date.now())?.text ?? '—'); // Claude's hooks record it; Grok has none
     }
     // Account-wide, so shown even before this session has a transcript.
     for (const l of data.usage) {
