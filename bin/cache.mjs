@@ -36,7 +36,7 @@ export function nextCache(prev, usage, at, plan) {
 const ago = (ms) => (ms < 60_000 ? `${Math.max(1, Math.round(ms / 1000))}s` : `${Math.round(ms / 60_000)}m`);
 
 /**
- * What the rail shows: `{ state: 'warm'|'low'|'cold', leftMs, worth, text }`, or null before the first request.
+ * What the rail shows: `{ state: 'warm'|'low'|'cold', leftMs, worth, compacted, text }`, or null before the first request.
  * `worth` says the context is big enough that the cache going cold matters (the pet only reacts then).
  */
 export function cacheView(cache, now) {
@@ -44,6 +44,8 @@ export function cacheView(cache, now) {
   const leftMs = cache.at + TTL_MS[cache.ttl] - now;
   const state = leftMs <= 0 ? 'cold' : leftMs <= LOW_MS[cache.ttl] ? 'low' : 'warm';
   const head = `${cache.plan ? 'plan' : 'API'} · ${cache.ttl}`;
+  // Compacted since its last request: what's left is a short summary, so the cache going cold no longer matters.
+  if (cache.compactedAt >= cache.at) return { state, leftMs, worth: false, compacted: true, text: `${head} · compacted warm ${ago(now - cache.compactedAt)} ago` };
   const tail = state === 'cold' ? `cold ${ago(-leftMs)}` : `warm ${ago(leftMs)} left`;
-  return { state, leftMs, worth: (cache.tokens ?? 0) >= WORTH_TOKENS, text: `${head} · ${tail}` };
+  return { state, leftMs, worth: (cache.tokens ?? 0) >= WORTH_TOKENS, compacted: false, text: `${head} · ${tail}` };
 }

@@ -486,7 +486,7 @@ export function layoutStory(story, { inner = 40, open = {} } = {}) {
   if (story.chapters.length || story.compacted) {
     if (story.compacted) {
       push(rows, inner, {
-        left: [part(`⟲ compacted after ${show(story.compacted.after)}`, 'accent')],
+        left: [part(story.compacted.after === 'cache' ? '⟲ compacted before the cache went cold' : `⟲ compacted after ${show(story.compacted.after)}`, 'accent')],
         right: [part(ago(story.compacted.at, now), 'dim')],
       });
     }

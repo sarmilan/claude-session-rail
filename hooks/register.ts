@@ -311,12 +311,14 @@ const merged = async ($: EngineInterface, cwd: string, branch: string) => {
   }
   return false
 }
-const autoCompactOn = async ($: EngineInterface) => {
+// The rail's settings: each compaction is on unless settings.json turns it off.
+const compactSettings = async ($: EngineInterface) => {
   try {
     const home = await $.env.get('HOME')
-    return (JSON.parse(String(await $.fs.read(`${home}/.claude/session-rail/settings.json`))) as { autoCompact?: boolean }).autoCompact !== false
+    const s = JSON.parse(String(await $.fs.read(`${home}/.claude/session-rail/settings.json`))) as { autoCompact?: boolean; warmCompact?: boolean }
+    return { autoCompact: s.autoCompact !== false, warmCompact: s.warmCompact !== false }
   } catch {
-    return true
+    return { autoCompact: true, warmCompact: true }
   }
 }
 let compactTries = 0
@@ -336,7 +338,7 @@ const checkBoundary = async ($: EngineInterface) => {
     compactTries = 0
     return $.state.set(COMPACT_AFTER, null)
   }
-  if (!(await autoCompactOn($)) || !compact.finished(brief) || !(await merged($, head.cwd, after))) return drop()
+  if (!(await compactSettings($)).autoCompact || !compact.finished(brief) || !(await merged($, head.cwd, after))) return drop()
   try {
     const r = await $.session.compact({ instructions: compact.instructions(after, head.branch) })
     await drop()
@@ -346,7 +348,29 @@ const checkBoundary = async ($: EngineInterface) => {
   }
 }
 
-// One poll for both, never overlapping (a compaction takes a while): the go-ahead, then the boundary.
+// The warm compact: a big session left waiting is compacted in its cache's last stretch, so coming back after
+// the cache's lifetime costs a summary, not a rebuild of the whole history. At most 3 tries per request (each
+// is a model call); a veto stops it, and the next request starts it over.
+let warmFor = 0
+let warmTries = 0
+const checkWarm = async ($: EngineInterface) => {
+  const c = activity.cache
+  if (!c || (warmFor === c.at && warmTries >= 3)) return
+  const waiting = activity.claude.state === 'waiting' && !activity.running.some(r => !r.agent)
+  if (!compact.warmCompactDue({ cache: c, waiting, now: await $.clock.now() }) || !(await compactSettings($)).warmCompact) return
+  if (warmFor !== c.at) [warmFor, warmTries] = [c.at, 0]
+  warmTries++
+  try {
+    const r = await $.session.compact({ instructions: compact.warmInstructions((await gitHead($))?.branch ?? 'the current branch') })
+    if ('skip' in r) warmTries = 3
+    else {
+      const at = await $.clock.now()
+      record($, a => act.compacted(a, compact.WARM, at))
+    }
+  } catch {} // a turn started: the next poll sees a new request, or tries again
+}
+
+// One poll for all three, never overlapping (a compaction takes a while): the go-ahead, the boundary, the cache.
 let poller: { cancel: () => void } | null = null
 let pollBusy = false
 const pollOnce = async ($: EngineInterface) => {
@@ -354,6 +378,7 @@ const pollOnce = async ($: EngineInterface) => {
   pollBusy = true
   await checkApproval($).catch(() => {})
   await checkBoundary($).catch(() => {})
+  await checkWarm($).catch(() => {})
   pollBusy = false
 }
 const watch = ($: EngineInterface) => {
@@ -483,7 +508,7 @@ export const register: Register = on => {
   // the account doesn't change mid-session, so it's read once.
   on('turn.step', async function* ($, e, next) {
     if (e.agentId !== undefined) return yield* next(e)
-    const at = Date.now()
+    const at = await $.clock.now() // the cache's clock: checkWarm reads the same one
     const r = yield* next(e)
     if (r?.usage) {
       const plan = activity.cache?.plan ?? Boolean((await $.session.usage().catch(() => null))?.rateLimits?.length)

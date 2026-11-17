@@ -28,7 +28,7 @@ export type Activity = {
   compacted?: { at: number; after: string }
   // The main conversation's prompt cache (bin/cache.mjs): when a request last renewed it, its lifetime, whether
   // the account is on a plan, and the prompt it holds in tokens.
-  cache?: { at: number; ttl: '5m' | '1h'; plan: boolean; tokens: number }
+  cache?: { at: number; ttl: '5m' | '1h'; plan: boolean; tokens: number; compactedAt?: number }
 }
 
 const RECENT = 8
@@ -75,8 +75,9 @@ export function callFinished(a: Activity, id: string, ok: boolean, now: number):
   const done: Finished = { tool: call.tool, arg: call.arg, ok, at: now, ms: now - call.since, ...(call.agent ? { agent: call.agent } : {}) }
   return { ...next, updatedAt: now, claude, recent: [done, ...a.recent].slice(0, RECENT) }
 }
+// Either compaction leaves a short summary behind, so the cache's last request no longer holds a big prompt.
 export function compacted(a: Activity, after: string, now: number): Activity {
-  return { ...a, updatedAt: now, compacted: { at: now, after } }
+  return { ...a, updatedAt: now, compacted: { at: now, after }, ...(a.cache ? { cache: { ...a.cache, compactedAt: now } } : {}) }
 }
 export function cached(a: Activity, cache: Activity['cache'], now: number): Activity {
   return cache === a.cache ? a : { ...a, updatedAt: now, cache }

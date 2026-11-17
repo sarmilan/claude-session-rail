@@ -702,6 +702,7 @@ test('a main-loop request records the cache, its lifetime and plan; a subagent r
     return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: e.agentId ? agentUsage : usage } as never
   })
   on('session.usage', () => ({ value: { startedAt: 0, context: {}, rateLimits: [{ kind: 'five_hour', percentUsed: 2 }] } as never }))
+  on('clock.now', () => ({ value: 1_000_000 }))
   const step = async (agentId?: string) => {
     for await (const _ of $.turn.step({ turnId: 't1', index: 0, agentId, model: 'm', messageCount: 1 } as never)) void _
   }
@@ -710,6 +711,68 @@ test('a main-loop request records the cache, its lifetime and plan; a subagent r
   expect((await activityOf(files))?.cache).toBe(undefined)
   await step()
   const a = await activityOf(files)
-  expect(a.cache).toMatchObject({ ttl: '1h', plan: true, tokens: 60_410 })
-  expect(typeof a.cache.at).toBe('number')
+  expect(a.cache).toEqual({ at: 1_000_000, ttl: '1h', plan: true, tokens: 60_410 })
 })
+
+// ── Warm compact (hooks/compact.ts) ───────────────────────────────────────────
+test('warm compact: due in the last stretch of a big waiting cache, never cold, busy, small or twice', () => {
+  const plan = { at: 0, ttl: '1h' as const, plan: true, tokens: 90_000 }
+  const api = { at: 0, ttl: '5m' as const, plan: false, tokens: 90_000 }
+  const due = (cache: unknown, now: number, waiting = true) => compact.warmCompactDue({ cache, waiting, now })
+  expect(due(plan, 49 * 60_000)).toBe(false)
+  expect(due(plan, 50 * 60_000 + 1)).toBe(true)
+  expect(due(api, 3.9 * 60_000)).toBe(false)
+  expect(due(api, 4 * 60_000 + 1)).toBe(true)
+  expect(due(api, 4 * 60_000 + 1, false)).toBe(false) // a turn is running
+  expect(due({ ...api, tokens: 49_000 }, 4 * 60_000 + 1)).toBe(false) // not worth a summary
+  expect(due(api, 5 * 60_000 - 10_000)).toBe(false) // too close: the compaction must start warm
+  expect(due(api, 6 * 60_000)).toBe(false) // cold already (a laptop slept): compacting now is the 9.7x
+  expect(due({ ...api, compactedAt: 1 }, 4 * 60_000 + 1)).toBe(false) // compacted since its last request
+  expect(due(undefined, 0)).toBe(false)
+  expect(compact.warmInstructions('feature/x')).toContain('the test command, and the next step')
+  // A compaction marks the cache, and the rail says so.
+  const a = act.compacted({ ...act.fresh(0), cache: api }, compact.WARM, 60_000)
+  expect(a.cache?.compactedAt).toBe(60_000)
+  expect(cache.cacheView(a.cache, 120_000)).toMatchObject({ worth: false, compacted: true, text: 'API · 5m · compacted warm 1m ago' })
+})
+
+// The cache is recorded from a real turn.step, then the clock is moved past its last stretch's start.
+const warmHarness = async ($: Parameters<Parameters<typeof test>[1]>[0], on: Parameters<Parameters<typeof test>[1]>[1], opts: { setting?: string; tokens?: number } = {}) => {
+  const h = compactHarness(on, { merged: false, done: false, ...(opts.setting ? { setting: opts.setting } : {}) })
+  const clock = { now: 1_000_000 }
+  on('clock.now', () => ({ value: clock.now }))
+  const usage = { model: 'm', input_tokens: 10, output_tokens: 5, cache_read_input_tokens: opts.tokens ?? 90_000, cache_creation_input_tokens: 0, ephemeral_5m_input_tokens: 400, ephemeral_1h_input_tokens: 0 }
+  on('turn.step', async function* (_, e) {
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage } as never
+  })
+  on('session.usage', () => ({ value: { startedAt: 0, context: {}, rateLimits: [] } as never }))
+  await h.poll($)
+  for await (const _ of $.turn.step({ turnId: 't1', index: 0, model: 'm', messageCount: 1 } as never)) void _
+  return { ...h, clock }
+}
+
+test('a big session waiting on an API key compacts once at 4 minutes, and the activity records it', async ($, on) => {
+  const { files, compactions, poll, clock } = await warmHarness($, on)
+  await poll($)
+  expect(compactions).toEqual([]) // just answered: the cache has 5 minutes
+  clock.now += 4 * 60_000 + 5_000
+  await poll($)
+  await poll($)
+  expect(compactions.length).toBe(1)
+  expect(compactions[0]).toContain('stepped away mid-task')
+  const a = JSON.parse(files['/home/.claude/session-rail/activity/s1.json']!)
+  expect(a.compacted).toMatchObject({ after: 'cache' })
+  expect(a.cache.compactedAt).toBeGreaterThan(0)
+})
+
+for (const [name, opts, ms] of [
+  ['the setting is off', { setting: '{"warmCompact":false}' }, 4 * 60_000 + 5_000],
+  ['the context is small', { tokens: 20_000 }, 4 * 60_000 + 5_000],
+  ['the cache already went cold', {}, 7 * 60_000],
+] as const)
+  test(`no warm compact when ${name}`, async ($, on) => {
+    const { compactions, poll, clock } = await warmHarness($, on, opts)
+    clock.now += ms
+    await poll($)
+    expect(compactions).toEqual([])
+  })

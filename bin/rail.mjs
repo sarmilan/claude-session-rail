@@ -390,17 +390,22 @@ const fontMenu = () => {
   ui.overlay.font = true;
 };
 
-// Auto-compact (hooks/compact.ts reads the same file): on unless settings.json says autoCompact: false.
+// The compactions (hooks/compact.ts reads the same file), each on unless settings.json turns it off:
+// autoCompact after a merged branch, warmCompact before a waiting session's cache goes cold (Claude only).
 const SETTINGS_FILE = join(homedir(), '.claude', 'session-rail', 'settings.json');
 const readSettings = () => { try { return JSON.parse(readFileSync(SETTINGS_FILE, 'utf8')) ?? {}; } catch { return {}; } };
-let autoCompact = readSettings().autoCompact !== false;
-const toggleAutoCompact = () => {
-  autoCompact = !autoCompact;
+const compactOn = { autoCompact: readSettings().autoCompact !== false, warmCompact: readSettings().warmCompact !== false };
+const COMPACT_TOASTS = {
+  autoCompact: ['Auto-compact on: after each merged branch', 'Auto-compact off'],
+  warmCompact: ['Compacts a waiting session before its cache goes cold', "Won't compact before the cache goes cold"],
+};
+const toggleCompact = (key) => () => {
+  compactOn[key] = !compactOn[key];
   try {
     mkdirSync(dirname(SETTINGS_FILE), { recursive: true });
-    writeFileSync(SETTINGS_FILE, JSON.stringify({ ...readSettings(), autoCompact }, null, 2));
-    toast(autoCompact ? 'Auto-compact on: after each merged branch' : 'Auto-compact off');
-  } catch { autoCompact = !autoCompact; toast("Couldn't save the setting"); }
+    writeFileSync(SETTINGS_FILE, JSON.stringify({ ...readSettings(), [key]: compactOn[key] }, null, 2));
+    toast(COMPACT_TOASTS[key][compactOn[key] ? 0 : 1]);
+  } catch { compactOn[key] = !compactOn[key]; toast("Couldn't save the setting"); }
 };
 
 const petMenu = () => menu('Pet', creatureNames.map((name, i) => ({
@@ -701,7 +706,8 @@ function buildSettings() {
     const pt = font.size ?? font.base;
     rows.push({ id: 'font', activate: fontMenu, label: 'Aa Font size', value: pt ? `‹ ${pt}pt ›` : '—' });
     rows.push({ id: 'pet', activate: petMenu, label: '◐ Pet', value: `‹ ${mascot.state.creature} ›` });
-    rows.push({ id: 'compact', activate: toggleAutoCompact, label: '⟲ Auto-compact', value: `‹ ${autoCompact ? 'on' : 'off'} ›` });
+    rows.push({ id: 'compact', activate: toggleCompact('autoCompact'), label: '⟲ Auto-compact', value: `‹ ${compactOn.autoCompact ? 'on' : 'off'} ›` });
+    if (agentName() !== 'Grok') rows.push({ id: 'warm', activate: toggleCompact('warmCompact'), label: '◷ Before cache cold', value: `‹ ${compactOn.warmCompact ? 'on' : 'off'} ›` });
   }
   const toggle = { id: 'settings', activate: () => { ui.open.settings = !ui.open.settings; }, label: '⚙ settings' };
   return { rows, toggle };
@@ -898,7 +904,8 @@ const handleKey = (k) => {
     if (ui.sel === 'font' && (k === '\x1b[C' || k === 'l')) return stepFont(1)();
     if (ui.sel === 'pet' && (k === '\x1b[D' || k === 'h')) return nextCreature(-1);
     if (ui.sel === 'pet' && (k === '\x1b[C' || k === 'l')) return nextCreature(1);
-    if (ui.sel === 'compact' && ['\x1b[D', 'h', '\x1b[C', 'l'].includes(k)) return toggleAutoCompact();
+    if (ui.sel === 'compact' && ['\x1b[D', 'h', '\x1b[C', 'l'].includes(k)) return toggleCompact('autoCompact')();
+    if (ui.sel === 'warm' && ['\x1b[D', 'h', '\x1b[C', 'l'].includes(k)) return toggleCompact('warmCompact')();
     const p = selectedPr();
     if (p && k === 'o') return launch('open', [p.url], `Opened #${p.number}`);
     if (p && k === 'y') return copy(p.url, `link to #${p.number}`);
