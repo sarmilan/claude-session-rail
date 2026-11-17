@@ -1,5 +1,5 @@
 {
-  "name": "claude-session-rail",
+  "name": "workbench",
   "owner": {
     "name": "Milan Somasundaram"
   },
@@ -9,5 +9,5 @@
       "source": "./"
     }
   ],
-  "description": "A Claude-desktop-style session rail for Claude Code in iTerm2."
+  "description": "Workbench: the rail and the desk beside Claude or Grok in iTerm2."
 }

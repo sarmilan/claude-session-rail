@@ -13,7 +13,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as act from './activity.mjs';
 import { humanAsk, keep } from './sessionstory.mjs';
-import { briefInstructions } from './brief-instructions.mjs';
+import { briefInstructions, outsideRepoNote } from './brief-instructions.mjs';
 import { approvalRecord, briefFile, briefStatus, checkoutName, inWorkTree, mainCheckoutNote, NO_BRIEF_BRANCHES, parseBrief } from './brief.mjs';
 import { codeRun, gateReason as reviewWait, keptRuns, mergesPr, reportFromText, reviewsFile } from './cadence.mjs';
 import { findAgent, railHome } from './host.mjs';
@@ -33,7 +33,7 @@ const writeJson = (p, v) => {
   renameSync(tmp, p);
 };
 const git = (cwd, args) => {
-  try { return execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', timeout: 5_000 }).trim(); } catch { return null; }
+  try { return execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', timeout: 5_000, stdio: ['ignore', 'pipe', 'pipe'] }).trim(); } catch { return null; }
 };
 
 function rebaseRef(dir) {
@@ -202,11 +202,13 @@ function checkoutNote(cwd) {
 }
 
 // The brief procedure, on the first tool call of each turn. On main, master, or a detached HEAD the note
-// says to branch first. Null outside a git checkout, and null again until the next user prompt.
-function procedure(cwd, state) {
+// says to branch first. Outside a git checkout it names the folder and says the desk cannot see a brief
+// written somewhere else. Null again until the next user prompt.
+export function procedure(cwd, state) {
   if (state.briefSent) return null;
   const b = readBrief(cwd);
-  return takeProcedure(state, b ? writeProcedure(b) : checkoutNote(cwd));
+  if (b) return takeProcedure(state, writeProcedure(b));
+  return takeProcedure(state, checkoutNote(cwd) || (!gitHead(cwd) ? outsideRepoNote(cwd) : null));
 }
 
 function recordCodeReview(cwd, report) {

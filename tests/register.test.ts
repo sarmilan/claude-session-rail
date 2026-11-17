@@ -232,6 +232,19 @@ test('the system prompt explains the brief on a feature branch', async ($, on) =
   expect(s?.scope).toBe('session')
 })
 
+test('outside a repo the prompt names the folder and the desk', async ($, on) => {
+  on('session.cwd', () => ({ value: '/work' }))
+  on('process.run', () => ({ value: { exitCode: 128, stdout: '', stderr: 'not a git repository', isStdoutTruncated: false, isStderrTruncated: false } }))
+  on('prompt.compose', () => ({ sections: [] }))
+  const { sections } = await $.prompt.compose(COMPOSE)
+  const s = sections.find(x => x.id === 'session-rail-brief')
+  expect(s?.text).toContain('not a git repo')
+  expect(s?.text).toContain('/work')
+  expect(s?.text).toContain('Plan tab')
+  expect(s?.text).not.toContain("Don't wait to be asked")
+  expect(s?.scope).toBe('session')
+})
+
 test('main is told to branch, and hears no brief procedure', async ($, on) => {
   briefHarness(on, { branch: 'main' })
   on('prompt.compose', () => ({ sections: [] }))

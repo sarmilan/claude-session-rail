@@ -1,5 +1,6 @@
 import type { EngineInterface, Register } from 'claude-code'
 import { approvalRecord, briefFile, briefStatus, checkoutName, inWorkTree, mainCheckoutNote, NO_BRIEF_BRANCHES, parseBrief } from '../bin/brief.mjs'
+import { outsideRepoNote } from '../bin/brief-instructions.mjs'
 import * as act from './activity.ts'
 import { goAhead } from './goahead.ts'
 import * as compact from './compact.ts'
@@ -110,7 +111,7 @@ A rough outline of the changes for this part of the goal.
 
 const briefInstructions = (b: Brief) => `Session brief (session-rail plugin). This branch, ${b.branch}, keeps a session brief at ${b.path}. It's a local file inside .git, never committed. It's what the session sets out to do and what the work is checked against at the end.
 
-Work the brief out with the person before editing any code. Don't wait to be asked: as soon as the discussion makes the problem and the solution clear, tell the person it's scoped out and write the brief, then summarise it for them in a few lines and say it's in the desk's Plan tab. Keep filling it in as the discussion goes on (design, mockups, engineering chunks). Write it in this shape:
+Work the brief out with the person before editing any code. Don't wait to be asked: as soon as the discussion makes the problem and the solution clear, tell the person it's scoped out and write the brief, then summarise it in a few lines. This brief shows on the desk's Plan tab only when the session was started in this repo. Render this session's desk and read the frame before you say the plan is there: desk.mjs --frame 72 24 --tab plan, with this session's --cwd, --host and --session. If that frame does not show this brief, say what it shows. A plan.md from plan mode is a different file. When it is newer than the brief, the Plan tab shows that file and has no Approve button, so do not write one in place of the brief. Keep filling it in as the discussion goes on (design, mockups, engineering chunks). Write it in this shape:
 
 ${BRIEF_SHAPE}
 
@@ -400,7 +401,7 @@ const message = (state: string, panel: Panel) => {
 }
 
 const COMMANDS = [
-  { name: 'rail', description: 'Open or close the session rail beside this pane' },
+  { name: 'rail', description: 'Open or close the rail beside this pane' },
   { name: 'desk', description: 'Open or close the desk (plan, diff and code review) beside this pane' },
   { name: 'approve-brief', description: "Approve this branch's session brief, so Claude can edit code" },
 ]
@@ -426,13 +427,17 @@ export const register: Register = on => {
 
   // Tell Claude about the brief on any branch that has one. The text names the branch and the path only,
   // so it stays the same for the whole branch and doesn't break the prompt cache. On main, master, or a
-  // detached HEAD the same slot carries the note to branch first.
+  // detached HEAD the same slot carries the note to branch first. Outside a repo it names the folder.
   on('prompt.compose', async ($, e, next) => {
     const composed = await next(e)
     const b = await readBrief($).catch(() => null)
     if (b) return { sections: [...composed.sections, { id: 'session-rail-brief', text: briefInstructions(b), scope: 'session' as const }] }
     const head = await gitHead($).catch(() => null)
-    if (!head || !NO_BRIEF_BRANCHES.includes(head.branch)) return composed
+    if (!head) {
+      const folder = await $.session.cwd().catch(() => '')
+      return { sections: [...composed.sections, { id: 'session-rail-brief', text: outsideRepoNote(folder), scope: 'session' as const }] }
+    }
+    if (!NO_BRIEF_BRANCHES.includes(head.branch)) return composed
     return { sections: [...composed.sections, { id: 'session-rail-brief', text: mainCheckoutNote(head.branch), scope: 'session' as const }] }
   })
 

@@ -1,6 +1,6 @@
-# claude-session-rail
+# Workbench
 
-Side panels for Claude Code in iTerm2, like the ones in the Claude desktop app.
+The rail and the desk beside Claude or Grok in iTerm2.
 
 When you start `claude`, two panes open on the right:
 
@@ -151,7 +151,9 @@ The desk opens on Plan. A change of the plan selects Plan again. Diff and Review
 
 ### The session brief
 
-On any branch but `main` or `master`, Claude keeps a brief for the branch: what the session sets out to do, and what the work is checked against at the end. It lives inside `.git` (`.git/session-rail/briefs/`), so it's never committed. On `main`, `master`, or a detached HEAD there is no brief. Claude and Grok are told to create a branch first, and an edit of a file in the repo is refused until that branch has a brief you have approved in the Plan tab. A file outside the repo is left alone.
+On any branch but `main` or `master`, Claude or Grok keeps a brief for the branch: what the session sets out to do, and what the work is checked against at the end. It lives inside `.git` (`.git/session-rail/briefs/`), so it's never committed. On `main`, `master`, or a detached HEAD there is no brief. Claude and Grok are told to create a branch first, and an edit of a file in the repo is refused until that branch has a brief you have approved in the Plan tab. A file outside the repo is left alone.
+
+The desk reads the folder the session was started in. A session started in a parent of this repo is not in a repo, so its Plan tab has no brief, and a brief written here does not show on that desk. The agent says the plan is in the Plan tab only after a frame of that desk shows the brief.
 
 ```
 # <title>
@@ -167,7 +169,7 @@ Done: <summary>             ← added as each chunk is finished
 Files: src/a.ts, src/b.ts
 ```
 
-- As you talk the problem through, Claude says when it's scoped out and writes the brief. You don't need to ask.
+- As you talk the problem through, Claude or Grok says when it's scoped out and writes the brief. You don't need to ask. It tells you the plan is in the Plan tab only after rendering this session's desk and seeing the brief there.
 - Claude can't edit code (Edit, Write, NotebookEdit) until the brief has a problem, a solution and at least one chunk, and you've pressed **Approve** in the Plan tab (or `A`, or `/approve-brief` when the desk isn't open). Writes Claude makes through the shell aren't covered.
 - Approving is the go-ahead: within a couple of seconds the plugin sends Claude a message to start on chunk 1, so you never have to type "go". It waits until Claude is idle and doesn't type over what you're writing.
 - Once approved, nothing blocks again. If the problem, solution or outline changes later, the Plan tab says "changed since" and offers **Approve again**, which tells Claude the change is approved so it carries on.
@@ -219,7 +221,7 @@ The gate only covers commands Claude runs, so you can always merge yourself. A `
 In Claude Code, run:
 
 ```
-/plugin install session-rail --marketplace sarmilan/claude-session-rail
+/plugin install session-rail --marketplace sarmilan/workbench
 ```
 
 Say `y` to add the marketplace. Start a new `claude` session in iTerm2 and the desk and the rail open on the right.
