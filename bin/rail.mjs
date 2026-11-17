@@ -15,6 +15,7 @@ import { buildStory, layoutStory } from './sessionstory.mjs';
 import { ESC, fg, dim, bold, C, bgOpen, charWidth, width, trunc, wrap, clean, tabBar, usePalette, paneBgOn, paneBgOff } from './term.mjs';
 import { createMascot, creatureNames, stageFor, progressFor, doneFor, attentionFor, visitorsFor, droopFor, flinchAt } from './mascot.mjs';
 import { isApproved } from './brief.mjs';
+import { cacheView } from './cache.mjs';
 import { NAMES, COLOURS } from './names.mjs';
 import * as fontsize from './fontsize.mjs';
 
@@ -225,6 +226,20 @@ const petDroop = () => args.includes('--droop') || droopFor(data.activity);
 // The activity feed wins, so a Claude session file that still says busy does not hide the waiting mood.
 const petAttention = () => (args.includes('--busy') ? 'busy' : args.includes('--waiting') ? 'waiting'
   : attentionFor({ activity: data.activity, tasks: data.tasks.running, session: data.current }));
+// The prompt cache (bin/cache.mjs), only when its context is big enough to matter: an hourglass in its last
+// stretch, a snowflake once cold. A warm compact swirls once (--cache low|cold|swirl pins them for --frame).
+const cacheFlag = flag('--cache');
+const petCache = () => {
+  if (cacheFlag === 'low' || cacheFlag === 'cold') return cacheFlag;
+  const v = cacheView(data.activity?.cache, Date.now());
+  return v?.worth && v.state !== 'warm' ? v.state : null;
+};
+let seenWarm = null;
+const checkWarmCompact = () => {
+  const c = data.activity?.compacted, at = c?.after === 'cache' ? c.at : 0;
+  if (seenWarm != null && at > seenWarm) mascot.swirl(); // the first reading is not a new compaction
+  seenWarm = at;
+};
 let seenDone = null;
 const feedPet = (W) => {
   mascot.setStage(petStage()); mascot.setProgress(petProgress());
@@ -235,6 +250,7 @@ const feedPet = (W) => {
   mascot.setTrail(trail.done, trail.total);
   mascot.setVisitors(visitorEntries(), W);
   mascot.setCompanions(backgroundTasks()); mascot.setHeld(petHeld()); mascot.setDroop(petDroop()); checkFailure();
+  mascot.setCache(petCache()); checkWarmCompact();
 };
 
 const toast = (text) => { ui.toast = { text, until: Date.now() + 2500 }; };
@@ -389,17 +405,22 @@ const fontMenu = () => {
   ui.overlay.font = true;
 };
 
-// Auto-compact (hooks/compact.ts reads the same file): on unless settings.json says autoCompact: false.
+// The compactions (hooks/compact.ts reads the same file), each on unless settings.json turns it off:
+// autoCompact after a merged branch, warmCompact before a waiting session's cache goes cold (Claude only).
 const SETTINGS_FILE = join(homedir(), '.claude', 'session-rail', 'settings.json');
 const readSettings = () => { try { return JSON.parse(readFileSync(SETTINGS_FILE, 'utf8')) ?? {}; } catch { return {}; } };
-let autoCompact = readSettings().autoCompact !== false;
-const toggleAutoCompact = () => {
-  autoCompact = !autoCompact;
+const compactOn = { autoCompact: readSettings().autoCompact !== false, warmCompact: readSettings().warmCompact !== false };
+const COMPACT_TOASTS = {
+  autoCompact: ['Auto-compact on: after each merged branch', 'Auto-compact off'],
+  warmCompact: ['Compacts a waiting session before its cache goes cold', "Won't compact before the cache goes cold"],
+};
+const toggleCompact = (key) => () => {
+  compactOn[key] = !compactOn[key];
   try {
     mkdirSync(dirname(SETTINGS_FILE), { recursive: true });
-    writeFileSync(SETTINGS_FILE, JSON.stringify({ ...readSettings(), autoCompact }, null, 2));
-    toast(autoCompact ? 'Auto-compact on: after each merged branch' : 'Auto-compact off');
-  } catch { autoCompact = !autoCompact; toast("Couldn't save the setting"); }
+    writeFileSync(SETTINGS_FILE, JSON.stringify({ ...readSettings(), [key]: compactOn[key] }, null, 2));
+    toast(COMPACT_TOASTS[key][compactOn[key] ? 0 : 1]);
+  } catch { compactOn[key] = !compactOn[key]; toast("Couldn't save the setting"); }
 };
 
 const petMenu = () => menu('Pet', creatureNames.map((name, i) => ({
@@ -612,7 +633,7 @@ function buildMain(W) {
       kv('Tokens', `${tokens(st.contextTokens)} / ${tokens(st.contextSize)}`);
       if (st.costUsd != null) kv('Cost', `$${st.costUsd.toFixed(2)}${st.apiMs ? ` · API ${Math.round(st.apiMs / 60000)}m` : ''}`);
       if (st.linesAdded != null) kv('Lines', `+${st.linesAdded} −${st.linesRemoved ?? 0}`);
-      if (st.cacheWarm != null) kv('Cache', `${st.cacheWarm ? 'warm' : 'cold'}${st.cacheHit != null ? ` · ${Math.round(st.cacheHit * 100)}% hits` : ''}`);
+      kv('Cache', cacheView(data.activity?.cache, Date.now())?.text ?? '—'); // Claude's hooks record it; Grok has none
     }
     // Account-wide, so shown even before this session has a transcript.
     for (const l of data.usage) {
@@ -700,7 +721,8 @@ function buildSettings() {
     const pt = font.size ?? font.base;
     rows.push({ id: 'font', activate: fontMenu, label: 'Aa Font size', value: pt ? `‹ ${pt}pt ›` : '—' });
     rows.push({ id: 'pet', activate: petMenu, label: '◐ Pet', value: `‹ ${mascot.state.creature} ›` });
-    rows.push({ id: 'compact', activate: toggleAutoCompact, label: '⟲ Auto-compact', value: `‹ ${autoCompact ? 'on' : 'off'} ›` });
+    rows.push({ id: 'compact', activate: toggleCompact('autoCompact'), label: '⟲ Auto-compact', value: `‹ ${compactOn.autoCompact ? 'on' : 'off'} ›` });
+    if (agentName() !== 'Grok') rows.push({ id: 'warm', activate: toggleCompact('warmCompact'), label: '◷ Before cache cold', value: `‹ ${compactOn.warmCompact ? 'on' : 'off'} ›` });
   }
   const toggle = { id: 'settings', activate: () => { ui.open.settings = !ui.open.settings; }, label: '⚙ settings' };
   return { rows, toggle };
@@ -799,6 +821,7 @@ if (args.includes('--frame')) {
   for (let n = 0, t = Date.now() - 1000; n < W * 2; n++) mascot.step(W, pinnedAttention, t);
   mascot.setHeld(petHeld());
   if (args.includes('--flinch')) mascot.flinch();
+  if (cacheFlag === 'swirl') mascot.swirl();
   // e.g. --activate pr:8  or  --activate finished,opt:0  (a chain of clicks)
   for (const id of (flag('--activate') || '').split(',').filter(Boolean)) {
     const run = frame(W, H).items.find((it) => it.id === id)?.activate;
@@ -897,7 +920,8 @@ const handleKey = (k) => {
     if (ui.sel === 'font' && (k === '\x1b[C' || k === 'l')) return stepFont(1)();
     if (ui.sel === 'pet' && (k === '\x1b[D' || k === 'h')) return nextCreature(-1);
     if (ui.sel === 'pet' && (k === '\x1b[C' || k === 'l')) return nextCreature(1);
-    if (ui.sel === 'compact' && ['\x1b[D', 'h', '\x1b[C', 'l'].includes(k)) return toggleAutoCompact();
+    if (ui.sel === 'compact' && ['\x1b[D', 'h', '\x1b[C', 'l'].includes(k)) return toggleCompact('autoCompact')();
+    if (ui.sel === 'warm' && ['\x1b[D', 'h', '\x1b[C', 'l'].includes(k)) return toggleCompact('warmCompact')();
     const p = selectedPr();
     if (p && k === 'o') return launch('open', [p.url], `Opened #${p.number}`);
     if (p && k === 'y') return copy(p.url, `link to #${p.number}`);

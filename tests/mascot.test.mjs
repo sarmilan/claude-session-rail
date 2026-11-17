@@ -158,3 +158,42 @@ test('every creature renders each stage, awake and fidgeting', () => {
     }
   }
 });
+
+// Blue (75) is only the prompt cache: the hourglass, the snowflake and the warm compact's swirl.
+const blue = (out) => out.lines.join('').includes('38;5;75m');
+const look = (pet, mood, t) => { pet.step(40, mood, t); return pet.render(40, t); };
+test('the cache: an hourglass in its last stretch, a snowflake and a shiver once cold, a swirl after a warm compact', () => {
+  const pet = createMascot({ now: 0 });
+  pet.step(40, 'waiting', 0);
+  assert.equal(blue(look(pet, 'waiting', 200)), false);
+  pet.setCache('low');
+  assert.equal(pet.state.cache, 'low');
+  assert.equal(blue(look(pet, 'waiting', 400)), true);
+  assert.equal(pet.state.shake, 0);
+  pet.setCache('cold');
+  assert.equal(pet.state.shake, 4); // it shivers once going cold
+  assert.equal(blue(look(pet, 'waiting', 600)), true);
+  pet.setCache('cold');
+  pet.setCache(null);
+  assert.equal(blue(look(pet, 'waiting', 800)), false);
+  pet.swirl(1000);
+  assert.equal(pet.state.swirl, 1000 + 1600);
+  assert.equal(blue(look(pet, 'waiting', 1100)), true);
+  assert.equal(blue(look(pet, 'waiting', 3000)), false); // the swirl is gone
+});
+
+test('no creature draws in the cache blue itself', () => {
+  for (let i = 0; i < 3; i++) assert.equal(blue(look(createMascot({ now: 0, creature: i }), 'waiting', 0)), false);
+});
+
+test('asleep, a cold cache shows the snowflake in place of the Zs', () => {
+  const pet = createMascot({ now: 0 });
+  for (let t = 0; t < 70_000; t += 5_000) pet.step(40, 'idle', t);
+  assert.equal(pet.state.mode, 'sleep');
+  assert.equal(blue(look(pet, 'idle', 75_000)), false);
+  pet.setCache('cold');
+  pet.step(40, 'idle', 80_000);
+  const out = pet.render(40, 80_000);
+  assert.equal(pet.state.mode, 'sleep');
+  assert.equal(blue(out), true);
+});
