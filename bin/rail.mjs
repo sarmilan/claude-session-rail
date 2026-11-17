@@ -226,6 +226,20 @@ const petDroop = () => args.includes('--droop') || droopFor(data.activity);
 // The activity feed wins, so a Claude session file that still says busy does not hide the waiting mood.
 const petAttention = () => (args.includes('--busy') ? 'busy' : args.includes('--waiting') ? 'waiting'
   : attentionFor({ activity: data.activity, tasks: data.tasks.running, session: data.current }));
+// The prompt cache (bin/cache.mjs), only when its context is big enough to matter: an hourglass in its last
+// stretch, a snowflake once cold. A warm compact swirls once (--cache low|cold|swirl pins them for --frame).
+const cacheFlag = flag('--cache');
+const petCache = () => {
+  if (cacheFlag === 'low' || cacheFlag === 'cold') return cacheFlag;
+  const v = cacheView(data.activity?.cache, Date.now());
+  return v?.worth && v.state !== 'warm' ? v.state : null;
+};
+let seenWarm = null;
+const checkWarmCompact = () => {
+  const c = data.activity?.compacted, at = c?.after === 'cache' ? c.at : 0;
+  if (seenWarm != null && at > seenWarm) mascot.swirl(); // the first reading is not a new compaction
+  seenWarm = at;
+};
 let seenDone = null;
 const feedPet = (W) => {
   mascot.setStage(petStage()); mascot.setProgress(petProgress());
@@ -236,6 +250,7 @@ const feedPet = (W) => {
   mascot.setTrail(trail.done, trail.total);
   mascot.setVisitors(visitorEntries(), W);
   mascot.setCompanions(backgroundTasks()); mascot.setHeld(petHeld()); mascot.setDroop(petDroop()); checkFailure();
+  mascot.setCache(petCache()); checkWarmCompact();
 };
 
 const toast = (text) => { ui.toast = { text, until: Date.now() + 2500 }; };
@@ -806,6 +821,7 @@ if (args.includes('--frame')) {
   for (let n = 0, t = Date.now() - 1000; n < W * 2; n++) mascot.step(W, pinnedAttention, t);
   mascot.setHeld(petHeld());
   if (args.includes('--flinch')) mascot.flinch();
+  if (cacheFlag === 'swirl') mascot.swirl();
   // e.g. --activate pr:8  or  --activate finished,opt:0  (a chain of clicks)
   for (const id of (flag('--activate') || '').split(',').filter(Boolean)) {
     const run = frame(W, H).items.find((it) => it.id === id)?.activate;

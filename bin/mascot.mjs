@@ -40,7 +40,10 @@ function pixels(c, pose) {
 }
 // The marks over the pet keep their own letters. A is red and only means a failed tool. U is the puff's
 // orange. Q is the gate's yellow question mark. G is gold: the heavy stage's ready mark, and a Done sparkle.
-const MARK_COLORS = { Z: ZED_COLOR, A: 196, U: 208, Q: 220, G: 220 };
+// I (ice) is blue and only means the prompt cache: the hourglass, the snowflake, and the swirl of a warm compact.
+// A mark's letter must be one no creature's palette uses: MARK_COLORS wins over the palette.
+const CACHE_BLUE = 75;
+const MARK_COLORS = { Z: ZED_COLOR, A: 196, U: 208, Q: 220, G: 220, I: CACHE_BLUE };
 const colorOf = (c, key) => MARK_COLORS[key] ?? c.palette[key];
 
 // How each growth stage behaves: `dSpeed` adjusts ticks per frame for creatures without their own stage
@@ -146,9 +149,15 @@ const READY = ['.G.G.', 'GG.GG', '.....', 'GG.GG', '.G.G.']; // heavy: ready to 
 const PUFF = ['U.A.U', '.AUA.', 'AUUUA', '.AUA.', 'U.A.U']; // a failed tool call
 const DROOP = ['.....', '.....', '..A..', '.A.A.', '.....']; // the failure, kept until the next success
 const QUERY = ['.QQQ.', 'Q...Q', '..QQ.', '.....', '..Q..']; // the brief is not approved yet
+const HOURGLASS = ['IIIII', '.I.I.', '..I..', '.I.I.', 'IIIII']; // the cache's last stretch, a big context in it
+const FROST = ['I.I.I', '.III.', 'II.II', '.III.', 'I.I.I']; // the cache went cold with a big context in it
 const SPARK = [
   ['G.G.G', '.G.G.', '..G..', '.G.G.', 'G.G.G'],
   ['.G.G.', 'G...G', '.....', 'G...G', '.G.G.'],
+];
+const SWIRL = [ // compacted while the cache was warm
+  ['.III.', 'I....', 'I.II.', 'I...I', '.III.'],
+  ['.III.', '....I', '.II.I', 'I...I', '.III.'],
 ];
 const PUFF_MS = 1500, SPARK_MS = 1600, MAX_COMPANIONS = 3;
 // A tiny "+n" for helpers the strip cannot draw. W is white.
@@ -264,7 +273,8 @@ export function createMascot({ images = false, creature = 0, now = Date.now() } 
   let stage = 0, progress = null;
   const flock = createVisitors(); // a flier for each running subagent (visitors.mjs)
   const companions = []; // the x of each one trailing behind, a running background task each
-  let held = false, drooping = false, puffUntil = 0, sparkUntil = 0, doneN = 0, chunkN = 0, extraShells = 0;
+  let held = false, drooping = false, puffUntil = 0, sparkUntil = 0, swirlUntil = 0, doneN = 0, chunkN = 0, extraShells = 0;
+  let cacheMark = null; // the prompt cache, when it matters: 'low' (an hourglass) or 'cold' (a snowflake)
   let lastStrip = { key: '', data: '' }; // the last strip drawn with visitors
   // The drawing for this stage: the creature's own stage form, or the creature itself.
   const form = () => CREATURES[index].stages?.[stage] ?? CREATURES[index];
@@ -276,13 +286,16 @@ export function createMascot({ images = false, creature = 0, now = Date.now() } 
     return cache.get(key);
   };
   const bounds = (W) => [1, W - 1 - width()];
-  // The mark over its head. Red is only a failure. Gold is "ready" or a chunk just finished.
+  // The mark over its head. Red is only a failure. Gold is "ready" or a chunk just finished. Blue is the cache.
+  // Asleep, a cold cache's snowflake takes the place of the Zs.
   const markFor = (t) => {
-    if (s.mode === 'sleep') return null;
+    if (s.mode === 'sleep') return cacheMark === 'cold' ? FROST : null;
     if (t < puffUntil) return PUFF;
     if (held) return QUERY;
     if (drooping) return DROOP;
     if (t < sparkUntil) return SPARK[Math.floor(s.tick / 2) % 2];
+    if (cacheMark === 'cold') return FROST;
+    if (cacheMark === 'low') return HOURGLASS;
     return MOOD[stage].rage && s.lift === 0 && Math.floor(s.tick / 3) % 2 ? READY : null;
   };
   const companionWidth = () => (images ? Math.ceil((6 * SCALE) / colPx()) : 3); // columns a little one takes
@@ -301,10 +314,13 @@ export function createMascot({ images = false, creature = 0, now = Date.now() } 
     }));
   };
   const columnPx = (col) => Math.round((col - 1) * colPx());
-  // Gold either side of the pet for a moment after a chunk is marked Done.
-  const sparks = (t) => (t < sparkUntil ? [s.x - 5, s.x + width() + 1] : []).map((x, i) => ({
-    rows: SPARK[(Math.floor(s.tick / 2) + i) % 2], palette: { G: 220 }, x, up: 12 - i * 2,
-  }));
+  // Gold either side of the pet for a moment after a chunk is marked Done; blue swirls after a warm compact.
+  const sparks = (t) => [
+    ...(t < sparkUntil ? [s.x - 5, s.x + width() + 1] : []).map((x, i) => ({
+      rows: SPARK[(Math.floor(s.tick / 2) + i) % 2], palette: { G: 220 }, x, up: 12 - i * 2 })),
+    ...(t < swirlUntil ? [s.x - 5, s.x + width() + 1] : []).map((x, i) => ({
+      rows: SWIRL[(Math.floor(s.tick / 2) + i) % 2], palette: { I: CACHE_BLUE }, x, up: 10 - i * 2 })),
+  ];
   // A "+n" when more subagents or shells are running than the strip draws.
   const badges = (W) => {
     const out = [];
@@ -342,6 +358,17 @@ export function createMascot({ images = false, creature = 0, now = Date.now() } 
     celebrate(t = Date.now()) {
       sparkUntil = t + SPARK_MS; s.party = [1, 2, 3, 3, 2, 1]; s.hopI = 0; s.lastActive = t;
       if (s.mode === 'sleep') s.mode = 'walk';
+    },
+    // The session was compacted while its cache was warm: a hop and a short blue swirl.
+    swirl(t = Date.now()) {
+      swirlUntil = t + SPARK_MS; s.party = [1, 2, 3, 3, 2, 1]; s.hopI = 0;
+      if (s.mode === 'sleep') { s.mode = 'walk'; s.lastActive = t; }
+    },
+    // The prompt cache, when its context is big enough to matter: null, 'low' or 'cold'. Going cold shivers once.
+    setCache(state) {
+      const next = state === 'low' || state === 'cold' ? state : null;
+      if (next === 'cold' && cacheMark !== 'cold') s.shake = 4;
+      cacheMark = next;
     },
     // The brief is not approved: it stands still, awake, with a ? over its head.
     setHeld(on) { held = Boolean(on); },
@@ -438,7 +465,7 @@ export function createMascot({ images = false, creature = 0, now = Date.now() } 
       const c = form();
       const sleep = s.mode === 'sleep';
       const pose = { frame: sleep ? 0 : s.phase, blink: !sleep && s.blinkUntil > t, sleep, dir: s.dir,
-        z: sleep ? Math.floor(s.tick / 5) % 3 : 0, fidget: !sleep && s.fidget };
+        z: sleep && cacheMark !== 'cold' ? Math.floor(s.tick / 5) % 3 : 0, fidget: !sleep && s.fidget };
       const poseKey = `${index}:${stage}:${JSON.stringify(pose)}`;
       const habitat = CREATURES[index].habitat;
       const dustKind = sleep || held ? 'still' : s.lift > 0 ? 'hop' : (s.mode === 'busy' || s.mode === 'walk') && s.phase === 1 ? 'step' : 'still';
@@ -464,7 +491,7 @@ export function createMascot({ images = false, creature = 0, now = Date.now() } 
         };
         // Anything that moves every tick stays out of the long cache, so it isn't evicted by the walk.
         const key = `${poseKey}|${cols}|${x}|${aspect}|${lift}|${mark?.[0] ?? ''}|${sway}|${doneN}|${dustKind}|${extras}`;
-        const live = flock.size || dustKind !== 'still' || t < sparkUntil || flock.overflow || extraShells;
+        const live = flock.size || dustKind !== 'still' || t < sparkUntil || t < swirlUntil || flock.overflow || extraShells;
         if (live && lastStrip.key !== key) lastStrip = { key, data: make() };
         const data = live ? lastStrip.data : cached(key, make);
         return { lines: Array(rowsOut).fill(blankLine), image: { row: 0, rows: stripRows, col: 1, data } };
@@ -502,7 +529,7 @@ export function createMascot({ images = false, creature = 0, now = Date.now() } 
     },
 
     get state() {
-      return { ...s, stage, creature: CREATURES[index].name, droop: drooping, spark: sparkUntil, overflow: flock.overflow, shells: extraShells };
+      return { ...s, stage, creature: CREATURES[index].name, droop: drooping, spark: sparkUntil, swirl: swirlUntil, cache: cacheMark, overflow: flock.overflow, shells: extraShells };
     },
   };
 }

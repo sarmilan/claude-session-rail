@@ -32,6 +32,9 @@ Each channel carries one fact. They stack: a heavy crab can be hurrying, trailed
 | A hop, a shake, a gold mark | The branch is far along. Heavy means ready to merge. |
 | Markers on the road, and a gold sparkle | Chunks that are Done. The sparkle is the one that just finished. |
 | A yellow `?`, standing still | This branch's brief is not approved yet. |
+| A blue hourglass | The prompt cache is in its last stretch, with a big context in it: about to be compacted, or about to go cold. |
+| A blue snowflake and a shiver | The prompt cache went cold with a big context in it. The next turn sends the whole history again. |
+| Blue swirls and a hop | The session was just compacted while its cache was still warm. |
 | A flinch, a red puff, then a droop | A tool call failed. The droop stays until a later call succeeds. |
 | A bee, butterfly, dragonfly, or ladybird | A subagent is running. Its colour matches that subagent in Now. |
 | A `+n` | More subagents or shells than the strip can draw. |
@@ -79,6 +82,8 @@ A tick is about 200ms.
 
 **Flinch.** A failed tool call shakes the body and pops a red-and-orange puff for a second and a half. The fliers scatter and the babies duck behind it. After the puff, a small red droop stays, and the body sits a little lower, until a later tool call succeeds. A refusal from the brief gate does not flinch. Red is only this.
 
+**The cache.** Only Claude's main conversation, and only while 50k tokens or more are in it, since a small context is cheap to send again. In the cache's last stretch (the last 10 minutes of a plan's hour, the last minute of an API key's 5 minutes) a blue hourglass hangs over it. The rail compacts a waiting session in that stretch, so the hourglass usually shows for the moment the compaction takes. It stays when **Before cache cold** is off. If the cache runs out anyway (that setting off, or a laptop that slept through it), the hourglass becomes a blue snowflake and the pet shivers once. Asleep, the snowflake takes the place of the Zs. The next request warms the cache and the snowflake goes. A warm compact pops blue swirls either side of it with a hop, like the Done sparkle in blue. With no brief the window drops too, so it hatches again. Under Grok none of this shows.
+
 **Held.** While the branch has a brief that is not approved yet, the pet stands still, awake, with a yellow `?` over its head. Approving it, including an approval kept after an edit, lets it walk. A branch with no brief is not held.
 
 ## Company
@@ -94,9 +99,12 @@ These are true of the session and invisible on the strip.
 - **Which thing failed.** The droop says a call failed and has not been followed by a success. The rail's activity list is where the failed call stays, with its name.
 - **Which subagent is which, by name.** The flier's colour matches the Now list. The name itself stays in that list. Past four, the extras are only a count.
 - **How the middle of a stage feels.** Two chunks of eight and seven of eight are both "adult". The home spot and the trail of markers are what separate them. The pet still paces around its spot, so the trail is the clearer of the two.
+- **How long the cache has left.** The hourglass is only its last stretch. The minutes stay in Context's Cache row.
 - **The exact token count, reviews, checks, or rate limits.** The count stays in Context. With no brief, the pet's size and its place on the strip are that fill, and nothing finer. A brief's stages ignore the window. The pet never mentions reviews, checks, or rate limits.
 
-Red is only a failed tool. Gold is only "ready to merge" and "a chunk just finished". Yellow is only the unapproved brief.
+Red is only a failed tool. Gold is only "ready to merge" and "a chunk just finished". Yellow is only the unapproved brief. Blue is only the prompt cache.
+
+The marks take turns over its head, the first that applies: the red puff, the gate's `?`, the droop, the Done sparkle, the snowflake, the hourglass, then the gold ready mark.
 
 ## Where this lives
 
@@ -104,4 +112,4 @@ Red is only a failed tool. Gold is only "ready to merge" and "a chunk just finis
 - `bin/habitats.mjs`: woodland, pond, beach.
 - `bin/visitors.mjs`: the four fliers and how they flock.
 - `bin/mascot.mjs`: walking, sleep, stages, the road, marks, and the picture.
-- `bin/rail.mjs`: wires the pet to the brief, the session, subagents, shells, failures, and the gate.
+- `bin/rail.mjs`: wires the pet to the brief, the session, subagents, shells, failures, the gate, and the cache (`bin/cache.mjs`).
