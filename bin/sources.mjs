@@ -715,6 +715,29 @@ export async function connectors(host) {
 
 // ── Changes: your open PRs in this repo ────────────────────────────────────────
 // The tree's parents come from this list, so the cap has to cover the open set, not a short preview.
+// This checkout's pull request, for the desk's merge warning. null when there isn't one or gh can't say.
+export async function currentPullRequest(cwd) {
+  const out = await run('gh', ['pr', 'view', '--json', 'number,state,isDraft,mergeable,mergeStateStatus,url,headRefOid'], { cwd, timeout: 8_000 });
+  if (!out) return null;
+  try {
+    const p = JSON.parse(out);
+    if (!p || typeof p !== 'object') return null;
+    return {
+      number: p.number, state: p.state, draft: Boolean(p.isDraft),
+      mergeable: typeof p.mergeable === 'boolean' ? p.mergeable : null,
+      mergeStateStatus: typeof p.mergeStateStatus === 'string' ? p.mergeStateStatus : null,
+      url: typeof p.url === 'string' ? p.url : null,
+      head: typeof p.headRefOid === 'string' ? p.headRefOid : null,
+    };
+  } catch { return null; }
+}
+
+// HEAD's full commit id, or null. A short or missing id is not a status target.
+export async function headCommit(cwd) {
+  const sha = (await run('git', ['rev-parse', 'HEAD'], { cwd, timeout: 5_000 }))?.trim() ?? '';
+  return /^[0-9a-f]{40}$/i.test(sha) ? sha : null;
+}
+
 export async function prs(cwd, limit = 100) {
   const out = await run('gh', ['pr', 'list', '--author', '@me', '--state', 'open', '--limit', String(limit),
     '--json', 'number,title,state,isDraft,url,headRefName,baseRefName,updatedAt,mergeStateStatus,reviewDecision,statusCheckRollup'], { cwd, timeout: 15_000 });

@@ -131,7 +131,7 @@ Files: <comma-separated paths relative to the repo root>
 6. Push the branch. After the first chunk's commit, also open a pull request for the branch, titled after the brief, with its Problem and Solution as the description and a Progress checklist of the chunks; tick each chunk as it lands, noting its approach review (for example "review: 2 findings, applied"). Later pushes update it.
 7. Move straight on to the next chunk without waiting for the person, unless something needs their decision.
 
-Before merging, which waits for the person to say so: run /code-review --fix over the whole branch (against the default branch) and commit and push its fixes. Then call review_approach with final: true: it also checks what the code review's fixer did (that fixes landed, and whether each skip or "no change" is sound). Apply what it finds, commit and push, and call it with final: true once more to check them: at most two rounds. If something is still open after that, list it in the PR and ask the person instead of looping. The plugin refuses gh pr merge until the code review has run since the last chunk's review, the final approach review has run after it on the last commit with nothing uncommitted, and nothing is open.
+Before merging, which waits for the person to say so: run /code-review --fix over the whole branch (against the default branch) and commit and push its fixes. Then call review_approach with final: true: it also checks what the code review's fixer did (that fixes landed, and whether each skip or "no change" is sound). Apply what it finds, commit and push, and call it with final: true once more to check them: at most two rounds. If something is still open after that, list it in the PR and ask the person instead of looping. The plugin refuses gh pr merge until the code review has run since the last chunk's review, the final approach review has run after it on the last commit with nothing uncommitted, and nothing is open. After each saved approach review and code review it posts the commit status session-rail/review from that record. success is only a clear gate. Do not post that status yourself.
 
 At the end of the session, check the work against the brief's Problem and Solution.`
 
@@ -207,6 +207,11 @@ const recordCodeReview = async ($: EngineInterface, report: unknown) => {
   const tmp = `${runsPath(b)}.${Date.now()}.tmp`
   await $.fs.write(tmp, JSON.stringify({ runs: keptRuns(runs) }, null, 1))
   await $.process.run(['mv', '-f', tmp, runsPath(b)], { timeoutMs: 5_000 })
+  // The review is already saved. The script posts session-rail/review and exits 0; a missing gh changes nothing.
+  await $.process.run(
+    ['/bin/sh', '-c', 'exec node "$0" --cwd "$1"', `${$.plugin.root}/bin/publish.mjs`, cwd],
+    { timeoutMs: 20_000 },
+  ).catch(() => undefined)
 }
 
 // What a run's prompt is told: end with a findings block that carries the run's token, so the plugin knows
