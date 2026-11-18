@@ -37,7 +37,7 @@ Work the brief out with the person before editing any code. Don't wait to be ask
 
 ${SHAPE}
 
-Keep the solution and the outline the simplest way to reach the goal. search_replace and write on any other file are refused until the brief has a problem, a solution and at least one chunk, and the person has approved it. When it's complete, run the approach review (${review}), work its findings into the brief, then ask them to review it and press Approve in the desk's Plan tab (or type /approve-brief). Never approve it yourself or write its approval file.
+Keep the solution and the outline the simplest way to reach the goal. search_replace, write, and a shell command that writes a file in the checkout are refused on any other file until the brief has a problem, a solution and at least one chunk, and the person has approved it. A read-only command such as git log still runs. When it's complete, run the approach review (${review}), work its findings into the brief, then ask them to review it and press Approve in the desk's Plan tab (or type /approve-brief). Never approve it yourself or write its approval file.
 
 While you work, keep the brief current: if the problem, the solution or the outline changes, update the brief right away.
 
