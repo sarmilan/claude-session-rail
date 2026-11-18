@@ -727,6 +727,29 @@ test('a main-loop request records the cache, its lifetime and plan; a subagent r
   expect(a.cache).toEqual({ at: 1_000_000, ttl: '1h', plan: true, tokens: 60_410 })
 })
 
+test('session.measure records the host cost, a later reading is the turn, and a reset drops it', async ($, on) => {
+  const { files } = withActivity(on, { branch: 'main' })
+  on('session.measure', (_, e) => ({ changed: e.changed }))
+  const measure = (usd?: number, changed: string[] = ['cost']) =>
+    $.session.measure({ context: { window: 200_000 }, rateLimits: [], ...(usd == null ? {} : { cost: { usd } }), changed } as never)
+  await measure(0.1)
+  let a = await activityOf(files)
+  expect(a.cost.usd).toBe(0.1)
+  expect(a.cost.turnUsd).toBeUndefined()
+  await measure(0.1)
+  expect((await activityOf(files)).cost.turnUsd).toBeUndefined()
+  await measure(0.14)
+  a = await activityOf(files)
+  expect(a.cost.usd).toBe(0.14)
+  expect(a.cost.turnUsd).toBeCloseTo(0.04)
+  await measure(undefined, ['rateLimits'])
+  expect((await activityOf(files)).cost.usd).toBe(0.14)
+  await measure(0.01)
+  a = await activityOf(files)
+  expect(a.cost.usd).toBe(0.01)
+  expect(a.cost.turnUsd).toBeUndefined()
+})
+
 // ── Warm compact (hooks/compact.ts) ───────────────────────────────────────────
 test('warm compact: due in the last stretch of a big waiting cache, never cold, busy, small or twice', () => {
   const plan = { at: 0, ttl: '1h' as const, plan: true, tokens: 90_000 }

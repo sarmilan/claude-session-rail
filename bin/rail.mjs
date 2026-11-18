@@ -16,6 +16,7 @@ import { ESC, fg, dim, bold, C, bgOpen, charWidth, width, trunc, wrap, clean, ta
 import { createMascot, creatureNames, stageFor, progressFor, doneFor, attentionFor, visitorsFor, droopFor, flinchAt } from './mascot.mjs';
 import { isApproved } from './brief.mjs';
 import { cacheView } from './cache.mjs';
+import { applyRecordedCost, costText } from './cost.mjs';
 import { NAMES, COLOURS } from './names.mjs';
 import * as fontsize from './fontsize.mjs';
 
@@ -66,7 +67,8 @@ const loaders = {
       data.tasks = { running: data.activity?.tasks ?? [], finished: 0, done: [] };
     } else {
       await taskIndex.update(files.transcriptPath);
-      data.stats = taskIndex.context();
+      // The activity file holds Claude's live ledger (session.measure). It replaces a transcript total.
+      data.stats = applyRecordedCost(taskIndex.context(), data.activity?.cost);
       data.tasks = files.tasksDir ? await taskIndex.list(files.tasksDir) : { running: [], finished: 0, done: [] };
     }
   },
@@ -631,7 +633,8 @@ function buildMain(W) {
     else {
       if (st.model) kv('Model', [st.model, st.effort].filter(Boolean).join(' · '));
       kv('Tokens', `${tokens(st.contextTokens)} / ${tokens(st.contextSize)}`);
-      if (st.costUsd != null) kv('Cost', `$${st.costUsd.toFixed(2)}${st.apiMs ? ` · API ${Math.round(st.apiMs / 60000)}m` : ''}`);
+      // The host's session dollars, or a dash. Never a price computed from the token row above.
+      kv('Cost', costText(st));
       if (st.linesAdded != null) kv('Lines', `+${st.linesAdded} −${st.linesRemoved ?? 0}`);
       kv('Cache', cacheView(data.activity?.cache, Date.now())?.text ?? '—'); // Claude's hooks record it; Grok has none
     }
