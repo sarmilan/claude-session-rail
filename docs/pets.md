@@ -14,6 +14,12 @@ Three creatures. Each one has a habitat, a walk, a baby, and four drawings as it
 | Turtle | Pond: reeds, grass, rocks, mud | Steps with front and back legs swapping. Tucks into its shell to sleep. | A small shell on four legs |
 | Crab | Beach: sand, seaweed, shells, pebbles | Sideways. It never turns around; it just walks the other way. Claws open and shut with each step. | A tiny crab |
 
+![the four snail stages walking through the woodland](media/pets/snail-stages-walk.gif)
+
+![the four turtle stages walking through the pond, labelled hatchling to heavy](media/pets/turtle-stages-walk.gif)
+
+![the four crab stages scuttling along the beach](media/pets/crab-stages-walk.gif)
+
 `c`, or **Pet** in the rail's settings, cycles them. The choice is saved in `~/.claude/session-rail/mascot.json` and shared by Claude and Grok.
 
 Plants are laid out once for a given width, so the scenery stays put. Tall plants lean back and forth about once a second. The reeds lean harder when the turtle hops, and the beach kicks up a little sand while the crab is moving.
@@ -47,11 +53,21 @@ The floor is the branch's road.
 - A brief that is not approved yet: it stays at the left edge.
 - Approved, or approved and then edited: its home moves right by the share of chunks marked Done. It paces a few columns either side of that home, and walks straight there when a chunk flips. Each Done chunk also leaves a marker on the road behind it: a mushroom in the woodland, a lily pad on the pond, a shell on the beach. The moment a chunk flips, the pet hops and a gold sparkle pops.
 
+![a chunk is marked done: the turtle hops, a gold sparkle pops, a lily pad drops and it walks to its new spot](media/reactions/done.gif)
+
 Position and the trail are the fine reading of progress. The stage is the coarse one.
 
 ## Stages
 
 The same four stages for every creature. A brief grows it toward the merge. A checkout with no brief grows it from the context window, and a compaction drops that window, so the pet hatches again. Heavy is only the finished brief. A full window does not put on the gold mark.
+
+![with no brief, the turtle goes from hatchling to juvenile to adult as the context window fills](media/pets/turtle-grows-with-context.gif)
+
+![turtle hatchling, juvenile, adult and heavy side by side in the pond](media/pets/turtle-stages.png)
+
+![snail hatchling, juvenile, adult and heavy side by side in the woodland](media/pets/snail-stages.png)
+
+![crab hatchling, juvenile, adult and heavy side by side on the beach](media/pets/crab-stages.png)
 
 | Stage | When | How it looks | How it moves |
 | --- | --- | --- | --- |
@@ -61,6 +77,8 @@ The same four stages for every creature. A brief grows it toward the merge. A ch
 | Heavy | Every chunk Done | Bigger, a row taller. Spikes, a scowl. The turtle's shell goes amber, the crab wears a gold crown. | Bigger hops, the body shakes, and a gold mark pops over it. The prompt is: merge it and let the session compact. |
 
 A stage change is instant. The drawing swaps. There is no grow animation. From adult on, the hop is shared by every creature. The gold mark and the shake belong only to heavy.
+
+![every chunk done: the heavy amber turtle hops, rattles and flashes the gold mark, with its done chunks marked on the road behind it](media/reactions/heavy.gif)
 
 Sleep, the gate, and a failure all interrupt this. Asleep, the gold mark hides and the hops stop. Held by the gate, it freezes on the spot. A failure shakes it for a moment whatever the stage, then leaves the droop.
 
@@ -74,23 +92,39 @@ A tick is about 200ms.
 
 **Waiting.** When the turn has ended and it is your move, it stops walking, faces left toward the agent pane, and fidgets. It does not lie down. A crab has no face to turn, so it snaps a claw instead. After an hour with no new turn, waiting becomes idle. This follows the activity feed the hooks write for Claude and for Grok. Claude's own session file can still say busy after the turn has ended, and Grok's session file never says busy; the feed wins either way. A background shell, a monitor, or a subagent the turn left running keeps the pet busy.
 
+![your move: the turtle stops, faces left toward the agent pane and fidgets](media/reactions/waiting.gif)
+
 **Fidget.** Every few seconds of ordinary walking it pauses for a short beat. The snail holds a long stretch, the turtle pops its head up, the crab snaps the near claw. Waking from sleep is the same beat, with a small hop.
 
 **Sleep.** After a minute of idle, with nothing busy and with nobody waiting, it stops. Zs float up. The turtle pulls into its shell, the crab folds its claws, the snail lowers its body. Any new work wakes it with a stretch.
+
+![after a minute of idle the turtle tucks into its shell, zs float up, its baby tucked beside it](media/reactions/sleep.gif)
 
 **Hop and shake.** Adult hops a short arc about every three seconds. Heavy hops twice as often, higher, and sometimes rattles in place. A chunk just marked Done hops once, higher, whatever the stage.
 
 **Flinch.** A failed tool call shakes the body and pops a red-and-orange puff for a second and a half. The fliers scatter and the babies duck behind it. After the puff, a small red droop stays, and the body sits a little lower, until a later tool call succeeds. A refusal from the brief gate does not flinch. Red is only this.
 
+![a tool call fails: the crab shakes, a red puff pops, the fliers scatter, the baby hides behind it, then a small red droop stays](media/reactions/flinch.gif)
+
 **The cache.** Only Claude's main conversation, and only while 50k tokens or more are in it, since a small context is cheap to send again. In the cache's last stretch (the last 10 minutes of a plan's hour, the last minute of an API key's 5 minutes) a blue hourglass hangs over it. The rail compacts a waiting session in that stretch, so the hourglass usually shows for the moment the compaction takes. It stays when **Before cache cold** is off. If the cache runs out anyway (that setting off, or a laptop that slept through it), the hourglass becomes a blue snowflake and the pet shivers once. Asleep, the snowflake takes the place of the Zs. The next request warms the cache and the snowflake goes. A warm compact pops blue swirls either side of it with a hop, like the Done sparkle in blue. With no brief the window drops too, so it hatches again. Under Grok none of this shows.
 
+![a waiting crab with a blue hourglass: the prompt cache is in its last stretch](media/reactions/cache-hourglass.gif)
+
+![the cache goes cold: the hourglass becomes a blue snowflake and the crab shivers once](media/reactions/cache-cold.gif)
+
+![a warm compact: the turtle hops with blue swirls either side](media/reactions/cache-warm-compact.gif)
+
 **Held.** While the branch has a brief that is not approved yet, the pet stands still, awake, with a yellow `?` over its head. Approving it, including an approval kept after an edit, lets it walk. A branch with no brief is not held.
+
+![a hatchling snail standing still at the left edge with a yellow ? over its head, babies piled at its heel](media/reactions/held.gif)
 
 ## Company
 
 **Visitors** are the fliers. One appears for each running subagent, counting both a subagent call on the main thread and a background subagent. They arrive in a fixed order: bee, butterfly, dragonfly, ladybird, then the bee again. At most four are drawn. Each is tinted with its subagent's colour from the Now list, so a bee can be matched to a name. Each flies in from an edge and hovers to one side of the pet. While the agent is busy they wobble high. While it is quiet they settle low. A failed tool sends them scattering, then they come back. They fly off the nearest edge when their subagent finishes. A fifth subagent draws a `+n` instead of a fifth flier.
 
 **Babies** trail behind, one per running background shell, at most three. They face the way the parent walks and bob. They bunch up behind it when the strip is crowded. While it sleeps they tuck down beside it. While the brief is unapproved they pile up at its heel. On a flinch they hide behind it. They are not shells started by a subagent. Those subagents are visitors. A fourth shell draws a `+n`.
+
+![five subagents and two shells: a bee, butterfly, dragonfly and ladybird hover, a +1 badge for the fifth, two baby snails trail behind](media/reactions/visitors.gif)
 
 ## What the pet does not say
 
