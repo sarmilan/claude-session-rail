@@ -6,7 +6,8 @@
 //   Diff  every file changed since the branch forked from the default branch, grouped by the brief's chunks,
 //         and each file's diff
 //   Review  the branch's review record: the approach reviews (reviewer.mjs) Claude runs before each commit, or
-//           you run on demand, and the code reviews the hooks record, each finding open, applied or declined
+//           you run on demand, the code reviews the hooks record, and an optional wide review (widereview.mjs)
+//           when the diff is large and the rail's setting is on. Each finding is open, applied or declined
 // It opens on Plan. A change of the plan selects Plan again. Diff and Review stay until you switch them.
 //   node desk.mjs                                   interactive panel
 //   node desk.mjs --json                            print the collected state once
@@ -15,6 +16,8 @@
 //   --cwd DIR / --pid PID                           the folder and Claude process this desk belongs to
 import * as src from './sources.mjs';
 import { reviewAndSave, loadReviews } from './reviewer.mjs';
+import { wideReviewAndSave } from './widereview.mjs';
+import { offerWide } from './wide.mjs';
 import { ESC, fg, dim, bold, C, bg, bgOpen, charWidth, width, trunc, clean, tabBar, usePalette, paneBgOn, paneBgOff } from './term.mjs';
 import { applySaved } from './fontsize.mjs';
 import { approvalRecord, mainCheckoutNote, NO_BRIEF_BRANCHES } from './brief.mjs';
@@ -22,6 +25,7 @@ import { deskOutsideNote } from './brief-instructions.mjs';
 import { notePlan, planChoice } from './planview.mjs';
 import { codeFindings, runType } from './cadence.mjs';
 import { writeFile, mkdir } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -36,7 +40,7 @@ const taskIndex = new src.TaskIndex();
 
 // ── Data ───────────────────────────────────────────────────────────────────────
 const data = { plan: null, brief: null, checkout: null, recent: null, todos: null, root: null, files: [], diff: null, claude: null, // diff: { path, lines } of the open file
-  review: { running: null, runs: [], path: undefined } };                    // runs: the branch's saved reviews, newest first
+  settings: {}, review: { running: null, runs: [], path: undefined } };      // runs: the branch's saved reviews, newest first
 const TABS = ['plan', 'diff', 'review'];
 const ui = { tab: 'plan', scroll: { plan: 0, diff: 0, review: 0 }, sel: 0, open: null, toast: null,
   jump: null, rsel: 0 };
@@ -75,6 +79,7 @@ const loaders = {
   // The branch's review record, read again on each refresh: Claude's reviews and the hooks' code reviews
   // land in it from outside. The selection resets only when the branch changes.
   async reviews() {
+    data.settings = readSettings();
     const path = await src.reviewsPath(cwd), runs = await loadReviews(path);
     if (path === data.review.path && JSON.stringify(runs) === JSON.stringify(data.review.runs)) return;
     // On the same branch the list can grow or reorder under the selection: keep it on the same finding.
@@ -94,15 +99,20 @@ const latest = () => approachRuns().find((r) => !r.error) ?? null;
 const failed = () => (approachRuns()[0]?.error ? approachRuns()[0] : null);
 // What the tab lists, in order: the newest approach review's findings, then earlier approach findings that
 // are still open or were raised on the same commit (this chunk's, with how they were settled), then the
-// newest code review's. Selection and Enter (jump to the file) index into this list.
+// newest wide review's, then the newest code review's. Selection and Enter (jump to the file) index this list.
 const codeRun = () => data.review.runs.find((r) => !r.error && runType(r) === 'code') ?? null;
+const wideRuns = () => data.review.runs.filter((r) => runType(r) === 'wide');
+const wideRun = () => wideRuns().find((r) => !r.error) ?? null;
+const wideFailed = () => (wideRuns()[0]?.error ? wideRuns()[0] : null);
+// Wide review is a separate action. It shows only when the setting is on, the diff is wide, and the brief can be reviewed.
+const wideOffer = () => offerWide(data.settings, data.files, data.brief);
 function listed() {
   const run = latest();
   const earlier = approachRuns().filter((r) => !r.error && r !== run)
     .flatMap((r) => r.findings.filter((f) => f.status === 'open' || (f.status && run?.head && r.head === run.head)));
-  return { approach: [...(run?.findings ?? []), ...earlier], code: codeFindings(data.review.runs) };
+  return { approach: [...(run?.findings ?? []), ...earlier], wide: wideRun()?.findings ?? [], code: codeFindings(data.review.runs) };
 }
-const listedAll = () => { const l = listed(); return [...l.approach, ...l.code]; };
+const listedAll = () => { const l = listed(); return [...l.approach, ...l.wide, ...l.code]; };
 // Returns why it couldn't start, or null when it started.
 function startReview() {
   if (data.review.running) return 'A review is already running';
@@ -123,17 +133,47 @@ function startReview() {
   });
   return null;
 }
+function startWideReview() {
+  if (data.review.running) return 'A review is already running';
+  if (!data.root) return 'Not a git repository';
+  if (!wideOffer()) return wideEnabledMessage();
+  if (!data.brief?.text) return 'No brief to review yet';
+  if (data.brief.status === 'draft') return `The brief is missing ${data.brief.missing.join(', ')}`;
+  if (!data.review.path) return 'Still loading this branch’s reviews';
+  const controller = new AbortController(), path = data.review.path, startedAt = Date.now();
+  data.review.running = { controller, startedAt, wide: true, reviewers: [] };
+  const publish = (reviewers) => {
+    if (data.review.running?.controller === controller) data.review.running = { ...data.review.running, reviewers };
+    void reportDesk({ kind: 'wide review', startedAt }, reviewers);
+    draw();
+  };
+  void reportDesk({ kind: 'wide review', startedAt }, []);
+  wideReviewAndSave(cwd, {
+    brief: data.brief, files: data.files, settings: data.settings, signal: controller.signal,
+    host: data.claude?.host || hostFlag || 'claude', onProgress: publish,
+  }).then((run) => {
+    if (data.review.running?.controller === controller) data.review.running = null;
+    void reportDesk(null, []);
+    if (run.runs && path === data.review.path) { data.review.runs = run.runs; ui.rsel = 0; ui.scroll.review = 0; }
+    draw();
+  });
+  return null;
+}
+const wideEnabledMessage = () => (data.settings?.wideReview === true ? 'This diff is under the wide-review threshold' : 'Wide review is off');
 const cancelReview = () => data.review.running?.controller.abort();
 
 // The desk's own headless run, for the rail's Now section: <session id>.desk.json beside the hooks' activity
 // file. It carries this desk's pid, so a desk that quits mid-review doesn't leave a review "running" forever.
 const ACTIVITY = join(homedir(), '.claude', 'session-rail', 'activity');
-async function reportDesk(review) {
+const SETTINGS_FILE = join(homedir(), '.claude', 'session-rail', 'settings.json');
+const readSettings = () => { try { return JSON.parse(readFileSync(SETTINGS_FILE, 'utf8')) ?? {}; } catch { return {}; } };
+// `reviewers` is the wide review's named cast. An approach review clears it. The rail reads this file.
+async function reportDesk(review, reviewers = null) {
   const id = data.claude?.sessionId;
   if (!id) return;
   try {
     await mkdir(ACTIVITY, { recursive: true });
-    await writeFile(join(ACTIVITY, `${id}.desk.json`), JSON.stringify({ pid: process.pid, review, updatedAt: Date.now() }));
+    await writeFile(join(ACTIVITY, `${id}.desk.json`), JSON.stringify({ pid: process.pid, review, reviewers: reviewers ?? [], updatedAt: Date.now() }));
   } catch {}
 }
 
@@ -394,17 +434,32 @@ function reviewLines(w) {
     push(l, id);
   };
 
-  // The action row: Run (or the running review), and when each kind of review last ran, as far as it fits.
-  const parts = [running ? { action: 'cancel', label: `◌ Reviewing… ${Math.round((Date.now() - running.startedAt) / 1000)}s · x cancel`, colour: C.accent }
+  // The action row: Run (or the running review), Wide review when this diff is offered it, and when each
+  // kind of review last ran, as far as it fits. A small diff or the setting off leaves the row as it was.
+  const wide = wideRun();
+  const parts = [running ? { action: 'cancel', label: `◌ ${running.wide ? 'Wide review' : 'Reviewing'}… ${Math.round((Date.now() - running.startedAt) / 1000)}s · x cancel`, colour: C.accent }
     : { action: 'run', label: fail ? '↻ Retry review' : run ? '↻ Run again' : '▶ Run review', colour: C.accent }];
-  const used = width(parts[0].label) + 2;
-  const status = [run && `approach ${ago(run.finishedAt)}`, code && `code ${ago(code.finishedAt)}`].filter(Boolean);
+  if (!running && wideOffer()) parts.push({ action: 'wide', label: 'Wide review', colour: C.accent });
+  let used = 0;
+  for (const p of parts) used += width(p.label) + 2;
+  const status = [run && `approach ${ago(run.finishedAt)}`, wide && `wide ${ago(wide.finishedAt)}`, code && `code ${ago(code.finishedAt)}`].filter(Boolean);
   while (status.length && used + 2 + width(status.join(' · ')) > w) status.pop();
   if (status.length && !running) parts.push({ text: '  ' + dim(status.join(' · ')), plain: '  ' + status.join(' · ') });
   row(parts);
   push('');
+  if (!running && wideOffer()) {
+    for (const l of wrapRuns([{ t: 'Wide review splits this diff across file reviewers in worktrees, then a skeptic keeps one report.', s: 'text' }], w)) push(dim(l));
+    push('');
+  }
+  if (running?.wide && running.reviewers?.length) {
+    const live = running.reviewers.filter((r) => !r.endedAt);
+    const who = (live.length ? live : running.reviewers).map((r) => `${r.name} · ${r.what}`).join('   ');
+    for (const l of wrapRuns([{ t: who, s: 'text' }], w)) push(dim(l));
+    push('');
+  }
   if (fail) { for (const l of wrapRuns([{ t: `✗ The last review failed: ${clean(fail.error)}`, s: 'text' }], w)) push(fg(C.red, l)); push(''); }
-  if (!run && !code && !fail) {
+  const wideFail = wideFailed();
+  if (!run && !code && !wide && !fail && !wideFail) {
     const reviewCmd = agentName() === 'Grok' ? '/review' : '/code-review';
     const text = data.brief?.text
       ? `No reviews yet. ${agentName()} runs the approach review (the brief and its finished chunks, judged by a staff engineer) on the plan and after each chunk, and ${reviewCmd} over the whole branch before the merge. Run review checks the approach now (under a minute).`
@@ -414,9 +469,12 @@ function reviewLines(w) {
 
   // One finding: its status and where it is, the title, the detail, and a declined one's reason.
   let n = 0;
-  const finding = (f, isCode) => {
+  const finding = (f, kind) => {
+    const isCode = kind === 'code';
     const i = n++, [label, colour] = statusLabel(f, isCode);
-    const where = isCode ? `${f.file ? `${f.file}${f.line ? `:${f.line}` : ''} · ` : ''}${f.kind}` : `${f.chunk ? `chunk ${f.chunk} · ` : 'whole plan · '}${f.kind}`;
+    const where = kind === 'approach'
+      ? `${f.chunk ? `chunk ${f.chunk} · ` : 'whole plan · '}${f.kind}`
+      : `${f.file ? `${f.file}${f.line ? `:${f.line}` : ''} · ` : ''}${f.kind}`;
     push(fg(colour, label) + '  ' + dim(trunc(clean(where), Math.max(4, w - width(label) - 2))), i);
     const settled = ((f.status === 'applied' || f.status === 'declined') && !toCheck(f, isCode)) || f.acceptedAt;
     for (const l of wrapRuns(runs(f.title, 'text').map((r) => ({ ...r, s: r.s === 'text' && !settled ? 'bold' : r.s })), w, '    ')) push(settled ? dim(l) : l, i);
@@ -435,23 +493,32 @@ function reviewLines(w) {
       if (run.summary) for (const l of wrapRuns([{ t: clean(run.summary), s: 'text' }], w)) push(l);
       push('');
     }
-    for (const f of list.approach) finding(f, false);
+    for (const f of list.approach) finding(f, 'approach');
+  }
+  if (wide || wideFail || list.wide.length) {
+    if (wideFail) { for (const l of wrapRuns([{ t: `✗ Wide review failed: ${clean(wideFail.error)}`, s: 'text' }], w)) push(fg(C.red, l)); push(''); }
+    const o = openCount(list.wide);
+    heading(`Wide review · ${list.wide.length ? `${list.wide.length} finding${list.wide.length === 1 ? '' : 's'}${o ? `, ${o} open` : ''}` : 'no findings'}`);
+    if (wide?.summary) for (const l of wrapRuns([{ t: clean(wide.summary), s: 'text' }], w)) push(l);
+    push('');
+    for (const f of list.wide) finding(f, 'wide');
   }
   if (code) {
     const o = openCount(list.code);
     heading(`Code review · ${list.code.length ? `${list.code.length} finding${list.code.length === 1 ? '' : 's'}${o ? `, ${o} open` : ''}` : 'no findings'}`);
     push('');
-    for (const f of list.code) finding(f, true);
+    for (const f of list.code) finding(f, 'code');
   }
 
-  // Earlier runs of either kind, one line each.
-  const earlier = data.review.runs.filter((r) => !r.error && r !== run && r !== code);
+  // Earlier runs, one line each. The newest approach, wide and code runs are the sections above.
+  const earlier = data.review.runs.filter((r) => !r.error && r !== run && r !== code && r !== wide);
   if (earlier.length) {
     push(dim('── Earlier reviews ' + '─'.repeat(Math.max(0, w - 19))));
     for (const r of earlier) {
       const t = r.findings.length, count = (st) => r.findings.filter((f) => f.status === st).length;
       const tally = r.findings.some((f) => f.status) ? [count('applied') && `${count('applied')} applied`, count('declined') && `${count('declined')} declined`, count('open') && `${count('open')} open`].filter(Boolean).join(', ') : '';
-      push(dim(trunc(`${when(r.startedAt)} · ${r.type === 'code' ? 'code' : 'approach'} · ${t} finding${t === 1 ? '' : 's'}${tally ? ` · ${tally}` : ''}`, w)));
+      const kindName = r.type === 'code' ? 'code' : r.type === 'wide' ? 'wide' : 'approach';
+      push(dim(trunc(`${when(r.startedAt)} · ${kindName} · ${t} finding${t === 1 ? '' : 's'}${tally ? ` · ${tally}` : ''}`, w)));
     }
   }
   return { lines, ids, buttons };
@@ -602,6 +669,7 @@ if (pinnedPid) {
 // The Review tab's actions, shared by keys and button clicks.
 const review = (action) => {
   if (action === 'run') return toast(startReview() ?? 'Reviewing…');
+  if (action === 'wide') return toast(startWideReview() ?? 'Wide review…');
   if (action === 'cancel') return cancelReview();
 };
 const manual = (tab) => { ui.tab = tab; };
@@ -635,6 +703,7 @@ const handleKey = async (k) => {
   if (ui.tab === 'review') {
     const findings = listedAll();
     if (k === 'r') return review('run');
+    if (k === 'w' && wideOffer()) return review('wide');
     if (k === 'x') return review('cancel');
     if ((k === '\r' || k === 'l' || k === '\x1b[C') && findings[ui.rsel]?.file) return jumpTo(ui.rsel);
   }

@@ -4,9 +4,10 @@
 // a branch's review record (reviewer.mjs's store): finding statuses, what's still open, and why a merge must
 // wait. Pure, no Node APIs: shared by the hooks, the reviewer and the desk.
 //
-// A run: { type: 'approach' | 'code', startedAt, finishedAt, head, dirty, final?, manual?, verdict, summary, error?, findings }.
+// A run: { type: 'approach' | 'code' | 'wide', startedAt, finishedAt, head, dirty, final?, manual?, verdict, summary, error?, findings }.
 // `head` is the commit it reviewed, `dirty` whether there were uncommitted changes, and `manual` an approach
-// review run from the desk (on demand, not a chunk's). Runs from before the
+// review run from the desk (on demand, not a chunk's). A wide run is the optional skeptic review. It is never
+// required, and only the newest one's open findings keep a merge waiting. Runs from before the
 // cadence have no type (an approach review) and no head.
 // A finding: { id, kind, title, detail, severity, chunk?, file?, line?, status, outcome?, checked?, note? }, `status`
 // one of open, applied, declined; a code finding's `outcome` is its fixer's verdict and `checked` says an approach
@@ -19,16 +20,20 @@ export const KEEP_RUNS = 30;
 // The runs to save: the newest KEEP_RUNS, and any older one still holding an open finding, so the gate never
 // loses one by trimming.
 export const keptRuns = (runs) => runs.filter((r, i) => i < KEEP_RUNS || r.findings?.some((f) => f?.status === 'open'));
-export const runType = (r) => (r.type === 'code' ? 'code' : 'approach');
+export const runType = (r) => (r.type === 'code' ? 'code' : r.type === 'wide' ? 'wide' : 'approach');
 const tracked = (f) => STATUSES.includes(f.status);
 
 // The findings still open. Approach findings stay open across runs until a later review marks them; a code
 // review supersedes the one before it (a /code-review --fix re-reports with outcomes), so only the newest counts.
 export function openFindings(runs) {
   const approach = runs.filter((r) => !r.error && runType(r) === 'approach').flatMap((r) => r.findings);
+  // Newest first, same as the file. A later wide review replaces the one before it; declined findings
+  // (the skeptic's kills) are not open, so they do not keep the merge waiting.
+  const wide = runs.filter((r) => !r.error && runType(r) === 'wide');
   return {
     approach: approach.filter((f) => tracked(f) && f.status === 'open'),
     code: codeFindings(runs).filter((f) => f.status === 'open'),
+    wide: (wide[0]?.findings ?? []).filter((f) => tracked(f) && f.status === 'open'),
   };
 }
 
@@ -121,10 +126,11 @@ export function gateReason(runs, { head }) {
   const titles = (l) => l.slice(0, 3).map((f) => `"${f.title}"`).join(', ') + (l.length > 3 ? ` and ${l.length - 3} more` : '');
   if (open.approach.length) missing.push(`The approach review has ${open.approach.length} open finding${open.approach.length === 1 ? '' : 's'} (${titles(open.approach)}).`);
   if (open.code.length) missing.push(`/code-review has ${open.code.length} open finding${open.code.length === 1 ? '' : 's'} (${titles(open.code)}).`);
+  if (open.wide.length) missing.push(`The wide review has ${open.wide.length} open finding${open.wide.length === 1 ? '' : 's'} (${titles(open.wide)}).`);
   const unchecked = uncheckedFixes(runs);
   if (unchecked.length) missing.push(`The approach review hasn't checked what /code-review's fixer did about ${unchecked.length} finding${unchecked.length === 1 ? '' : 's'} (${titles(unchecked)}): call review_approach with final: true again.`);
   if (!missing.length) return null;
-  const capped = open.approach.length || open.code.length
+  const capped = open.approach.length || open.code.length || open.wide.length
     ? " Apply open findings, commit, and call review_approach with final: true to check them (or give your reason in its notes), at most two rounds; after that, list what is still open in the PR and ask the person instead of looping." : '';
   return `session-rail: merge after a final review of the whole branch. ${missing.join(' ')}${capped}`;
 }
