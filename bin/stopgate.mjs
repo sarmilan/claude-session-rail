@@ -3,12 +3,14 @@
 // once. stop_hook_active, an interrupt, or no command at all lets it through, so a folder with
 // nothing configured is never blocked and a block cannot loop.
 //
-// commandFromAgents is the seam for issue #52. It is handed the project's AGENTS.md when that
-// file exists and returns null until that issue reads a command out of it.
+// commandFromAgents reads a test command from the project's AGENTS.md. A fence tagged test,
+// then a Tests: line, then the first command under a Tests heading. Prose is not a command,
+// so a file that never names one does not gate the stop.
 
 import { clean } from './term.mjs';
 
-// This repo's own checks, from the dev notes, used only when nothing else names a command.
+// This repo's own checks, used only when nothing else names a command. AGENTS.md is the list
+// a session runs; its fence also starts with `claude plugin validate .`.
 export const WORKBENCH_TEST_COMMAND = 'claude plugin test . && node bin/rail.mjs --frame 42 40 && node bin/rail.mjs --frame 42 40 --tab git && node bin/desk.mjs --frame 80 40 --tab diff';
 
 // A finished decision can be reused for this long, so the command hook and the Claude hook of
@@ -83,16 +85,197 @@ export function settingFrom(project, local) {
   return undefined;
 }
 
+// Long enough for a joined check list, short enough that a pasted essay cannot become the command.
+const MAX_COMMAND = 2000;
+
+const TEST_TITLES = new Set(['test', 'tests', 'testing', 'test command', 'tests command']);
+
+// A line of explanation, not a program. `run` is left out so `run npm test` under a Tests
+// heading can still be a command; a bare sentence with no heading still matches nothing.
+const STOP_WORDS = new Set([
+  'the', 'a', 'an', 'see', 'this', 'that', 'these', 'those', 'keep', 'when', 'if', 'for',
+  'and', 'or', 'to', 'with', 'from', 'your', 'our', 'its', 'it', 'is', 'are', 'be', 'do',
+  'does', 'did', 'not', 'no', 'yes', 'all', 'any', 'some', 'then', 'also', 'just', 'please',
+  'you', 'we', 'they', 'on', 'in', 'of', 'at', 'as', 'by', 'how', 'what', 'where',
+]);
+
+const LABEL = /^(?:[-*+]|\d+[.)])?\s*(?:run\s+)?(?:testing|tests?)(?:\s+command)?\s*[:：]\s*(.+)$/i;
+
+function linesOf(text) {
+  return String(text).replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+}
+
+function headingOf(line) {
+  const m = /^ {0,3}(#{1,6})\s+(.+?)\s*$/.exec(line);
+  if (!m) return null;
+  const title = m[2].replace(/\s+#+\s*$/, '').replace(/[`*_]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+  return { level: m[1].length, title };
+}
+
+function fenceOf(line) {
+  const m = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+  if (!m) return null;
+  const marker = m[1];
+  const info = (m[2] || '').trim().split(/\s+/)[0]?.toLowerCase() || '';
+  return { char: marker[0], len: marker.length, info };
+}
+
+function isTestInfo(info) {
+  return info === 'test' || info === 'tests';
+}
+
+function isShellInfo(info) {
+  return info === '' || info === 'sh' || info === 'bash' || info === 'shell' || info === 'zsh' || info === 'console' || isTestInfo(info);
+}
+
+// "See the notes." is a sentence. "claude plugin validate ." is a command: the dot is its own word.
+function endsSentence(body) {
+  if (/[!?]$/.test(body)) return true;
+  return /[A-Za-z0-9)]\.$/.test(body);
+}
+
+function isCommandToken(token) {
+  if (token.startsWith('./') || token.startsWith('~/') || token.startsWith('/')) {
+    return /^[A-Za-z0-9._~+/-]+$/.test(token);
+  }
+  return /^[a-z0-9][a-z0-9+._-]*(?:\/[A-Za-z0-9._+-]+)*$/.test(token);
+}
+
+function commandBody(line) {
+  let t = line.trim();
+  const bullet = /^[-*+]\s+(.+)$/.exec(t);
+  if (bullet) t = bullet[1].trim();
+  const quoted = /^`([^`]+)`$/.exec(t);
+  if (quoted) t = quoted[1].trim();
+  return t;
+}
+
+function validCommand(body) {
+  const t = String(body || '').trim();
+  if (!t || t.length > MAX_COMMAND || /[\0\r\n]/.test(t) || endsSentence(t)) return null;
+  const token = t.split(/\s+/)[0];
+  if (!token || STOP_WORDS.has(token.toLowerCase()) || !isCommandToken(token)) return null;
+  return t;
+}
+
+function joinCommands(cmds) {
+  if (!cmds.length) return null;
+  const joined = cmds.join(' && ');
+  return joined.length <= MAX_COMMAND ? joined : null;
+}
+
+// A fence is an explicit block: keep every command line, skip blanks, comments, and prose.
+function commandsFromFence(lines) {
+  const cmds = [];
+  for (const line of lines) {
+    if (!line.trim() || /^\s*#/.test(line)) continue;
+    const body = validCommand(commandBody(line));
+    if (body) cmds.push(body);
+  }
+  return joinCommands(cmds);
+}
+
+// Bare lines under a heading: the first run of commands, stopping at the next sentence.
+function commandsFromProse(lines) {
+  const cmds = [];
+  for (const line of lines) {
+    if (!line.trim() || /^\s*#/.test(line)) {
+      if (cmds.length) break;
+      continue;
+    }
+    const body = validCommand(commandBody(line));
+    if (!body) {
+      if (cmds.length) break;
+      continue;
+    }
+    cmds.push(body);
+  }
+  return joinCommands(cmds);
+}
+
+function labelCommand(line) {
+  const stripped = line.trim().replace(/\*\*/g, '').replace(/__/g, '');
+  const m = LABEL.exec(stripped);
+  if (!m) return null;
+  const rest = m[1].trim();
+  const tick = /`([^`]+)`/.exec(rest);
+  return validCommand(tick ? tick[1].trim() : rest);
+}
+
 /**
- * The test command an AGENTS.md names.
- * Issue #52 will parse `text`. Until then this returns null, and a project is not gated just
- * because that file exists.
+ * The test command an AGENTS.md names, or null when it names none.
+ * A project is not gated just because the file exists.
+ * First match: a fence tagged `test`, then a Tests: line, then the first command under a
+ * heading named Tests, Testing, or Test command.
  * @param {string | null | undefined} text
  * @returns {string | null}
  */
 export function commandFromAgents(text) {
-  void text;
-  return null;
+  if (text == null || typeof text !== 'string') return null;
+  const src = text.replace(/<!--[\s\S]*?-->/g, '');
+  if (!src.trim()) return null;
+  const lines = linesOf(src);
+  let tagged = null;
+  let labeled = null;
+  let section = null;
+  let fence = null;
+  let sectionLevel = 0;
+  let prose = [];
+
+  const flushProse = () => {
+    if (!section && sectionLevel) {
+      const cmd = commandsFromProse(prose);
+      if (cmd) section = cmd;
+    }
+    prose = [];
+  };
+
+  for (const line of lines) {
+    if (fence) {
+      const close = fenceOf(line);
+      if (close && close.char === fence.char && close.len >= fence.len && close.info === '') {
+        const cmd = commandsFromFence(fence.buf);
+        if (cmd && fence.tagged && !tagged) tagged = cmd;
+        if (cmd && fence.inSection && !section) section = cmd;
+        fence = null;
+      } else {
+        fence.buf.push(line);
+      }
+      continue;
+    }
+    const opened = fenceOf(line);
+    if (opened) {
+      flushProse();
+      fence = {
+        char: opened.char, len: opened.len, buf: [],
+        tagged: isTestInfo(opened.info),
+        inSection: sectionLevel > 0 && isShellInfo(opened.info),
+      };
+      continue;
+    }
+    const heading = headingOf(line);
+    if (heading) {
+      flushProse();
+      if (sectionLevel && heading.level <= sectionLevel) sectionLevel = 0;
+      if (!sectionLevel && TEST_TITLES.has(heading.title)) sectionLevel = heading.level;
+      continue;
+    }
+    if (!labeled) {
+      const cmd = labelCommand(line);
+      if (cmd) labeled = cmd;
+    }
+    if (sectionLevel && !section) {
+      if (!line.trim()) flushProse();
+      else prose.push(line);
+    }
+  }
+  if (fence) {
+    const cmd = commandsFromFence(fence.buf);
+    if (cmd && fence.tagged && !tagged) tagged = cmd;
+    if (cmd && fence.inSection && !section) section = cmd;
+  }
+  flushProse();
+  return tagged || labeled || section || null;
 }
 
 // npm's own placeholder fails on purpose. It is not a project test suite.
