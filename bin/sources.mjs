@@ -1,10 +1,11 @@
 // Data sources for the session rail. Every exported function resolves to plain JSON and never throws.
 import { execFile } from 'node:child_process';
-import { readFile, readdir, lstat, stat, open } from 'node:fs/promises';
+import { readFile, readdir, lstat, stat, open, unlink } from 'node:fs/promises';
 import { hostname, homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { parseBrief, briefStatus, NO_BRIEF_BRANCHES } from './brief.mjs';
 import { buildTree, reviewLineFrom } from './branchmap.mjs';
+import { activityNames, mainCheckout, planWorktrees, staleActivity, ACTIVITY_GRACE_MS } from './prune.mjs';
 import { eventsFromRecord, keep, splitAsk } from './sessionstory.mjs';
 
 const HOME = homedir();
@@ -39,6 +40,22 @@ const runCode = (cmd, args, { cwd, timeout = 10_000 } = {}) =>
     execFile(cmd, args, { cwd, timeout, maxBuffer: 4 << 20 }, (err, stdout) =>
       resolve({ code: err ? (typeof err.code === 'number' ? err.code : 1) : 0, out: stdout?.toString() ?? '' }));
   });
+// Like runCode, and keeps stderr. `git worktree remove` explains a refusal there.
+const runText = (cmd, args, { cwd, timeout = 10_000 } = {}) =>
+  new Promise((resolve) => {
+    execFile(cmd, args, { cwd, timeout, maxBuffer: 1 << 20 }, (err, stdout, stderr) =>
+      resolve({
+        code: err ? (typeof err.code === 'number' ? err.code : 1) : 0,
+        out: stdout?.toString() ?? '',
+        err: stderr?.toString() ?? '',
+      }));
+  });
+const oneLine = (s) => String(s ?? '')
+  .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '')
+  .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, ' ')
+  .trim()
+  .split('\n')[0]
+  .slice(0, 160);
 
 const readJson = async (path) => {
   try { return JSON.parse(await readFile(path, 'utf8')); } catch { return null; }
@@ -156,6 +173,85 @@ export async function activity(sessionId) {
   if (!feed?.claude) return review ? { claude: null, running: [], recent: [], desk: review } : null;
   return { claude: feed.claude, running: feed.running ?? [], recent: feed.recent ?? [], gate: feed.gate ?? null, compacted: feed.compacted ?? null,
     agents: feed.agents ?? {}, turns: feed.turns ?? [], tasks: feed.tasks ?? [], desk: review };
+}
+
+// Session files on disk, live or not: Claude's ~/.claude/sessions/<pid>.json and Grok's active list.
+// A pid that is gone marks that session id dead, so its activity can be deleted without waiting out the grace.
+async function knownSessions() {
+  const rows = [];
+  try {
+    for (const configDir of await claudeDirs()) {
+      let files = [];
+      try { files = (await readdir(join(configDir, 'sessions'))).filter((f) => /^\d+\.json$/.test(f)); } catch { files = []; }
+      for (const f of files) {
+        const s = await readJson(join(configDir, 'sessions', f));
+        if (s?.sessionId && s.pid) rows.push({ id: String(s.sessionId), pid: Number(s.pid) });
+      }
+    }
+  } catch { /* the grace period still covers a file we could not match */ }
+  const active = await readJson(join(GROK, 'active_sessions.json'));
+  for (const s of Array.isArray(active) ? active : []) {
+    if (s?.session_id && s.pid) rows.push({ id: String(s.session_id), pid: Number(s.pid) });
+  }
+  return rows;
+}
+
+const ACTIVITY_FILE = /^([^/]+?)(?:\.(desk|rail))?\.json$/;
+
+// Delete activity, desk, and rail-tab files whose session is gone. Live session ids, and any file whose
+// own pid is still running, are left. A file written inside the grace window stays unless that session
+// id is already known dead. `dir` is the activity directory (tests pass their own). Never throws.
+export async function pruneActivity({ liveIds = [], deadIds = [], dir, now = Date.now(), graceMs = ACTIVITY_GRACE_MS, scan = dir == null } = {}) {
+  try {
+    const root = dir ?? join(CLAUDE, 'session-rail', 'activity');
+    let names = [];
+    try { names = await readdir(root); } catch { return { ok: true, removed: [] }; }
+    const live = [...liveIds];
+    const dead = [...deadIds];
+    if (scan) {
+      for (const s of await knownSessions()) (alive(s.pid) ? live : dead).push(s.id);
+    }
+    const entries = [];
+    for (const name of names) {
+      const m = ACTIVITY_FILE.exec(name);
+      if (!m) continue;
+      const kind = m[2] || 'activity';
+      let mtimeMs = 0;
+      try { mtimeMs = (await stat(join(root, name))).mtimeMs; } catch { continue; }
+      let pid = null;
+      if (kind !== 'rail') {
+        const json = await readJson(join(root, name));
+        const p = Number(json?.pid);
+        if (Number.isInteger(p) && p > 0) pid = p;
+      }
+      entries.push({ name, sessionId: m[1], kind, mtimeMs, pid });
+    }
+    const stale = staleActivity(entries, { liveIds: live, deadIds: dead, now, graceMs, alive });
+    const removed = [];
+    for (const name of stale) {
+      try { await unlink(join(root, name)); removed.push(name); } catch { /* already gone */ }
+    }
+    return { ok: true, removed };
+  } catch {
+    return { ok: false, removed: [] };
+  }
+}
+
+// Drop one session's activity, desk, and rail-tab files. Used when the session actually ends.
+// An id that is not a plain file name deletes nothing.
+export async function forgetSession(id, dir) {
+  try {
+    const names = activityNames(id);
+    if (!names.length) return { ok: false, removed: [] };
+    const root = dir ?? join(CLAUDE, 'session-rail', 'activity');
+    const removed = [];
+    for (const name of names) {
+      try { await unlink(join(root, name)); removed.push(name); } catch { /* missing */ }
+    }
+    return { ok: true, removed };
+  } catch {
+    return { ok: false, removed: [] };
+  }
 }
 
 // The session's own transcript: what the person asked, the prompt each handoff carried, and what came back.
@@ -564,6 +660,39 @@ export async function worktrees(cwd) {
   }));
   // The repo is named after the main checkout, git's first entry, even when it's bare and has no card.
   return { ok: true, repo: blocks[0] ? basename(blocks[0].worktree).replace(/\.git$/, '') : null, base: baseName, items };
+}
+
+// Remove one + new worktree. `confirm` must be exactly true: the rail sets it after the person picks Remove.
+// Never --force. A dirty tree, an unmerged branch, the checkout you are in, or a live session is refused
+// even when confirm is set. The check is redone here, not trusted from the list the menu was drawn from.
+const liveCovers = (paths, dir) => (paths ?? []).some((p) => p === dir || (p && dir && p.startsWith(`${dir}/`)));
+export async function removeWorktree(cwd, target, { confirm = false, livePaths = [] } = {}) {
+  try {
+    if (confirm !== true) return { ok: false, reason: 'confirm' };
+    if (!target) return { ok: false, reason: 'missing' };
+    const list = await worktrees(cwd);
+    if (!list.ok) return { ok: false, reason: 'git' };
+    const scanned = (await sessions()).map((s) => s.cwd).filter(Boolean);
+    const live = [...livePaths, ...scanned];
+    const plan = planWorktrees(list.items, { mainPath: mainCheckout(list.items), livePaths: live });
+    const hit = plan.remove.find((r) => r.path === target);
+    if (!hit) {
+      const item = list.items.find((i) => i.path === target);
+      if (!item) return { ok: false, reason: 'missing' };
+      if (item.current) return { ok: false, reason: 'current' };
+      if (liveCovers(live, item.path)) return { ok: false, reason: 'live' };
+      if (item.dirty !== 0) return { ok: false, reason: item.dirty == null ? 'unknown' : 'dirty' };
+      return { ok: false, reason: 'unmerged' };
+    }
+    // One more status, in case the tree changed between the list and this call. Untracked files count.
+    const porcelain = await run('git', ['status', '--porcelain'], { cwd: target });
+    if (porcelain == null || porcelain.split('\n').some(Boolean)) return { ok: false, reason: 'dirty' };
+    const removed = await runText('git', ['worktree', 'remove', target], { cwd, timeout: 30_000 });
+    if (removed.code !== 0) return { ok: false, reason: 'git', message: oneLine(removed.err || removed.out) || "Couldn't remove the worktree" };
+    return { ok: true, path: target };
+  } catch {
+    return { ok: false, reason: 'git' };
+  }
 }
 
 // The session this rail belongs to: newest live CLI session in the rail's folder (or a parent/child of it).

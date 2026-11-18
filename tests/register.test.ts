@@ -70,12 +70,12 @@ test('outside iTerm2 the message names the panel', async ($, on) => {
   expect(result.text).toBe('The desk only opens when Claude runs in iTerm2.')
 })
 
-test('session end closes both panels, but /clear keeps them', async ($, on) => {
+test('session end closes both panels and drops its activity files, but /clear keeps them', async ($, on) => {
   const calls = harness(on, 'closed')
   await $.session.end({ reason: 'clear', sessionId: 'a' })
   expect(calls.length).toBe(0)
   await $.session.end({ reason: 'prompt_input_exit', sessionId: 'a' })
-  expect(calls).toEqual(['pane.mjs close rail', 'pane.mjs close desk'])
+  expect(calls).toEqual(['pane.mjs close rail', 'pane.mjs close desk', '? session-rail-forget a'])
 })
 
 // ── The session brief ─────────────────────────────────────────────────────────

@@ -280,7 +280,7 @@ function detailLead(prefix) {
  * Rows for one frame. `open` is { [branch]: true } for lanes expanded in place.
  * Diff stats are this checkout's, from the environment, so they move between the minute refreshes.
  */
-export function layoutTree(tree, { inner = 40, open = {}, added = 0, removed = 0, dirty = 0, sessionLabel = () => 'Go to session' } = {}) {
+export function layoutTree(tree, { inner = 40, open = {}, added = 0, removed = 0, dirty = 0, sessionLabel = () => 'Go to session', extra = () => [] } = {}) {
   const nodes = [];
   const walkFlat = (n) => { nodes.push(n); n.children.forEach(walkFlat); };
   tree.roots.forEach(walkFlat);
@@ -348,6 +348,10 @@ export function layoutTree(tree, { inner = 40, open = {}, added = 0, removed = 0
         if (node.checkedOut && node.path) push({ left: [part(sessionLabel(node), 'plain')] }, 'session', { id: `act:${node.name}:session` });
         if (node.pr?.url) push({ left: [part(`Open PR #${node.pr.number}`, 'plain')] }, 'pr', { id: `act:${node.name}:pr`, url: node.pr.url });
         if (node.name) push({ left: [part('Copy branch name', 'plain')] }, 'copy', { id: `act:${node.name}:copy` });
+        for (const act of extra(node) ?? []) {
+          if (!act?.label) continue;
+          push({ left: [part(act.label, 'plain')] }, act.activate ?? null, { id: act.id });
+        }
       }
       emit(node.children, childPrefix);
     });

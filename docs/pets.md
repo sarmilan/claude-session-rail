@@ -100,7 +100,7 @@ A tick is about 200ms.
 
 ![after a minute of idle the turtle tucks into its shell, zs float up, its baby tucked beside it](media/reactions/sleep.gif)
 
-**Hop and shake.** Adult hops a short arc about every three seconds. Heavy hops twice as often, higher, and sometimes rattles in place. A chunk just marked Done hops once, higher, whatever the stage.
+**Hop and shake.** Adult hops a short arc about every three seconds. Heavy hops twice as often, higher, and sometimes rattles in place. A chunk just marked Done hops once, higher, whatever the stage. Clearing a finished worktree hops once the same way, with nothing new over its head.
 
 **Flinch.** A failed tool call shakes the body and pops a red-and-orange puff for a second and a half. The fliers scatter and the babies duck behind it. After the puff, a small red droop stays, and the body sits a little lower, until a later tool call succeeds. A refusal from the brief gate does not flinch. Red is only this.
 

@@ -600,10 +600,22 @@ export const register: Register = on => {
   })
 
   // /clear keeps the same process (the rail follows it by pid), so only close on a real end.
+  // A real end also drops this session's activity, desk, and rail-tab files. The id is an argument, not
+  // part of the command string. The rail's sweep catches a session that was killed before this ran.
   on('session.end', async ($, e, next) => {
     if (e.reason !== 'clear') {
       await pane($, 'close', 'rail')
       await pane($, 'close', 'desk')
+      const ended = e as { sessionId?: string }
+      let id = typeof ended.sessionId === 'string' ? ended.sessionId : ''
+      if (!id) id = await $.session.id().catch(() => '')
+      if (/^[A-Za-z0-9._-]{1,200}$/.test(id)) {
+        await $.process.run([
+          '/bin/sh', '-c',
+          'id="$1"; case "$id" in ""|*[!A-Za-z0-9._-]*) exit 0;; esac; d="$HOME/.claude/session-rail/activity"; rm -f "$d/$id.json" "$d/$id.desk.json" "$d/$id.rail.json"',
+          'session-rail-forget', id,
+        ], { timeoutMs: 5_000 }).catch(() => {})
+      }
     }
     return next(e)
   })
