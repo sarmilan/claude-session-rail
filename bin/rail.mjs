@@ -579,6 +579,7 @@ function buildMain(W) {
       tasks: data.tasks.running,
       desk: act?.desk,
       compacted: act?.compacted && Date.now() - act.compacted.at < 3600_000 ? act.compacted : null,
+      tests: act?.tests,
       now: Date.now(),
     });
     const told = layoutStory(story, { inner, open: ui.expanded });
@@ -814,6 +815,22 @@ if (args.includes('--frame')) {
     }
     recent.unshift({ tool: 'Grep', arg: 'agent.spawn', ok: true, at: t - 3000, ms: 40, agent: 'sample0' });
     data.activity = { ...a, claude: { state: 'tool', since: t - 20000 }, running, recent, agents: { ...a.agents, ...agents } };
+  }
+  // A failed Stop gate: one line in the story, and the same droop as a failed tool.
+  // `--tests-failed [command]` pins it for a frame. A following flag is not a command.
+  if (args.includes('--tests-failed')) {
+    const named = flag('--tests-failed');
+    const command = named && !named.startsWith('-') ? named : 'npm test';
+    const t = Date.now();
+    data.current = data.current || { host: hostFlag === 'grok' ? 'grok' : 'claude', status: 'waiting', statusSince: t, sessionId: 'frame', pid: 1, cwd };
+    const a = data.activity || { running: [], recent: [], agents: {} };
+    data.activity = {
+      ...a,
+      claude: a.claude || { state: 'waiting', since: t },
+      running: a.running || [],
+      recent: [{ tool: 'test', arg: command, ok: false, at: t, ms: 20 }, ...(a.recent || [])],
+      tests: { at: t, ok: false, command, detail: '' },
+    };
   }
   feedPet(W); mascot.setHeld(false);
   // let it walk to its spot on the road (at a past time, so no blink is left on the frame), then hold it there
