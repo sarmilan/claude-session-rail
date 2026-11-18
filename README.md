@@ -179,7 +179,7 @@ Files: src/a.ts, src/b.ts
 ![the desk's plan tab showing an approved brief: problem, solution, design, mockups and engineering chunks](docs/media/desk-plan-brief.png)
 
 - As you talk the problem through, Claude or Grok says when it's scoped out and writes the brief. You don't need to ask. It tells you the plan is in the Plan tab only after rendering this session's desk and seeing the brief there.
-- Claude can't edit code (Edit, Write, NotebookEdit) until the brief has a problem, a solution and at least one chunk, and you've pressed **Approve** in the Plan tab (or `A`, or `/approve-brief` when the desk isn't open). Writes Claude makes through the shell aren't covered.
+- Claude can't edit code (Edit, Write, NotebookEdit) until the brief has a problem, a solution and at least one chunk, and you've pressed **Approve** in the Plan tab (or `A`, or `/approve-brief` when the desk isn't open). On this release a write made through the shell is outside that gate. [PR #61](https://github.com/sarmilan/workbench/pull/61) is open and not merged. It would hold a shell command that creates, overwrites, moves, or deletes a file in the checkout on the same gate. See [Safe use](#safe-use).
 
   ![a hatchling snail standing still at the left edge with a yellow ? over its head, babies piled at its heel](docs/media/reactions/held.gif)
 - Approving is the go-ahead: within a couple of seconds the plugin sends Claude a message to start on chunk 1, so you never have to type "go". It waits until Claude is idle and doesn't type over what you're writing.
@@ -272,6 +272,23 @@ It has these parts:
 2. **The desk** (`bin/desk.mjs`) draws the wider panel. It reads the branch's brief (`bin/brief.mjs`), finds the plan file in the session's conversation log, asks `git` for the diff and `gh` for the board's Todo issues. Its reviewer (`bin/reviewer.mjs`) runs the approach review through `claude -p` with a JSON schema for the findings, read-only tools, no MCP servers and no saved session, and keeps each branch's reviews in `.git/session-rail/reviews/`. Claude runs the same reviewer through its CLI (`node bin/reviewer.mjs --run [--final] [--notes …]`), which the plugin's `review_approach` tool calls. `bin/cadence.mjs` holds the rules: finding statuses, what's open, and when a merge must wait.
 3. **The pane opener** (`bin/pane.mjs`) uses iTerm2's AppleScript support to fill the screen, split Claude's pane, run each panel (desk next to Claude, rail on the far right), size them in one pass, and hand focus back to Claude. The rail also uses it to bring another session's window to the front and to open the window for a new session.
 4. **The plugin** (`hooks/register.ts`) keeps a live record of what the session is doing (`hooks/activity.ts`: turns, every tool call, the prompt cache from each main-loop request (`bin/cache.mjs`), subagents with the names it gave them at `agent.spawn`, the prompt each one was handed, what it answered, and the brief gate) in `~/.claude/session-rail/activity/<session id>.json`, which the rail reads every second; the desk adds its running review beside it. Grok's hook (`bin/grok-hook.mjs`) writes the same file. It also opens both panels when a session starts, adds `/rail`, `/desk` and `/approve-brief`, and closes them when the session ends. On a feature branch it adds the brief's instructions to Claude's system prompt, refuses code edits until the brief is approved, watches for the approval (`hooks/goahead.ts`) to tell Claude to start, compacts the session after a finished, merged branch and before a waiting session's cache goes cold (`hooks/compact.ts`), serves `review_approach`, records each `/code-review` report in the branch's reviews, and refuses `gh pr merge` until the final reviews are in. Settings shared by the rail and the hooks (font size, auto-compact, warm compact) live in `~/.claude/session-rail/settings.json`; each rail keeps its open tab in `<session id>.rail.json` beside the session's activity file.
+
+## Safe use
+
+Workbench runs on your Mac. It is not a container. The plugin can split iTerm2, focus a session, open a window, and type a line into a pane (`bin/pane.mjs`). Those calls run as you. Claude Code's Bash sandbox and Grok's sandbox profile do not wrap them, and they do not wrap file tools, MCP servers, or plugin hooks. A session can read and write what you approve, including files outside the repo. [OpenHands](https://docs.openhands.dev/openhands/usage/sandboxes/overview) runs the agent in a Docker sandbox by default. This plugin does not. An unattended loop wants a disposable machine and credentials that are not your real ones.
+
+Start Claude in Manual mode, without `--dangerously-skip-permissions`. Start Grok in ask mode, without `--always-approve`. Approve a brief for a checkout you mean the agent to edit. The sample in [docs/safe-use](docs/safe-use.md) is a starting point, not a guarantee. Merge [`claude.settings.json`](docs/safe-use/claude.settings.json) into `~/.claude/settings.json`, and the Grok files on that page into `~/.grok/`. It keeps Manual mode, asks before `git push` and `gh pr merge`, denies a few destructive and credential paths, and turns the Bash sandbox on with auto-allow left off.
+
+A Bash deny matches the command text. `Bash(curl *)` does not stop `/usr/bin/curl` or `sh -c 'curl …'`. The sandbox is the operating-system boundary for shell commands. File tools follow permission rules, outside that sandbox.
+
+When you choose "Yes, and don't ask again" for a Bash command or a WebFetch domain, Claude Code saves the allow rule to `.claude/settings.local.json` at the main checkout, including from a worktree. **+ new** worktrees share that file.
+
+On this release the brief gate covers Edit, Write, and NotebookEdit. [PR #61](https://github.com/sarmilan/workbench/pull/61) is open and not merged. It would hold a shell command that creates, overwrites, moves, or deletes a file in the checkout on that same gate.
+
+- [Configure permissions](https://code.claude.com/docs/en/permissions)
+- [Configure the sandboxed Bash tool](https://code.claude.com/docs/en/sandboxing)
+- [Grok permissions](https://docs.x.ai/build/features/permissions)
+- [Grok sandbox](https://docs.x.ai/build/features/sandbox)
 
 ## Good to know
 
