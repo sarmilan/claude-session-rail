@@ -129,6 +129,42 @@ Click a row, or use the arrow keys and Enter, to open it. On Session, Enter expa
 
 **+ new**, on the Sessions heading, starts another session without touching this one. Type the problem on the rail's bottom line and press Enter (Esc cancels). The rail adds a git worktree of the repo at the latest `main`, beside the repo in `<repo>.worktrees/<name>`, opens a new iTerm window there, at the same size and place as this one, and runs `claude "/start <your problem>"`, so `/start` files the issue and makes the branch inside that worktree. Each session has its own checkout, so two sessions never edit the same files, and each window gets its own Claude │ desk │ rail. With one tab per window iTerm shows no tab bar: the Sessions list is how you move between them.
 
+## A scheduled chore
+
+One chore, off until you turn it on. It re-checks failing CI for the branch you have open. It is not a general cron, and it is not `/loop` (that stays inside one session).
+
+Turn it on with **↻ Chores** in the rail's settings (`"chores": true` in `~/.claude/session-rail/settings.json`). Then either press **↻ Re-run failing CI** under Sessions, or run the schedule path from the repo:
+
+```
+node bin/chore-run.mjs start --budget 5
+node bin/chore-run.mjs round --dry-run --failing lint
+node bin/chore-run.mjs round --dry-run --failing test
+node bin/chore-run.mjs round --dry-run --failing typecheck
+node bin/chore-run.mjs show
+```
+
+`/schedule` is that same path. The command file tells the session to run it and to stop there.
+
+What you get:
+
+- Its own worktree, detached, beside the repo in `<repo>.worktrees/chore-<id>`, so it cannot edit the checkout you have open. On a Mac where iTerm is already running it also opens its own window. It never launches iTerm itself.
+- A budget counted in rounds, not dollars. The rail does not show session cost, so the cap is not a dollar figure. The default is 5. There is no unlimited run. Each round costs one, whether or not it found work.
+- A state file at `.git/session-rail/chores/<id>.json`. The first field is a short summary: what was tried, which rounds were empty, the spend, and that a person reviews before anything merges.
+- A stop after two empty rounds (nothing failing, no checks, or no pull request) or when the budget is spent. The next round is refused and the spend does not move.
+- A row on Sessions: busy while a round runs, waiting when it is your turn to review, blocked when it has stopped itself.
+
+The brief gate and the review cadence are unchanged. The chore does not edit the repo, does not approve the brief, and does not run `gh pr merge`. You merge, after the reviews you already require.
+
+The three dry runs above spend 3 of 5. The state file is what you read. A live round (leave off `--dry-run`) asks `gh pr view` for the pull request's checks. Green, or no pull request, is an empty round.
+
+**Leave it off** when any of these is true:
+
+- The machine would be unattended. This includes overnight on the host Mac, a standing auto-approve, and any runner that merges while you are away. The chore does not sandbox the Mac and it does not approve anything for you.
+- You do not want a budget. There is no way to run it without a round cap.
+- There is no signal. With no checks and no tests, every round is empty and it stops after two. It will not have fixed anything.
+
+Details and the empty-round example are in [docs/chores.md](docs/chores.md).
+
 ## The desk
 
 ```
@@ -255,7 +291,7 @@ If macOS asks whether to allow controlling iTerm2, allow it. That's how the pane
 - `/rail` hides or shows the rail, and `/desk` the desk.
 - They close when you quit Claude.
 - Keys: `↑` `↓` to move, `Enter` to open, `Esc` to go back, `c` to change creature, `q` to close the rail.
-- **⚙ settings**, in the rail's bottom-right corner, opens four rows under the creature: `←` `→` on **Font size** makes the Claude pane, the desk and the rail bigger or smaller together (`Enter` for Reset), `←` `→` on **Pet** picks the creature, `←` `→` on **Auto-compact** turns auto-compaction after a merged branch off or on, and `←` `→` on **Before cache cold** does the same for the warm compact (not shown under Grok). The font size is remembered and comes back with the next session. It works by switching the panes to iTerm profiles it generates (`session-rail 15pt` and so on), which show up in iTerm's Profiles menu.
+- **⚙ settings**, in the rail's bottom-right corner, opens the rows under the creature: `←` `→` on **Font size** makes the Claude pane, the desk and the rail bigger or smaller together (`Enter` for Reset), `←` `→` on **Pet** picks the creature, `←` `→` on **Auto-compact** turns auto-compaction after a merged branch off or on, and `←` `→` on **Before cache cold** does the same for the warm compact (not shown under Grok). `←` `→` on **Chores** turns the CI chore on or off. It ships off. The font size is remembered and comes back with the next session. It works by switching the panes to iTerm profiles it generates (`session-rail 15pt` and so on), which show up in iTerm's Profiles menu.
 - A little pixel creature wanders along the bottom: a snail, a turtle (with a bright green shell, warm amber when heavy) or a crab. It walks through its own habitat (woodland for the snail, a pond for the turtle, a beach for the crab) on speckled ground (soil, mud or sand), with plants swaying gently behind it in iTerm2. Sand puffs under the crab, and the reeds bend when the turtle hops. It hurries while the agent is busy, looks left and fidgets while it is waiting for you, and falls asleep only after a real lull. Your pick is remembered.
 - The strip is the branch's road, left to right: the creature paces around a spot that moves right as the brief's chunks get Done, from the left edge before approval to the right edge when all of them are, and walks briskly to its new spot after each one. Each Done chunk leaves a marker behind it (a mushroom, a lily pad or a shell) and the creature hops with a gold sparkle. With no brief, that spot is how full the context window is. Until the window's size is known, it wanders the whole strip.
 - Each running subagent brings a visitor, a bee, butterfly, dragonfly or ladybird in turn, tinted with that subagent's colour (up to 4, and a `+n` when more are running). They flutter around the creature, settle when things are quiet, scatter when a tool fails, and fly off when their subagent finishes.

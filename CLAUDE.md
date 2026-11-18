@@ -17,6 +17,7 @@ Workbench is the rail and the desk beside Claude or Grok, opened as an iTerm2 sp
 - `bin/fontsize.mjs`: one font size for the Claude, desk and rail panes (Settings in the rail). Writes generated iTerm profiles to `~/Library/Application Support/iTerm2/DynamicProfiles/session-rail.json` and switches each pane with `OSC 1337;SetProfile`
 - `bin/brief.mjs`: the session brief in `.git/session-rail/briefs/<branch>.md` (parse, status, approval record, `mainCheckoutNote`). Pure, no Node APIs: shared by the desk and the hooks
 - `bin/sources.mjs`: data sources. Every export resolves to plain JSON and never throws. `sessionsOverview` feeds the rail's Sessions; `worktrees`, `environment().commits` and `prs()` (with each PR's `checks`) feed its Git tab; `newWorktree` adds the detached worktree for **+ new** in `<repo>.worktrees/<slug>`
+- `bin/chore.mjs`: the CI chore's rules (pure, no Node APIs). One round costs one of a round budget (not dollars). Two empty rounds, or a spent budget, stop the loop with no further spend. `merge` stays `human`. `bin/chore-run.mjs` is the runner (`start`, `round`, `stop`, `show`): a detached worktree, the state file in `.git/session-rail/chores/`, and a window only when iTerm is already running. Off unless `chores` is true. The rail lists it as busy, waiting, or blocked when the setting is on (`--chores on|off` overrides one frame)
 - `bin/mascot.mjs`: the mascot at the bottom of the rail: movement, inline PNG in iTerm2, Unicode octants in `--frame`/elsewhere
 - `bin/creatures.mjs`: the mascot sprites (34×16 pixel drawings, palette, gait). Add a creature by appending to `CREATURES`.
 - `bin/habitats.mjs`: the foliage behind the mascot (woodland, pond, beach), picked by each creature's `habitat`
@@ -45,6 +46,7 @@ claude plugin test .
 node bin/rail.mjs --frame 42 40
 node bin/rail.mjs --frame 42 40 --tab git
 node bin/desk.mjs --frame 80 40 --tab diff
+node --test tests/chore.test.mjs
 ```
 Type-check with a tsconfig that includes the engine's `claude-code.d.ts` and `hooks/` (see the header of that file).
 
