@@ -9,6 +9,10 @@ When you start `claude`, two panes open on the right:
 
 If you have a `/start` command of your own, it runs as soon as the session starts.
 
+![workbench in iterm: claude on the left, the desk with the plan tab in the middle, the rail with sessions, now, context and the turtle on the right](docs/media/workbench-window.png)
+
+The picture is a mock. The session text and the numbers are made up.
+
 ```
 ┌─ claude ──────────────────────────┬─ rail ───────────────────────────┐
 │                                   │ ──────────────────────────────── │
@@ -61,6 +65,8 @@ The rail has two tabs: **Session**, how this session is thinking, and **Git**, w
  │  └  the tab now opens each handoff
  ▸ you   the pet should follow the session
 ```
+
+![the rail's session tab: sessions, now with wren and otto, environment, context with cache and usage rows, and the pet at the bottom](docs/media/rail-session.png)
 
 The banner is the only status. `Now` names who is working and the ask they were given. Two people read `Wren and Otto`. `Held` means the brief just stopped an edit. `waiting for you` means the turn has ended. A tool with no handoff names the file, as in `reading rail.mjs`. That sentence is not repeated on the row below.
 
@@ -170,8 +176,12 @@ Done: <summary>             ← added as each chunk is finished
 Files: src/a.ts, src/b.ts
 ```
 
+![the desk's plan tab showing an approved brief: problem, solution, design, mockups and engineering chunks](docs/media/desk-plan-brief.png)
+
 - As you talk the problem through, Claude or Grok says when it's scoped out and writes the brief. You don't need to ask. It tells you the plan is in the Plan tab only after rendering this session's desk and seeing the brief there.
 - Claude can't edit code (Edit, Write, NotebookEdit) until the brief has a problem, a solution and at least one chunk, and you've pressed **Approve** in the Plan tab (or `A`, or `/approve-brief` when the desk isn't open). Writes Claude makes through the shell aren't covered.
+
+  ![a hatchling snail standing still at the left edge with a yellow ? over its head, babies piled at its heel](docs/media/reactions/held.gif)
 - Approving is the go-ahead: within a couple of seconds the plugin sends Claude a message to start on chunk 1, so you never have to type "go". It waits until Claude is idle and doesn't type over what you're writing.
 - Once approved, nothing blocks again. If the problem, solution or outline changes later, the Plan tab says "changed since" and offers **Approve again**, which tells Claude the change is approved so it carries on.
 - Claude works through the chunks in order. As each one is finished, it checks it against the plan (running the tests), adds a short `Done:` summary and its `Files:`, runs the approach review and applies its findings, runs what it built once for real, commits it on its own and pushes, opening the pull request after the first chunk, then moves straight on to the next chunk unless something needs your decision.
