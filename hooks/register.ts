@@ -697,6 +697,9 @@ export const register: Register = on => {
           JSON.stringify({ rateLimits: e.rateLimits }),
         ])
         .catch(() => {})
+    // The host's session ledger (cost.usd). Absent on a build that does not send it, and never filled in here.
+    const usd = (e as { cost?: { usd?: number } }).cost?.usd
+    if (typeof usd === 'number') record($, a => act.notedCost(a, usd, Date.now()))
     return next(e)
   })
 
