@@ -37,6 +37,16 @@ export function compacted(a, after, now) {
 export function refused(a, tool, file, now) {
   return { ...a, updatedAt: now, gate: { at: now, tool, file } };
 }
+// The Stop test gate. The same `at` recorded twice (the command hook and the Claude hook) is one row.
+export function noteTests(a, note, now) {
+  const at = note.at || now;
+  const command = oneLine(note.command, 120);
+  const ok = note.ok === true;
+  const detail = oneLine(note.detail, 200);
+  const row = { tool: 'test', arg: command || 'tests', ok, at, ms: note.ms || 0 };
+  const recent = [row, ...(a.recent ?? []).filter((r) => !(r.tool === 'test' && r.at === at))].slice(0, RECENT);
+  return { ...a, updatedAt: now, recent, tests: { at, ok, command, detail } };
+}
 export function agentStarted(a, id, agent) {
   return { ...a, updatedAt: agent.since, agents: { ...a.agents, [id]: agent } };
 }

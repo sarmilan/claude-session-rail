@@ -1,0 +1,18 @@
+# Starting point, not a guarantee. Merge into a repo's .grok/config.toml.
+# A project file can set [permission]. It cannot set permission_mode or the sandbox profile.
+# deny wins over ask, and ask wins over allow. A Bash pattern matches the command text,
+# so Bash(curl *) does not match /usr/bin/curl or sh -c 'curl …'.
+
+[permission]
+ask = [
+  "Bash(git push *)",
+  "Bash(gh pr merge *)",
+  "Bash(npm publish *)",
+]
+deny = [
+  "Bash(rm -rf *)",
+  "Bash(rm -fr *)",
+  "Bash(curl *)",
+  "Bash(wget *)",
+  "Bash(sudo *)",
+]

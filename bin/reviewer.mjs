@@ -11,6 +11,7 @@ import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { briefCore } from './brief.mjs';
 import { STATUSES, applyChecks, openFindings, staffCheck, keptRuns, trackFindings, uncheckedFixes } from './cadence.mjs';
+import { publishReview } from './publish.mjs';
 import { branchFiles, readBrief, reviewsPath, run as exec } from './sources.mjs';
 
 export const KINDS = ['simpler', 'scope', 'cost', 'goal-gap', 'elegance'];
@@ -219,6 +220,8 @@ export async function reviewAndSave(cwd, { final = false, manual = false, notes 
   // A failed run is kept only as the newest, to say why; it never pushes real reviews out.
   const runs = [saved, ...applyChecks(withReplies(await loadReviews(path)), checks).filter((r) => !r.error)];
   await saveReviews(path, runs);
+  // The review is already saved. Posting the status is best-effort and never changes the verdict.
+  try { await publishReview({ cwd, runs, head: saved.head }); } catch { /* GitHub can be absent */ }
   return { ...saved, checks, runs };
 }
 

@@ -1,20 +1,40 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir, homedir } from 'node:os';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { callFinished, callStarted, fresh, heard, noteReply, replied, trackTasks, turnEnded, turnStarted } from '../bin/activity.mjs';
 import { attentionFor } from '../bin/mascot.mjs';
-import { checkoutName, inWorkTree, mainCheckoutNote } from '../bin/brief.mjs';
-import { armTurn, editReason, procedure, slashCommand, takeProcedure } from '../bin/grok-hook.mjs';
+import { approvalRecord, briefFile, checkoutName, inWorkTree, mainCheckoutNote, parseBrief } from '../bin/brief.mjs';
+import { armTurn, editReason, handle, procedure, readBrief, schedulePublish, slashCommand, takeProcedure } from '../bin/grok-hook.mjs';
 import { briefInstructions, deskOutsideNote, outsideRepoNote } from '../bin/brief-instructions.mjs';
 import { C, fg, paneBgOff, paneBgOn, usePalette } from '../bin/term.mjs';
 import { connectorsFrom, contextFrom, eventsFromText, rowFromActive, usageFromBilling } from '../bin/sources.mjs';
 import { reviewPayload } from '../bin/reviewer.mjs';
 import { goAhead, startWanted, step } from '../bin/grok-watch.mjs';
+import { buildStory } from '../bin/sessionstory.mjs';
 
 const brief = {
   branch: 'feature/x', path: '/repo/.git/session-rail/briefs/x.md',
   approvedPath: '/repo/.git/session-rail/briefs/x.approved.json', dir: '/repo/.git/session-rail/',
   text: null, approval: null,
 };
+
+test('a saved code review schedules the pull request status', () => {
+  const seen = [];
+  const ok = schedulePublish('/repo', (bin, args, opts) => {
+    seen.push({ bin, args, opts });
+    return { unref() {} };
+  });
+  assert.equal(ok, true);
+  assert.equal(seen[0].bin, process.execPath);
+  assert.match(seen[0].args[0], /publish\.mjs$/);
+  assert.deepEqual(seen[0].args.slice(1), ['--cwd', '/repo']);
+  assert.equal(seen[0].opts.detached, true);
+  assert.equal(seen[0].opts.stdio, 'ignore');
+  assert.equal(schedulePublish('/repo', () => { throw new Error('no'); }), false);
+});
 
 test('a Grok review verdict in the message text is the payload', () => {
   const verdict = { verdict: 'on-track', summary: 'ok', findings: [], checks: [] };
@@ -90,6 +110,8 @@ test('the brief procedure waits for this session desk frame', () => {
   assert.match(text, /desk\.mjs --frame 72 24 --tab plan/);
   assert.match(text, /If that frame does not show this brief/);
   assert.match(text, /do not write one in place of the brief/);
+  assert.match(text, /shell command that writes a file/);
+  assert.match(text, /git log still runs/);
   assert.equal(text.includes("say it's in the desk's Plan tab"), false);
 });
 
@@ -269,4 +291,111 @@ test('grok connectors are its own servers plus Twitter and GitHub, without the C
   assert.equal(built.connected, 3);
   const bare = connectorsFrom({ user: {}, github: null });
   assert.deepEqual(bare.items, []);
+});
+
+// ── Shell writes and the brief gate ──────────────────────────────────────────
+const agent = { host: 'grok', tty: '/dev/ttys001', pid: process.pid };
+const BRIEF = `# T
+## Problem
+Currently it's A; we need B to solve A.
+## Solution
+As a dev, I should be able to Y so I can Z.
+## Engineering
+### Chunk 1: first
+Do the first thing.
+`;
+
+function initRepo(branch) {
+  const cwd = mkdtempSync(join(tmpdir(), 'rail-shell-'));
+  execFileSync('git', ['init', '-q', '-b', branch], { cwd });
+  // An empty repo has no HEAD commit, and `rev-parse HEAD` then fails, so the hook cannot see the branch.
+  writeFileSync(join(cwd, 'README.md'), 'x\n');
+  const git = ['-C', cwd, '-c', 'user.email=t@example.com', '-c', 'user.name=Test'];
+  execFileSync('git', [...git, 'add', 'README.md']);
+  execFileSync('git', [...git, 'commit', '-q', '-m', 'init']);
+  return cwd;
+}
+
+function approveRepo(cwd, branch) {
+  const common = execFileSync('git', ['-C', cwd, 'rev-parse', '--path-format=absolute', '--git-common-dir'], { encoding: 'utf8' }).trim();
+  const path = briefFile(common, branch, 'md');
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, BRIEF);
+  writeFileSync(briefFile(common, branch, 'approved.json'), approvalRecord(parseBrief(BRIEF), 1));
+  return path;
+}
+
+function pre(cwd, command, tool, id) {
+  return handle({
+    hook_event_name: 'PreToolUse', session_id: id, cwd, tool_name: tool, tool_input: { command },
+  }, agent);
+}
+
+test('a shell write is denied until the brief is approved, and git log is not', () => {
+  const prev = process.env.SESSION_RAIL_HEADLESS;
+  delete process.env.SESSION_RAIL_HEADLESS;
+  const cwd = initRepo('feature/x');
+  const id = `shell-${process.pid}-${Date.now()}`;
+  try {
+    const denied = pre(cwd, 'cat > src/a.ts', 'run_terminal_command', id);
+    assert.equal(denied.decision, 'deny');
+    assert.equal(denied.reason, editReason(readBrief(cwd), join(cwd, 'src/a.ts')));
+    const tee = pre(cwd, 'tee src/a.ts', 'Bash', `${id}-tee`);
+    assert.equal(tee.decision, 'deny');
+    assert.match(tee.reason, /wait for the session brief/);
+    const logged = pre(cwd, 'git log', 'run_terminal_command', `${id}-log`);
+    assert.notEqual(logged?.decision, 'deny');
+    const act = JSON.parse(readFileSync(join(homedir(), '.claude', 'session-rail', 'activity', `${id}.json`), 'utf8'));
+    const story = buildStory({ gate: act.gate, now: Date.now() });
+    assert.equal(story.banner.kind, 'held');
+    assert.match(story.banner.text, /brief stopped run_terminal_command/);
+    assert.match(story.banner.text, /a\.ts/);
+
+    approveRepo(cwd, 'feature/x');
+    const allowed = pre(cwd, 'cat > src/a.ts', 'run_terminal_command', `${id}-ok`);
+    assert.notEqual(allowed?.decision, 'deny');
+    const merge = pre(cwd, 'gh pr merge 25 --merge', 'run_terminal_command', `${id}-merge`);
+    assert.equal(merge.decision, 'deny');
+    assert.match(merge.reason, /merge after a final review/);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+    if (prev === undefined) delete process.env.SESSION_RAIL_HEADLESS;
+    else process.env.SESSION_RAIL_HEADLESS = prev;
+  }
+});
+
+test('on main a shell write in the repo is denied, the brief file can be written, and its approval file cannot', () => {
+  const prev = process.env.SESSION_RAIL_HEADLESS;
+  delete process.env.SESSION_RAIL_HEADLESS;
+  const cwd = initRepo('main');
+  const id = `shell-main-${process.pid}-${Date.now()}`;
+  try {
+    const denied = pre(cwd, 'echo hi > src/a.ts', 'Bash', id);
+    assert.equal(denied.decision, 'deny');
+    assert.match(denied.reason, /No brief for main/);
+    assert.match(denied.reason, /Plan tab/);
+    const outside = pre(cwd, 'echo hi > /tmp/plan.md', 'Bash', `${id}-out`);
+    assert.notEqual(outside?.decision, 'deny');
+    const logged = pre(cwd, 'git log', 'Bash', `${id}-log`);
+    assert.notEqual(logged?.decision, 'deny');
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+    if (prev === undefined) delete process.env.SESSION_RAIL_HEADLESS;
+    else process.env.SESSION_RAIL_HEADLESS = prev;
+  }
+
+  const feature = initRepo('feature/x');
+  const fid = `shell-brief-${process.pid}-${Date.now()}`;
+  try {
+    const common = execFileSync('git', ['-C', feature, 'rev-parse', '--path-format=absolute', '--git-common-dir'], { encoding: 'utf8' }).trim();
+    const briefPath = briefFile(common, 'feature/x', 'md');
+    const approved = briefFile(common, 'feature/x', 'approved.json');
+    const wrote = pre(feature, `cat > ${briefPath}`, 'run_terminal_command', fid);
+    assert.notEqual(wrote?.decision, 'deny');
+    const blocked = pre(feature, `echo '{}' > ${approved}`, 'run_terminal_command', `${fid}-no`);
+    assert.equal(blocked.decision, 'deny');
+    assert.match(blocked.reason, /only the person approves/);
+  } finally {
+    rmSync(feature, { recursive: true, force: true });
+  }
 });

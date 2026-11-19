@@ -8,6 +8,8 @@ import { pickColour, pickName } from '../bin/names.mjs'
 import { keep } from '../bin/sessionstory.mjs'
 import { nextCache } from '../bin/cache.mjs'
 import { codeRun, gateReason as reviewWait, keptRuns, mergesPr, reportFromText, reviewsFile } from '../bin/cadence.mjs'
+import { resolveWritePath, shellWrites } from '../bin/shellwrite.mjs'
+import { lockPath, performGate, projectCommand, runInProgress, RUN_TIMEOUT_MS, sessionIdOf, shellLine, reuseDecision } from '../bin/stopgate.mjs'
 
 // The controller (bin/pane.mjs) does the iTerm work; this module only decides when to call it.
 // It runs through sh so the user's PATH finds `node`; the script path is passed as an argument,
@@ -43,10 +45,12 @@ const runStart = async ($: EngineInterface) => {
 
 // ── The session brief (bin/brief.mjs) ─────────────────────────────────────────
 // On a feature branch, Claude writes the branch's brief before editing code, and the person approves it
-// in the desk (Approve, or A) or with /approve-brief. Until then Edit, Write and NotebookEdit are refused,
-// except on the brief itself. Once approved, edits stay allowed even if the brief changes later: the desk
-// shows "changed since approval" and a review of the change. On main, master, or a detached HEAD there is
-// no brief: the prompt says to branch first, and a repo edit is refused with that note. Bash isn't gated.
+// in the desk (Approve, or A) or with /approve-brief. Until then Edit, Write, NotebookEdit, and a shell
+// command that writes a file (bin/shellwrite.mjs) are refused, except on the brief itself. Once approved,
+// edits stay allowed even if the brief changes later: the desk shows "changed since approval" and a review
+// of the change. On main, master, or a detached HEAD there is no brief: the prompt says to branch first,
+// and a repo edit is refused with that note. A shell command that only reads (git log, tests) still runs,
+// and so does a commit. gh pr merge stays on the review gate.
 type Brief = {
   branch: string
   common: string
@@ -116,7 +120,7 @@ Work the brief out with the person before editing any code. Don't wait to be ask
 
 ${BRIEF_SHAPE}
 
-Keep the solution and the outline the simplest way to reach the goal. Edit, Write and NotebookEdit calls on any other file are refused until the brief has a problem, a solution and at least one chunk, and the person has approved it. When it's complete, call the review_approach tool on it (a plan review: the cheapest time to change course), work its findings into the brief, then ask them to review it and press Approve in the desk's Plan tab. Never approve it yourself or write its approval file.
+Keep the solution and the outline the simplest way to reach the goal. Edit, Write and NotebookEdit calls, and a shell command that writes a file in the checkout, are refused on any other file until the brief has a problem, a solution and at least one chunk, and the person has approved it. A read-only command such as git log still runs. When it's complete, call the review_approach tool on it (a plan review: the cheapest time to change course), work its findings into the brief, then ask them to review it and press Approve in the desk's Plan tab. Never approve it yourself or write its approval file.
 
 While you work, keep the brief current: if the problem, the solution or the outline changes, update the brief right away.
 
@@ -131,7 +135,7 @@ Files: <comma-separated paths relative to the repo root>
 6. Push the branch. After the first chunk's commit, also open a pull request for the branch, titled after the brief, with its Problem and Solution as the description and a Progress checklist of the chunks; tick each chunk as it lands, noting its approach review (for example "review: 2 findings, applied"). Later pushes update it.
 7. Move straight on to the next chunk without waiting for the person, unless something needs their decision.
 
-Before merging, which waits for the person to say so: run /code-review --fix over the whole branch (against the default branch) and commit and push its fixes. Then call review_approach with final: true: it also checks what the code review's fixer did (that fixes landed, and whether each skip or "no change" is sound). Apply what it finds, commit and push, and call it with final: true once more to check them: at most two rounds. If something is still open after that, list it in the PR and ask the person instead of looping. The plugin refuses gh pr merge until the code review has run since the last chunk's review, the final approach review has run after it on the last commit with nothing uncommitted, and nothing is open.
+Before merging, which waits for the person to say so: run /code-review --fix over the whole branch (against the default branch) and commit and push its fixes. Then call review_approach with final: true: it also checks what the code review's fixer did (that fixes landed, and whether each skip or "no change" is sound). Apply what it finds, commit and push, and call it with final: true once more to check them: at most two rounds. If something is still open after that, list it in the PR and ask the person instead of looping. The plugin refuses gh pr merge until the code review has run since the last chunk's review, the final approach review has run after it on the last commit with nothing uncommitted, and nothing is open. After each saved approach review and code review it posts the commit status session-rail/review from that record. success is only a clear gate. Do not post that status yourself.
 
 At the end of the session, check the work against the brief's Problem and Solution.`
 
@@ -161,6 +165,24 @@ const gate = async ($: EngineInterface, tool: string, file: string) => {
     : gateReason(b)
   if (reason) record($, a => act.refused(a, tool, file, Date.now()))
   return reason
+}
+
+// A shell write waits on the same gate as Edit. shellWrites names the files; a `null` entry is a write
+// whose path isn't literal, so it's treated as a file in the checkout (the person can run it themselves).
+// The refusal is the same record the rail shows as Held, and the pet's ? rather than a droop.
+const shellGate = async ($: EngineInterface, command: string) => {
+  const targets = shellWrites(command)
+  if (!targets) return null
+  const head = await gitHead($)
+  const cwd = head?.cwd ?? (await $.session.cwd())
+  const root = head?.root || cwd
+  for (const target of targets) {
+    const file = target == null ? `${root}/shell-write` : resolveWritePath(cwd, target)
+    if (!file) continue
+    const deny = await gate($, 'Bash', file)
+    if (deny) return deny
+  }
+  return null
 }
 
 // ── The review cadence (bin/cadence.mjs) ──────────────────────────────────────
@@ -207,6 +229,11 @@ const recordCodeReview = async ($: EngineInterface, report: unknown) => {
   const tmp = `${runsPath(b)}.${Date.now()}.tmp`
   await $.fs.write(tmp, JSON.stringify({ runs: keptRuns(runs) }, null, 1))
   await $.process.run(['mv', '-f', tmp, runsPath(b)], { timeoutMs: 5_000 })
+  // The review is already saved. The script posts session-rail/review and exits 0; a missing gh changes nothing.
+  await $.process.run(
+    ['/bin/sh', '-c', 'exec node "$0" --cwd "$1"', `${$.plugin.root}/bin/publish.mjs`, cwd],
+    { timeoutMs: 20_000 },
+  ).catch(() => undefined)
 }
 
 // What a run's prompt is told: end with a findings block that carries the run's token, so the plugin knows
@@ -426,6 +453,101 @@ const message = (state: string, panel: Panel) => {
   return messages[state] ?? `Couldn't open or close the ${name.toLowerCase()} (is node on your PATH?).`
 }
 
+// ── The Stop test gate (bin/stopgate.mjs) ─────────────────────────────────────
+// The command comes from the checkout's tests.json, then session-rail.json, then a command
+// named in AGENTS.md, then a real package.json test script, then this repo's own checks.
+// Nothing configured means the stop is allowed. The lock lets this hook and the command hook
+// share one run.
+const readText = async ($: EngineInterface, path: string) => {
+  try { return String(await $.fs.read(path)) } catch { return null }
+}
+const readJsonFile = async ($: EngineInterface, path: string) => {
+  const text = await readText($, path)
+  if (text == null) return null
+  try { return JSON.parse(text) as Record<string, unknown> } catch { return null }
+}
+const dirOf = (p: string) => p.slice(0, Math.max(0, p.lastIndexOf('/')))
+const loadStopProject = async ($: EngineInterface) => {
+  const cwd = await $.session.cwd()
+  const top = await $.process.run(['git', '-C', cwd, 'rev-parse', '--show-toplevel'], { timeoutMs: 5_000 }).catch(() => null)
+  const topLine = top && top.exitCode === 0 ? top.stdout.trim().split('\n')[0] : ''
+  const root = topLine && topLine.startsWith('/') && !topLine.includes('\n') ? topLine : cwd
+  const commonRun = await $.process.run(['git', '-C', cwd, 'rev-parse', '--path-format=absolute', '--git-common-dir'], { timeoutMs: 5_000 }).catch(() => null)
+  const commonLine = commonRun && commonRun.exitCode === 0 ? commonRun.stdout.trim().split('\n')[0] : ''
+  const common = commonLine && commonLine.startsWith('/') ? commonLine : ''
+  const [project, local, agentsText, pkg, plugin] = await Promise.all([
+    readJsonFile($, `${root}/session-rail.json`),
+    common ? readJsonFile($, `${common}/session-rail/tests.json`) : Promise.resolve(null),
+    readText($, `${root}/AGENTS.md`),
+    readJsonFile($, `${root}/package.json`),
+    readJsonFile($, `${root}/.claude-plugin/plugin.json`),
+  ])
+  let hasRail = false
+  if (plugin?.name === 'session-rail') {
+    try { hasRail = Boolean(await $.fs.exists(`${root}/bin/rail.mjs`)) } catch { hasRail = false }
+  }
+  const scripts = pkg?.scripts
+  const packageScript = scripts && typeof scripts === 'object' ? (scripts as { test?: unknown }).test : undefined
+  const resolved = projectCommand({
+    project, local, agentsText,
+    packageScript: typeof packageScript === 'string' ? packageScript : undefined,
+    pluginName: typeof plugin?.name === 'string' ? plugin.name : undefined,
+    hasRail,
+  })
+  return { root, command: resolved.command }
+}
+const stopOn = async ($: EngineInterface, event: Record<string, unknown>) => {
+  if (await $.env.get('SESSION_RAIL_HEADLESS').catch(() => '')) return { action: 'allow' as const, quiet: true }
+  const home = await $.env.get('HOME').catch(() => '')
+  const path = home ? lockPath(home, sessionIdOf(event)) : ''
+  const readLock = async () => {
+    if (!path) return null
+    const text = await readText($, path)
+    if (text == null) return null
+    try { return JSON.parse(text) as { key?: string; at?: number; done?: boolean; decision?: { action?: string; at?: number; ok?: boolean; command?: string; detail?: string; quiet?: boolean; reason?: string } } } catch { return null }
+  }
+  const writeLock = async (record: unknown) => {
+    if (!path) return
+    try {
+      await $.process.run(['mkdir', '-p', dirOf(path)], { timeoutMs: 5_000 })
+      await $.fs.write(path, JSON.stringify(record))
+    } catch { /* a missed lock only risks a second run */ }
+  }
+  const decision = await performGate(event, {
+    now: () => Date.now(),
+    load: () => loadStopProject($),
+    readLock,
+    writeLock,
+    // Sleep counts toward the hook's own time limit, so this only bridges a run that has
+    // just started. The command hook is the one that can wait out a long suite.
+    wait: async (key: string) => {
+      for (let i = 0; i < 8; i++) {
+        await $.clock.sleep(200)
+        const saved = await readLock()
+        const reused = reuseDecision(saved, key, Date.now())
+        if (reused) return reused
+        if (!runInProgress(saved, key, Date.now())) return null
+      }
+      return null
+    },
+    run: async (command: string, root: string) => {
+      try {
+        const proc = await $.process.run(['/bin/sh', '-c', shellLine(root, command)], { timeoutMs: RUN_TIMEOUT_MS })
+        return { exitCode: proc.exitCode, output: `${proc.stdout || ''}\n${proc.stderr || ''}`, timedOut: false, spawnError: null }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        return { exitCode: 1, output: message, timedOut: /timed out|timeout/i.test(message), spawnError: message }
+      }
+    },
+  })
+  if (!decision.quiet && decision.ok != null) {
+    record($, a => act.noteTests(a, {
+      at: decision.at, ok: decision.ok === true, command: decision.command, detail: decision.detail,
+    }, decision.at || Date.now()))
+  }
+  return decision
+}
+
 const COMMANDS = [
   { name: 'rail', description: 'Open or close the rail beside this pane' },
   { name: 'desk', description: 'Open or close the desk (plan, diff and code review) beside this pane' },
@@ -540,7 +662,8 @@ export const register: Register = on => {
     }
   })
 
-  // The gate: code edits wait for an approved brief. A failure in the gate lets the edit through.
+  // The gate: code edits, including a shell command that writes a file, wait for an approved brief.
+  // A failure in the gate lets the edit through.
   on('tool.call', { tool: 'Edit' }, async ($, e, next) => {
     const deny = await gate($, 'Edit', e.file_path)
     return deny ? { deny } : next(e)
@@ -557,7 +680,7 @@ export const register: Register = on => {
   // The review cadence: merges wait for the reviews, and /code-review's report is recorded.
   on('tool.call', { tool: 'mcp__session-rail__review_approach' }, async ($, e) => ({ result: await runReview($, e as never) }) as never)
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
-    const deny = await reviewGate($, e.command)
+    const deny = (await shellGate($, e.command)) ?? (await reviewGate($, e.command))
     return deny ? { deny } : next(e)
   }).catch(($, e, next) => next(e))
   // /code-review's output contract is a JSON block, not ReportFindings: on a gated branch an armed run's prompt
@@ -596,7 +719,25 @@ export const register: Register = on => {
           JSON.stringify({ rateLimits: e.rateLimits }),
         ])
         .catch(() => {})
+    // The host's session ledger (cost.usd). Absent on a build that does not send it, and never filled in here.
+    const usd = (e as { cost?: { usd?: number } }).cost?.usd
+    if (typeof usd === 'number') record($, a => act.notedCost(a, usd, Date.now()))
     return next(e)
+  })
+
+  // The Stop test gate (bin/stopgate.mjs). hooks.json runs the same rules as a command hook, which
+  // is what exits 2; this one covers Claude when Stop is delivered to the module, and the tests.
+  // A failure here lets the stop through. The command hook still runs when this calls next.
+  on('classic.Stop', async ($, e, next) => {
+    let decision: { action?: string; reason?: string } = { action: 'allow' }
+    try { decision = await stopOn($, e as Record<string, unknown>) } catch { /* fail open */ }
+    // next runs the command hook too. A throw there must not drop a block we already decided.
+    let rest: unknown
+    try { rest = await next(e) } catch { rest = {} }
+    // preventContinuation is what a classic.Stop hook returns to hold the turn. stopReason is
+    // the text Claude is sent back with. The command hook's exit 2 is the same block.
+    if (decision.action === 'block') return { preventContinuation: true, stopReason: decision.reason || 'tests failed' }
+    return rest
   })
 
   // /clear keeps the same process (the rail follows it by pid), so only close on a real end.

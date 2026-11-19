@@ -1,6 +1,7 @@
 // What the session is doing right now, for the rail's Now section. register.ts feeds it from the engine's
 // events and writes it to ~/.claude/session-rail/activity/<session id>.json; bin/sources.mjs reads it.
 // Pure: no engine calls here.
+import { nextCost } from '../bin/cost.mjs'
 
 export type Call = { id: string; tool: string; arg: string; since: number; agent?: string }
 export type Finished = { tool: string; arg: string; ok: boolean; at: number; ms: number; agent?: string }
@@ -20,6 +21,9 @@ export type Activity = {
   recent: Finished[]
   // The brief gate's latest refusal.
   gate?: { at: number; tool: string; file: string }
+  // The Stop test gate's latest run. A failure is also a row in `recent` (tool `test`), so the pet
+  // flinches and droops the way it does for any failed call. `detail` is one line of the output.
+  tests?: { at: number; ok: boolean; command: string; detail: string }
   // Subagents by agentId, named at their spawn: the live ones, and the last few that ended (so the story can name them).
   agents?: Record<string, Agent>
   // What the person asked and what the main agent answered, newest last. The transcript is the long copy.
@@ -29,6 +33,8 @@ export type Activity = {
   // The main conversation's prompt cache (bin/cache.mjs): when a request last renewed it, its lifetime, whether
   // the account is on a plan, and the prompt it holds in tokens.
   cache?: { at: number; ttl: '5m' | '1h'; plan: boolean; tokens: number; compactedAt?: number }
+  // Claude's session ledger (bin/cost.mjs): the host's cost.usd, and the rise since the previous reading.
+  cost?: { usd: number; at: number; turnUsd?: number }
 }
 
 const RECENT = 8
@@ -82,8 +88,23 @@ export function compacted(a: Activity, after: string, now: number): Activity {
 export function cached(a: Activity, cache: Activity['cache'], now: number): Activity {
   return cache === a.cache ? a : { ...a, updatedAt: now, cache }
 }
+// Claude's session.measure cost.usd. A reading that is not a usable total leaves the ledger as it was.
+export function notedCost(a: Activity, usd: number, now: number): Activity {
+  const cost = nextCost(a.cost, usd, now)
+  return !cost || cost === a.cost ? a : { ...a, updatedAt: now, cost }
+}
 export function refused(a: Activity, tool: string, file: string, now: number): Activity {
   return { ...a, updatedAt: now, gate: { at: now, tool, file } }
+}
+// The Stop test gate. The same `at` recorded twice (the command hook and this module) is one row.
+export function noteTests(a: Activity, note: { at?: number; ok?: boolean; command?: string; detail?: string; ms?: number }, now: number): Activity {
+  const at = note.at || now
+  const command = oneLine(note.command, 120)
+  const ok = note.ok === true
+  const detail = oneLine(note.detail, 200)
+  const row: Finished = { tool: 'test', arg: command || 'tests', ok, at, ms: note.ms || 0 }
+  const recent = [row, ...a.recent.filter(r => !(r.tool === 'test' && r.at === at))].slice(0, RECENT)
+  return { ...a, updatedAt: now, recent, tests: { at, ok, command, detail } }
 }
 export function agentStarted(a: Activity, id: string, agent: Agent): Activity {
   return { ...a, updatedAt: agent.since, agents: { ...a.agents, [id]: agent } }
