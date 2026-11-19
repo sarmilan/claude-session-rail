@@ -217,7 +217,11 @@ Two reviews, each where it pays off:
 - **The code review** (`/code-review --fix`) runs once, **before merging** (still only when you say so), over the whole branch, and its fixes are committed. Then `review_approach` with `final: true` gives it a staff-engineer pass: it checks that claimed fixes landed, and accepts each skip or "no change" or reopens it. Claude applies what it finds, commits, and calls it once more to check, at most two rounds. Anything still open after that is listed in the PR, and Claude asks you instead of looping.
   - The plugin notices the Skill tool running `/code-review` (or you typing it), gives the run a token, and asks it to end with its findings as a JSON block that carries the token. Then it records the answer that does, whether the review ran in a forked agent or inline.
 - **The gate:** the plugin refuses Claude's `gh pr merge` until the code review has run since the last chunk's review, the final approach review has run after it on the last commit with nothing uncommitted, and nothing is open. Claude is told what's missing. Commits aren't gated.
-- **The PR's Progress checklist** notes each chunk's approach review.
+- **On the pull request:** after each approach review and each code review, the plugin posts a commit status named `session-rail/review` on that commit, and updates one comment on the pull request. `success` is posted only when the gate above is clear. Open findings, a missing code review, or a final review that has not run are `failure`. The plugin does not post `success` because a review said so in prose, and it does not post a status you did not record. Do not post `session-rail/review` yourself. Set `SESSION_RAIL_PUBLISH=0` to leave the record only in `.git`.
+- The status is not a required check. You can still merge the pull request yourself, and `git merge` is not blocked. To make GitHub refuse the merge until the status passes, add `session-rail/review` as a required status check on the branch (Settings → Rules → Rulesets, or the branch protection rule). The context shows up in the list after it has been posted once; you can type the name. That rule is off until you add it.
+- To also fail a pull request that has no status at all, copy `docs/session-rail-review.yml` to `.github/workflows/session-rail-review.yml`. The workflow only reads the status. It fails when `session-rail/review` is missing or not `success`, and it does not create a passing status. It does not run until that copy is in `.github/workflows`. Mark the workflow required as well if a missing status should block the merge. Until you do, it only reports.
+- The desk's Review tab says when the pull request is already merged, or GitHub will let a person merge it, and the record is not clean.
+- **The PR's Progress checklist** notes each chunk's approach review. The status and the comment are the record a teammate can see without this Mac's `.git` directory.
 
 The gate only covers commands Claude runs, so you can always merge yourself. A `/code-review` you type yourself counts too. **Run review** in the desk runs an approach review on demand.
 
@@ -226,7 +230,7 @@ The gate only covers commands Claude runs, so you can always merge yourself. A `
 - A Mac with iTerm2
 - Claude Code 2.1.319 or newer
 - Node.js 18 or newer
-- The GitHub CLI (`gh`), for the pull request list (optional)
+- The GitHub CLI (`gh`), for the pull request list and for posting the review status (optional; without it the record stays in `.git`)
 
 ## Install
 

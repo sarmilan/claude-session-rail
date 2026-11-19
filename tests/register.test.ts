@@ -574,7 +574,7 @@ const block = (run: string | null, findings: unknown[]) => 'Done.\n```json\n' + 
 const FINDINGS = [{ summary: 'off by one', outcome: 'fixed' }, { summary: 'docs', outcome: 'skipped' }, { summary: 'left' }]
 
 test('a /code-review run is recorded from the answer that carries its token, whoever gives it', async ($, on) => {
-  const { files } = reviewHarness(on)
+  const { files, calls } = reviewHarness(on)
   await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
   // Preloaded, not run: the prompt is left alone.
   expect(await prompt($)).toBe('Review the diff.')
@@ -594,6 +594,7 @@ test('a /code-review run is recorded from the answer that carries its token, who
   // Recorded once: the run is over.
   await $.turn.complete(done('f1', block(token, [])))
   expect(JSON.parse(files[RECORD]!).runs.length).toBe(1)
+  expect(calls.filter(c => c.includes('publish.mjs') && c.includes('--cwd')).length).toBe(1)
 })
 
 test('an inline or typed /code-review is read from the main loop, and an aborted answer records nothing', async ($, on) => {
