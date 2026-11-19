@@ -199,3 +199,16 @@ test('asleep, a cold cache shows the snowflake in place of the Zs', () => {
   assert.equal(pet.state.mode, 'sleep');
   assert.equal(blue(out), true);
 });
+
+test('clearing a finished worktree hops without a new mark, and wakes a sleeper', () => {
+  const pet = createMascot({ now: 0 });
+  for (let t = 0; t < 70_000; t += 5_000) pet.step(40, 'idle', t);
+  assert.equal(pet.state.mode, 'sleep');
+  const stage = pet.stage;
+  pet.tidy(80_000);
+  assert.equal(pet.state.mode, 'walk');
+  assert.equal(pet.stage, stage);
+  assert.ok(pet.state.lift > 0);
+  assert.equal(pet.state.spark, 0);
+  assert.equal(pet.state.swirl, 0);
+});

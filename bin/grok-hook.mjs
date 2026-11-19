@@ -8,7 +8,7 @@
 // /review report. The go-ahead and auto-compact run in grok-watch.mjs, because a hook can't type into
 // the session on its own.
 import { execFileSync, spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -20,6 +20,7 @@ import { codeRun, gateReason as reviewWait, keptRuns, mergesPr, reportFromText, 
 import { resolveWritePath, shellWrites } from './shellwrite.mjs';
 import { findAgent, railHome } from './host.mjs';
 import { pickColour, pickName } from './names.mjs';
+import { activityNames } from './prune.mjs';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const RAIL = railHome();
@@ -141,6 +142,13 @@ const loadAct = (id) => { const a = id && readJson(activityFile(id)); return a?.
 const saveAct = (id, a) => { if (id) writeJson(activityFile(id), a); };
 const loadState = (id) => (id && readJson(stateFile(id))) || {};
 const saveState = (id, s) => { if (id) writeJson(stateFile(id), s); };
+// The session is gone: drop its activity, desk, and rail-tab files. A clear, compact, or resume keeps them.
+const forgetActivity = (id) => {
+  const root = join(RAIL, 'activity');
+  for (const name of activityNames(id)) {
+    try { unlinkSync(join(root, name)); } catch { /* already gone */ }
+  }
+};
 
 function summarise(tool, input, cwd) {
   const s = (k) => (typeof input?.[k] === 'string' ? input[k] : '');
@@ -281,6 +289,7 @@ export function handle(event, agent) {
   const cwd = event.cwd || event.workspaceRoot || process.cwd();
   const now = Date.now();
   let activity = loadAct(id);
+  if (Number.isInteger(agent.pid) && agent.pid > 0) activity.pid = agent.pid;
   let state = loadState(id);
   let reply = null;
   const save = () => { saveAct(id, activity); saveState(id, state); };
@@ -302,11 +311,14 @@ export function handle(event, agent) {
   if (kind === 'end') {
     if (state.watchPid) { try { process.kill(state.watchPid, 'SIGTERM'); } catch { /* already gone */ } }
     const reason = String(event.reason || event.endReason || '').toLowerCase();
-    if (!['clear', 'new', 'resume', 'load', 'compact'].includes(reason)) {
+    const ending = !['clear', 'new', 'resume', 'load', 'compact'].includes(reason);
+    if (ending) {
       runPane('close', 'rail', id);
       runPane('close', 'desk', id);
     }
     save();
+    // After the save, so the write does not put the file back. A clear or a compact keeps the session.
+    if (ending) forgetActivity(id);
     return null;
   }
 

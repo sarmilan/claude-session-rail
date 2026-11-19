@@ -11,6 +11,7 @@ import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import * as src from './sources.mjs';
 import { buildTree, layoutTree } from './branchmap.mjs';
+import { compactOffer, mainCheckout, planWorktrees, pruneLabel } from './prune.mjs';
 import { buildStory, layoutStory } from './sessionstory.mjs';
 import { ESC, fg, dim, bold, C, bgOpen, charWidth, width, trunc, wrap, clean, tabBar, usePalette, paneBgOn, paneBgOff } from './term.mjs';
 import { createMascot, creatureNames, stageFor, progressFor, doneFor, attentionFor, visitorsFor, droopFor, flinchAt } from './mascot.mjs';
@@ -36,7 +37,7 @@ const taskIndex = new src.TaskIndex();
 
 // ── Data ───────────────────────────────────────────────────────────────────────
 const data = { env: null, brief: null, account: null, usage: [], agents: [], overview: null, chores: [], current: null, stats: null, connectors: null, prs: null,
-  worktrees: null, map: null, github: null, activity: null, chronicle: null,
+  worktrees: null, map: null, github: null, activity: null, chronicle: null, prune: null,
   tasks: { running: [], finished: 0, done: [] } };
 // The two Git loaders both rebuild the map. A generation drops a result that started from an older pair.
 let mapGen = 0;
@@ -85,6 +86,11 @@ const loaders = {
     const overview = await src.sessionsOverview(data.agents, data.current?.pid, data.current?.sessionId);
     data.chores = choresEnabled ? await listChores(cwd) : [];
     data.overview = placeChores(overview, data.chores);
+    const live = new Set((data.agents ?? []).map((s) => s.sessionId).filter(Boolean));
+    if (data.current?.sessionId) live.add(data.current.sessionId);
+    if (sessionFlag) live.add(sessionFlag);
+    await src.pruneActivity({ liveIds: [...live] });
+    refreshPrune();
   },
   async account() {
     const host = hostOf();
@@ -108,16 +114,33 @@ const loaders = {
     }
   },
   async worktrees() {
-    if (ui.tab !== 'git' && data.worktrees) return;
+    // The prune row is on Session as well as Git, so this list stays current on either tab.
+    // The branch map itself is still only rebuilt while Git is showing.
     data.worktrees = { ...(await src.worktrees(cwd)), at: Date.now() };
+    refreshPrune();
     if (ui.tab === 'git') await publishMap();
   },
   async connectors() { data.connectors = await src.connectors(hostOf()); },
 };
 
+// Cwds of sessions that are still running. The overview is the same list with branches filled in.
+const livePaths = () => (data.overview ?? data.agents ?? []).map((s) => s.cwd).filter(Boolean);
+let offeredCompactAt = 0;
+// The prune row, from the worktree list and the live sessions. After a compact, offer that branch once
+// when its worktree is actually removable (merged, clean, session gone).
+function refreshPrune() {
+  if (!data.worktrees?.ok) { data.prune = { remove: [], keep: [] }; return; }
+  data.prune = planWorktrees(data.worktrees.items, { mainPath: mainCheckout(data.worktrees.items), livePaths: livePaths() });
+  const hit = compactOffer(data.prune, data.activity?.compacted);
+  if (!hit || offeredCompactAt === data.activity.compacted.at) return;
+  offeredCompactAt = data.activity.compacted.at;
+  toast(`Remove the worktree for ${clean(hit.branch)}?`);
+}
+
 export async function collect() {
   await loaders.fast(); // Sessions builds on its list of sessions
   await Promise.all(Object.entries(loaders).filter(([k]) => k !== 'fast').map(([, f]) => f()));
+  refreshPrune();
   return { cwd, ...data };
 }
 
@@ -337,6 +360,47 @@ const startSession = async (problem) => {
 // A new iTerm window beside this session's, running command.
 const openWindow = (command, ok) => pane(['window', data.overview?.find((s) => s.current)?.tty ?? 'none', command],
   (state) => toast(state === 'opened' ? ok : "Couldn't open a window"));
+// One confirm, then git worktree remove. The source checks again and will not delete a dirty or unmerged tree.
+const dropWorktrees = async (rows) => {
+  const live = livePaths();
+  const results = [];
+  for (const r of rows) results.push({ row: r, ...(await src.removeWorktree(cwd, r.path, { confirm: true, livePaths: live })) });
+  const ok = results.filter((r) => r.ok);
+  const no = results.filter((r) => !r.ok);
+  try {
+    data.worktrees = { ...(await src.worktrees(cwd)), at: Date.now() };
+    refreshPrune();
+    if (ui.tab === 'git') await publishMap();
+  } catch { /* the list refreshes on its timer */ }
+  if (ok.length) mascot.tidy();
+  const name = (r) => clean(r.row.branch || r.row.name || 'worktree');
+  if (ok.length && !no.length) toast(ok.length === 1 ? `Removed ${name(ok[0])}` : `Removed ${ok.length} worktrees`);
+  else if (!ok.length) {
+    const why = { dirty: 'uncommitted files', unknown: "couldn't tell if it was clean", unmerged: 'not merged', live: 'a session is still there', current: 'this checkout', confirm: 'not confirmed' };
+    toast(no[0] ? `Left it: ${why[no[0].reason] || no[0].message || "couldn't remove it"}` : "Couldn't remove it");
+  } else toast(`Removed ${ok.length}; left ${no.length}`);
+  draw();
+};
+const confirmPrune = (onlyPath) => {
+  const plan = data.prune ?? { remove: [], keep: [] };
+  const remove = onlyPath ? plan.remove.filter((r) => r.path === onlyPath) : plan.remove;
+  const keep = onlyPath ? [] : plan.keep;
+  const options = remove.map((r) => ({
+    label: `Remove ${clean(r.branch || r.name || 'worktree')}`,
+    hint: r.reason === 'contained' ? 'clean · on main' : 'merged · clean',
+    run: () => dropWorktrees([r]),
+  }));
+  if (remove.length > 1 && !onlyPath) options.unshift({ label: `Remove all ${remove.length}`, hint: 'one confirm', run: () => dropWorktrees(remove) });
+  for (const r of keep) options.push({
+    label: clean(r.branch || r.name || 'worktree'),
+    hint: r.reason === 'dirty' && r.dirty ? `${r.dirty} uncommitted · kept` : 'kept',
+    keep: true,
+    run: () => toast('Left it in place'),
+  });
+  menu(remove.length ? 'Remove finished worktrees?' : 'Worktrees kept', options, [
+    'Merged and clean, and the session is gone. Dirty stays.',
+  ]);
+};
 // A session belongs to the deepest worktree holding its cwd (a worktree can sit inside another's folder).
 const sessionFor = (path) => {
   if (!path) return null;
@@ -367,6 +431,7 @@ const activateLane = async (row) => {
   if (row.activate === 'check' && row.url) return launch('open', [row.url], 'Opened the check');
   if (row.activate === 'pr' && row.url) return launch('open', [row.url], `Opened #${row.pr}`);
   if (row.activate === 'copy') return copy(row.branch, 'branch name');
+  if (row.activate === 'prune') return confirmPrune(row.path);
   if (row.activate === 'session') {
     const s = sessionFor(row.path);
     if (s) return goTo(s);
@@ -513,6 +578,14 @@ function buildMain(W) {
   // Git: one tree of the open branches, and the one line that says what can land.
   // `spread` lays out pieces already truncated to fit: styled left, styled right, padded between.
   const spread = (left, right = '', id) => line(left + ' '.repeat(Math.max(right ? 1 : 0, inner - width(left) - width(right))) + right, id);
+  // Finished + new worktrees, on both tabs. Enter is the confirm. Dirty ones are listed there and not removed.
+  const pruneRow = () => {
+    const label = pruneLabel(data.prune);
+    if (!label) return;
+    const right = dim(label.right);
+    const left = trunc(clean(label.left), Math.max(1, inner - width(label.right) - 1));
+    spread(left, right, item('prune', () => confirmPrune()));
+  };
   // Style names from the tree, painted when the frame is drawn so the palette is the one in force.
   const paint = (parts) => (parts ?? []).map((p) => {
     const text = clean(String(p.text ?? ''));
@@ -533,6 +606,7 @@ function buildMain(W) {
     const repo = trunc(clean(wt?.repo ?? env?.repo ?? '…'), inner - 6);
     const baseName = wt?.base ? trunc(clean(wt.base), Math.max(0, inner - 6 - width(repo) - 3)) : '';
     spread(repo + (baseName ? ' · ' + dim(baseName) : ''), wt?.at ? dim(`↻ ${ago(wt.at)}`) : '');
+    pruneRow();
     const tree = data.map?.ok ? buildTree({
       base: data.map.base,
       onTrunk: Boolean(env?.branch && env.branch === data.map.base),
@@ -546,6 +620,8 @@ function buildMain(W) {
         const s = sessionFor(node.path);
         return s ? (s.current ? 'This session' : 'Go to session') : `Open ${agentBin()} here`;
       },
+      extra: (node) => (data.prune?.remove.some((r) => r.path && r.path === node.path)
+        ? [{ label: 'Remove worktree', activate: 'prune', id: `act:${node.name}:prune` }] : []),
     }) : null;
     if (data.github === false) line(dim('GitHub unavailable'));
     else if (data.prs?.truncated) line(dim('More pull requests than this map shows'));
@@ -575,6 +651,7 @@ function buildMain(W) {
   const list = data.overview ?? [];
   pair(`Sessions ${dim(list.length ? String(list.length) : '…')}`, '+ new', item('new-session', () => { ui.input = { text: '' }; }),
     { leftStyle: bold, rightStyle: (s) => fg(C.accent, s) });
+  pruneRow();
   const STATE = {
     busy: [() => fg(C.accent, ui.tick % 2 ? '●' : '◉'), (s) => fg(C.accent, s)],
     waiting: [() => fg(C.yellow, '◆'), (s) => fg(C.yellow, s)],
@@ -712,7 +789,7 @@ function buildOverlay(W, bodyH) {
     if (!o.options.length) line(dim('Nothing here'));
     o.options.forEach((opt, i) => {
       const id = `opt:${i}`;
-      items.push({ id, activate: () => { if (!opt.keep) closeOverlay(); opt.run(); } });
+      items.push({ id, activate: () => { if (!opt.keep) closeOverlay(); return opt.run(); } });
       const hint = opt.hint ?? (opt.key ? `[${opt.key}]` : '');
       const l = trunc(opt.label, inner - (hint ? width(hint) + 1 : 0));
       line(l + ' '.repeat(Math.max(hint ? 1 : 0, inner - width(l) - width(hint))) + dim(hint), id);
