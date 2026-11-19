@@ -49,6 +49,18 @@ test('Next names the trunk pull request and the child that rebases after it', ()
   assert.notEqual(tree.banner.branch, 'feature/36-colours');
 });
 
+test('an open lane can carry an extra action, and a closed one does not', () => {
+  const tree = treeOf([branch('feature/login', { path: '/repo.worktrees/login' })]);
+  const extra = (node) => (node.path ? [{ label: 'Remove worktree', activate: 'prune', id: `act:${node.name}:prune` }] : []);
+  const closed = layoutTree(tree, { extra });
+  assert.equal(closed.rows.some((r) => r.activate === 'prune'), false);
+  const open = layoutTree(tree, { open: { 'feature/login': true }, extra });
+  const row = open.rows.find((r) => r.activate === 'prune');
+  assert.equal(text(row.left).includes('Remove worktree'), true);
+  assert.equal(row.id, 'act:feature/login:prune');
+  assert.equal(row.path, '/repo.worktrees/login');
+});
+
 test('a child whose parent is open does not take the banner', () => {
   const tree = treeOf([
     branch('parent', { pr: pull(35, { mergeStateStatus: 'BEHIND' }) }),

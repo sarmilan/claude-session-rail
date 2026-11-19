@@ -364,6 +364,11 @@ export function createMascot({ images = false, creature = 0, now = Date.now() } 
       swirlUntil = t + SPARK_MS; s.party = [1, 2, 3, 3, 2, 1]; s.hopI = 0;
       if (s.mode === 'sleep') { s.mode = 'walk'; s.lastActive = t; }
     },
+    // Finished work was cleared: the same hop, with no mark. Gold stays "a chunk just finished".
+    tidy(t = Date.now()) {
+      s.party = [1, 2, 3, 3, 2, 1]; s.hopI = 0; s.lift = 1; s.lastActive = t;
+      if (s.mode === 'sleep') s.mode = 'walk';
+    },
     // The prompt cache, when its context is big enough to matter: null, 'low' or 'cold'. Going cold shivers once.
     setCache(state) {
       const next = state === 'low' || state === 'cold' ? state : null;

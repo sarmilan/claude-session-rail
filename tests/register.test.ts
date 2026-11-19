@@ -70,12 +70,12 @@ test('outside iTerm2 the message names the panel', async ($, on) => {
   expect(result.text).toBe('The desk only opens when Claude runs in iTerm2.')
 })
 
-test('session end closes both panels, but /clear keeps them', async ($, on) => {
+test('session end closes both panels and drops its activity files, but /clear keeps them', async ($, on) => {
   const calls = harness(on, 'closed')
   await $.session.end({ reason: 'clear', sessionId: 'a' })
   expect(calls.length).toBe(0)
   await $.session.end({ reason: 'prompt_input_exit', sessionId: 'a' })
-  expect(calls).toEqual(['pane.mjs close rail', 'pane.mjs close desk'])
+  expect(calls).toEqual(['pane.mjs close rail', 'pane.mjs close desk', '? session-rail-forget a'])
 })
 
 // ── The session brief ─────────────────────────────────────────────────────────
@@ -110,7 +110,8 @@ const briefHarness = (on: Parameters<Parameters<typeof test>[1]>[1], { branch = 
     return { value: undefined }
   })
   on('tool.call', (_, e) => {
-    edits.push(String((e as { file_path?: string }).file_path))
+    const ev = e as { tool?: string; file_path?: string; command?: string }
+    edits.push(ev.tool === 'Bash' ? `bash:${ev.command}` : String(ev.file_path ?? ''))
     return { result: { ok: true } } as never
   })
   return { base, files, edits }
@@ -173,6 +174,52 @@ test('a draft brief names what is missing, and /approve-brief refuses it', async
   expect((await approve($)).text).toContain("Can't approve yet")
 })
 
+const bash = (command: string) => ({ tool: 'Bash' as const, command })
+
+test('a shell write waits for the brief, and git log does not', async ($, on) => {
+  const { edits } = briefHarness(on)
+  const editDeny = ((await $.tool.call(edit('/repo/src/a.ts'))) as { deny?: string }).deny
+  const redirect = (await $.tool.call(bash('cat > src/a.ts'))) as { deny?: string }
+  const tee = (await $.tool.call(bash('tee src/a.ts'))) as { deny?: string }
+  expect(redirect.deny).toBe(editDeny)
+  expect(tee.deny).toContain('wait for the session brief')
+  expect(edits).toEqual([])
+  await $.tool.call(bash('git log'))
+  await $.tool.call(bash('echo hi > /dev/null'))
+  await $.tool.call(bash('git commit -m "x"'))
+  expect(edits).toEqual(['bash:git log', 'bash:echo hi > /dev/null', 'bash:git commit -m "x"'])
+})
+
+test('on main, a shell write in the repo waits for a branch, and one outside does not', async ($, on) => {
+  const { edits } = briefHarness(on, { branch: 'main' })
+  const r = (await $.tool.call(bash('echo hi > src/a.ts'))) as { deny?: string }
+  expect(r.deny).toContain('No brief for main')
+  expect(r.deny).toContain('Create a branch')
+  await $.tool.call(bash('echo hi > /tmp/plan.md'))
+  await $.tool.call(bash('git log'))
+  expect(edits).toEqual(['bash:echo hi > /tmp/plan.md', 'bash:git log'])
+})
+
+test('the brief can be written from the shell, and its approval file cannot', async ($, on) => {
+  const { base, edits } = briefHarness(on)
+  await $.tool.call(bash(`cat > ${base}.md <<'EOF'\n# T\nEOF`))
+  expect(edits).toEqual([`bash:cat > ${base}.md <<'EOF'\n# T\nEOF`])
+  const r = (await $.tool.call(bash(`echo '{}' > ${base}.approved.json`))) as { deny?: string }
+  expect(r.deny).toContain('only the person approves')
+  expect(edits).toEqual([`bash:cat > ${base}.md <<'EOF'\n# T\nEOF`])
+})
+
+test('a shell write is refused until the brief is approved, then it runs', async ($, on) => {
+  const { edits } = briefHarness(on, { brief: COMPLETE })
+  const r = (await $.tool.call(bash('cat > src/a.ts'))) as { deny?: string }
+  expect(r.deny).toContain('not approved yet')
+  expect(edits).toEqual([])
+  await approve($)
+  await $.tool.call(bash('cat > src/a.ts'))
+  await $.tool.call(bash('git log'))
+  expect(edits).toEqual(['bash:cat > src/a.ts', 'bash:git log'])
+})
+
 test('a complete brief asks for approval; once approved, edits go through and stay allowed', async ($, on) => {
   const { files, base, edits } = briefHarness(on, { brief: COMPLETE })
   expect(((await $.tool.call(edit('/repo/src/a.ts'))) as { deny?: string }).deny).toContain('not approved yet')
@@ -230,6 +277,8 @@ test('the system prompt explains the brief on a feature branch', async ($, on) =
   expect(s?.text).toContain('Call the review_approach tool')
   expect(s?.text).toContain('/code-review --fix')
   expect(s?.text).toContain('final: true')
+  expect(s?.text).toContain('shell command that writes a file')
+  expect(s?.text).toContain('git log')
   expect(s?.scope).toBe('session')
 })
 
@@ -318,6 +367,14 @@ test('a refused edit is a failed call, and the gate records what it refused', as
   const a = await activityOf(files)
   expect(a.gate).toMatchObject({ tool: 'Edit', file: '/repo/src/a.ts' })
   expect(a.recent[0]).toMatchObject({ tool: 'Edit', ok: false })
+})
+
+test('a refused shell write is the same gate record, so the rail holds and the pet does not droop', async ($, on) => {
+  const { files } = withActivity(on)
+  await $.tool.call(bash('tee src/a.ts') as never)
+  const a = await activityOf(files)
+  expect(a.gate).toMatchObject({ tool: 'Bash', file: '/repo/src/a.ts' })
+  expect(a.recent[0]).toMatchObject({ tool: 'Bash', ok: false })
 })
 
 // ── Named subagents (bin/names.mjs, agent.spawn) ──────────────────────────────
@@ -574,7 +631,7 @@ const block = (run: string | null, findings: unknown[]) => 'Done.\n```json\n' + 
 const FINDINGS = [{ summary: 'off by one', outcome: 'fixed' }, { summary: 'docs', outcome: 'skipped' }, { summary: 'left' }]
 
 test('a /code-review run is recorded from the answer that carries its token, whoever gives it', async ($, on) => {
-  const { files } = reviewHarness(on)
+  const { files, calls } = reviewHarness(on)
   await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
   // Preloaded, not run: the prompt is left alone.
   expect(await prompt($)).toBe('Review the diff.')
@@ -594,6 +651,7 @@ test('a /code-review run is recorded from the answer that carries its token, who
   // Recorded once: the run is over.
   await $.turn.complete(done('f1', block(token, [])))
   expect(JSON.parse(files[RECORD]!).runs.length).toBe(1)
+  expect(calls.filter(c => c.includes('publish.mjs') && c.includes('--cwd')).length).toBe(1)
 })
 
 test('an inline or typed /code-review is read from the main loop, and an aborted answer records nothing', async ($, on) => {
@@ -727,6 +785,29 @@ test('a main-loop request records the cache, its lifetime and plan; a subagent r
   expect(a.cache).toEqual({ at: 1_000_000, ttl: '1h', plan: true, tokens: 60_410 })
 })
 
+test('session.measure records the host cost, a later reading is the turn, and a reset drops it', async ($, on) => {
+  const { files } = withActivity(on, { branch: 'main' })
+  on('session.measure', (_, e) => ({ changed: e.changed }))
+  const measure = (usd?: number, changed: string[] = ['cost']) =>
+    $.session.measure({ context: { window: 200_000 }, rateLimits: [], ...(usd == null ? {} : { cost: { usd } }), changed } as never)
+  await measure(0.1)
+  let a = await activityOf(files)
+  expect(a.cost.usd).toBe(0.1)
+  expect(a.cost.turnUsd).toBeUndefined()
+  await measure(0.1)
+  expect((await activityOf(files)).cost.turnUsd).toBeUndefined()
+  await measure(0.14)
+  a = await activityOf(files)
+  expect(a.cost.usd).toBe(0.14)
+  expect(a.cost.turnUsd).toBeCloseTo(0.04)
+  await measure(undefined, ['rateLimits'])
+  expect((await activityOf(files)).cost.usd).toBe(0.14)
+  await measure(0.01)
+  a = await activityOf(files)
+  expect(a.cost.usd).toBe(0.01)
+  expect(a.cost.turnUsd).toBeUndefined()
+})
+
 // ── Warm compact (hooks/compact.ts) ───────────────────────────────────────────
 test('warm compact: due in the last stretch of a big waiting cache, never cold, busy, small or twice', () => {
   const plan = { at: 0, ttl: '1h' as const, plan: true, tokens: 90_000 }
@@ -789,3 +870,86 @@ for (const [name, opts, ms] of [
     await poll($)
     expect(compactions).toEqual([])
   })
+
+// ── The Stop test gate ────────────────────────────────────────────────────────
+// The command itself is stubbed. bin/stopgate.mjs decides; this checks Claude's hook wires it.
+const stopHarness = (on: Parameters<Parameters<typeof test>[1]>[1], opts: { file?: string | null; exitCode?: number; stderr?: string } = {}) => {
+  const file = 'file' in opts ? opts.file : '{"testCommand":"npm test"}'
+  const exitCode = opts.exitCode ?? 1
+  const stderr = opts.stderr ?? 'not ok 1'
+  const files: Record<string, string> = {}
+  if (file) files['/repo/session-rail.json'] = file
+  const calls: string[] = []
+  on('session.cwd', () => ({ value: '/repo' }))
+  on('session.id', () => ({ value: 's1' }))
+  on('env.get', (_, e) => ({ value: e.name === 'HOME' ? '/home' : undefined }))
+  on('classic.Stop', () => ({ continued: true }))
+  on('fs.read', (_, e) => (e.path in files ? { value: files[e.path]! } : { deny: 'ENOENT' }))
+  on('fs.write', (_, e) => {
+    files[e.path] = e.text
+    return { value: undefined }
+  })
+  on('process.run', (_, e) => {
+    const cmd = (e.argv ?? []).join(' ')
+    calls.push(cmd)
+    if (e.argv?.[0] === 'git') return { value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    if (cmd.includes('npm test')) return { value: { exitCode, stdout: '', stderr, isStdoutTruncated: false, isStderrTruncated: false } }
+    return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  return { files, calls }
+}
+const stopEvent = (extra: Record<string, unknown> = {}) => ({
+  hook_event_name: 'Stop', session_id: 's1', cwd: '/repo', last_assistant_message: 'done', ...extra,
+})
+
+test('a failing test blocks Claude from stopping and the rail can see it', async ($, on) => {
+  const { files, calls } = stopHarness(on)
+  const result = await $.classic.Stop(stopEvent() as never)
+  expect(result.preventContinuation).toBe(true)
+  expect(result.stopReason).toContain('tests failed')
+  expect(result.stopReason).toContain('not ok 1')
+  expect(calls.some(c => c.includes('npm test'))).toBe(true)
+  let saved = ''
+  for (let i = 0; i < 20 && !saved; i++) {
+    saved = files['/home/.claude/session-rail/activity/s1.json'] ?? ''
+    if (!saved) await new Promise(r => setTimeout(r, 10))
+  }
+  const activity = JSON.parse(saved)
+  expect(activity.tests.ok).toBe(false)
+  expect(activity.recent[0]).toMatchObject({ tool: 'test', ok: false })
+})
+
+test('a passing test lets Claude stop', async ($, on) => {
+  const { calls } = stopHarness(on, { exitCode: 0, stderr: '' })
+  const result = await $.classic.Stop(stopEvent({ last_assistant_message: 'all green' }) as never)
+  expect(result).toMatchObject({ continued: true })
+  expect(calls.some(c => c.includes('npm test'))).toBe(true)
+})
+
+test('stop_hook_active does not block Claude a second time', async ($, on) => {
+  const { calls } = stopHarness(on)
+  const result = await $.classic.Stop(stopEvent({ stop_hook_active: true }) as never)
+  expect(result).toMatchObject({ continued: true })
+  expect(calls.some(c => c.includes('npm test'))).toBe(false)
+})
+
+test('no test command lets Claude stop without running anything', async ($, on) => {
+  const { calls } = stopHarness(on, { file: null })
+  const result = await $.classic.Stop(stopEvent() as never)
+  expect(result).toMatchObject({ continued: true })
+  expect(calls.some(c => c.includes('npm test'))).toBe(false)
+})
+
+test('an explicit off switch lets Claude stop', async ($, on) => {
+  const { calls } = stopHarness(on, { file: '{"testCommand":false}' })
+  const result = await $.classic.Stop(stopEvent() as never)
+  expect(result).toMatchObject({ continued: true })
+  expect(calls.some(c => c.includes('npm test'))).toBe(false)
+})
+
+test('an interrupt lets Claude stop without running tests', async ($, on) => {
+  const { calls } = stopHarness(on)
+  const result = await $.classic.Stop(stopEvent({ interrupted: true }) as never)
+  expect(result).toMatchObject({ continued: true })
+  expect(calls.some(c => c.includes('npm test'))).toBe(false)
+})

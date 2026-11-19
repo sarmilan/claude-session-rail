@@ -138,6 +138,8 @@ test('Claude: the brief gate is not a droop, and a failed Bash is', () => {
   const gate = { at: 100, tool: 'Edit', file: 'a.js' };
   assert.equal(droopFor(claude({ recent: [{ tool: 'Edit', ok: false, at: 100 }], gate })), false);
   assert.equal(droopFor(claude({ recent: [{ tool: 'Bash', ok: false, at: 200 }, { tool: 'Edit', ok: false, at: 100 }], gate })), true);
+  const shellGate = { at: 200, tool: 'Bash', file: '/repo/src/a.ts' };
+  assert.equal(droopFor(claude({ recent: [{ tool: 'Bash', ok: false, at: 200 }], gate: shellGate })), false);
   assert.equal(droopFor(claude({ recent: [{ tool: 'Bash', ok: true, at: 300 }, { tool: 'Bash', ok: false, at: 200 }] })), false);
   const held = { at: 150, tool: 'Edit', file: 'a.js' };
   assert.equal(flinchAt(claude({ recent: [{ tool: 'Edit', ok: false, at: 150 }, { tool: 'Bash', ok: false, at: 100 }], gate: held }), 0), 100);
@@ -196,4 +198,17 @@ test('asleep, a cold cache shows the snowflake in place of the Zs', () => {
   const out = pet.render(40, 80_000);
   assert.equal(pet.state.mode, 'sleep');
   assert.equal(blue(out), true);
+});
+
+test('clearing a finished worktree hops without a new mark, and wakes a sleeper', () => {
+  const pet = createMascot({ now: 0 });
+  for (let t = 0; t < 70_000; t += 5_000) pet.step(40, 'idle', t);
+  assert.equal(pet.state.mode, 'sleep');
+  const stage = pet.stage;
+  pet.tidy(80_000);
+  assert.equal(pet.state.mode, 'walk');
+  assert.equal(pet.stage, stage);
+  assert.ok(pet.state.lift > 0);
+  assert.equal(pet.state.spark, 0);
+  assert.equal(pet.state.swirl, 0);
 });

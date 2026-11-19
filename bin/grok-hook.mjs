@@ -3,11 +3,12 @@
 // stdin and this process exits. Interactive `grok` only (a headless `grok -p` has no TTY and must not
 // open panes or gate an outer session). The Claude plugin stays in hooks/register.ts.
 //
-// It opens the desk and the rail, keeps the Now feed, refuses code edits until the brief is approved,
-// refuses `gh pr merge` until the reviews are in, and records a /review report. The go-ahead and
-// auto-compact run in grok-watch.mjs, because a hook can't type into the session on its own.
+// It opens the desk and the rail, keeps the Now feed, refuses code edits and a shell command that writes
+// a file until the brief is approved, refuses `gh pr merge` until the reviews are in, and records a
+// /review report. The go-ahead and auto-compact run in grok-watch.mjs, because a hook can't type into
+// the session on its own.
 import { execFileSync, spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -16,8 +17,10 @@ import { humanAsk, keep } from './sessionstory.mjs';
 import { briefInstructions, outsideRepoNote } from './brief-instructions.mjs';
 import { approvalRecord, briefFile, briefStatus, checkoutName, inWorkTree, mainCheckoutNote, NO_BRIEF_BRANCHES, parseBrief } from './brief.mjs';
 import { codeRun, gateReason as reviewWait, keptRuns, mergesPr, reportFromText, reviewsFile } from './cadence.mjs';
+import { resolveWritePath, shellWrites } from './shellwrite.mjs';
 import { findAgent, railHome } from './host.mjs';
 import { pickColour, pickName } from './names.mjs';
+import { activityNames } from './prune.mjs';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const RAIL = railHome();
@@ -86,6 +89,26 @@ export function editReason(b, file, checkout) {
   return `session-rail: the session brief is complete but not approved yet. Ask the person to review it in the desk's Plan tab and press Approve there, then carry on. ${where}`;
 }
 
+// A shell write uses the same reason as Edit. `null` from shellWrites is a write with no literal path,
+// treated as a file in the checkout so the person runs it themselves. The refusal is the Held banner.
+export function shellEdit(cwd, command) {
+  const targets = shellWrites(command);
+  if (!targets) return null;
+  const b = readBrief(cwd);
+  const head = gitHead(cwd);
+  const root = head?.root || head?.cwd || cwd;
+  const base = head?.cwd || cwd;
+  const checkout = !b && head && NO_BRIEF_BRANCHES.includes(head.branch)
+    ? { branch: head.branch, cwd: head.root || head.cwd } : null;
+  for (const target of targets) {
+    const file = target == null ? `${root}/shell-write` : resolveWritePath(base, target);
+    if (!file) continue;
+    const reason = editReason(b, file, checkout);
+    if (reason) return { reason, file };
+  }
+  return null;
+}
+
 export function slashCommand(text) {
   const t = String(text ?? '');
   return t.trim().match(/^\/(?:[\w.-]+:)?(rail|desk|approve-brief)\b/)?.[1]
@@ -119,6 +142,13 @@ const loadAct = (id) => { const a = id && readJson(activityFile(id)); return a?.
 const saveAct = (id, a) => { if (id) writeJson(activityFile(id), a); };
 const loadState = (id) => (id && readJson(stateFile(id))) || {};
 const saveState = (id, s) => { if (id) writeJson(stateFile(id), s); };
+// The session is gone: drop its activity, desk, and rail-tab files. A clear, compact, or resume keeps them.
+const forgetActivity = (id) => {
+  const root = join(RAIL, 'activity');
+  for (const name of activityNames(id)) {
+    try { unlinkSync(join(root, name)); } catch { /* already gone */ }
+  }
+};
 
 function summarise(tool, input, cwd) {
   const s = (k) => (typeof input?.[k] === 'string' ? input[k] : '');
@@ -220,6 +250,18 @@ function recordCodeReview(cwd, report) {
   const earlier = (readJson(path)?.runs ?? []).filter((r) => r && Array.isArray(r.findings));
   const runs = [codeRun(report, { head, dirty: dirty == null || dirty !== '', at: Date.now() }), ...earlier];
   writeJson(path, { runs: keptRuns(runs) });
+  schedulePublish(cwd);
+}
+
+// The review file is already written. Detached, so a slow gh does not hold the hook.
+export function schedulePublish(cwd, spawnFn = spawn) {
+  try {
+    const child = spawnFn(process.execPath, [join(ROOT, 'bin', 'publish.mjs'), '--cwd', cwd], {
+      detached: true, stdio: 'ignore',
+    });
+    child?.unref?.();
+    return true;
+  } catch { return false; }
 }
 
 function startWatch(pid, sessionId, state) {
@@ -247,6 +289,7 @@ export function handle(event, agent) {
   const cwd = event.cwd || event.workspaceRoot || process.cwd();
   const now = Date.now();
   let activity = loadAct(id);
+  if (Number.isInteger(agent.pid) && agent.pid > 0) activity.pid = agent.pid;
   let state = loadState(id);
   let reply = null;
   const save = () => { saveAct(id, activity); saveState(id, state); };
@@ -268,11 +311,14 @@ export function handle(event, agent) {
   if (kind === 'end') {
     if (state.watchPid) { try { process.kill(state.watchPid, 'SIGTERM'); } catch { /* already gone */ } }
     const reason = String(event.reason || event.endReason || '').toLowerCase();
-    if (!['clear', 'new', 'resume', 'load', 'compact'].includes(reason)) {
+    const ending = !['clear', 'new', 'resume', 'load', 'compact'].includes(reason);
+    if (ending) {
       runPane('close', 'rail', id);
       runPane('close', 'desk', id);
     }
     save();
+    // After the save, so the write does not put the file back. A clear or a compact keeps the session.
+    if (ending) forgetActivity(id);
     return null;
   }
 
@@ -358,13 +404,23 @@ export function handle(event, agent) {
     }
   }
 
-  if (kind === 'pre' && SHELL.has(tool) && mergesPr(input.command || '')) {
-    const b = readBrief(cwd);
-    if (b?.approval?.approvedAt) {
-      const head = git(cwd, ['rev-parse', 'HEAD']);
-      const runs = (readJson(reviewsFile(b.common, b.branch))?.runs ?? []).filter((r) => r && Array.isArray(r.findings));
-      const reason = head ? reviewWait(runs, { head }) : null;
-      if (reason) { save(); return { decision: 'deny', reason }; }
+  if (kind === 'pre' && SHELL.has(tool)) {
+    const write = shellEdit(cwd, input.command || '');
+    if (write) {
+      const b = readBrief(cwd);
+      if (b) writeProcedure(b); // the deny drops any attached procedure, so the reason points at the file
+      activity = act.refused(activity, tool, write.file, now);
+      save();
+      return { decision: 'deny', reason: write.reason };
+    }
+    if (mergesPr(input.command || '')) {
+      const b = readBrief(cwd);
+      if (b?.approval?.approvedAt) {
+        const head = git(cwd, ['rev-parse', 'HEAD']);
+        const runs = (readJson(reviewsFile(b.common, b.branch))?.runs ?? []).filter((r) => r && Array.isArray(r.findings));
+        const reason = head ? reviewWait(runs, { head }) : null;
+        if (reason) { save(); return { decision: 'deny', reason }; }
+      }
     }
   }
 

@@ -13,6 +13,7 @@
 //   node desk.mjs --json                            print the collected state once
 //   node desk.mjs --frame [W H] [--tab plan|diff|review] [--file N]   print one rendered frame (no TTY needed)
 //     [--review-json F --select N --jump N]          …with a saved review record (reviewer.mjs's store shape)
+//     [--pr-json F] [--head SHA]                     …and a pull request, for the merge warning
 //   --cwd DIR / --pid PID                           the folder and Claude process this desk belongs to
 import * as src from './sources.mjs';
 import { reviewAndSave, loadReviews } from './reviewer.mjs';
@@ -24,7 +25,8 @@ import { approvalRecord, mainCheckoutNote, NO_BRIEF_BRANCHES } from './brief.mjs
 import { deskOutsideNote } from './brief-instructions.mjs';
 import { notePlan, planChoice } from './planview.mjs';
 import { codeFindings, runType } from './cadence.mjs';
-import { writeFile, mkdir } from 'node:fs/promises';
+import { mergeWarning } from './reviewstatus.mjs';
+import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -40,7 +42,8 @@ const taskIndex = new src.TaskIndex();
 
 // ── Data ───────────────────────────────────────────────────────────────────────
 const data = { plan: null, brief: null, checkout: null, recent: null, todos: null, root: null, files: [], diff: null, claude: null, // diff: { path, lines } of the open file
-  settings: {}, review: { running: null, runs: [], path: undefined } };      // runs: the branch's saved reviews, newest first
+  settings: {}, review: { running: null, runs: [], path: undefined, pr: null, head: null } }; // runs: the branch's saved reviews, newest first
+let prFetched = 0;
 const TABS = ['plan', 'diff', 'review'];
 const ui = { tab: 'plan', scroll: { plan: 0, diff: 0, review: 0 }, sel: 0, open: null, toast: null,
   jump: null, rsel: 0 };
@@ -77,18 +80,36 @@ const loaders = {
     if (ui.open) await loadFile(ui.open);
   },
   // The branch's review record, read again on each refresh: Claude's reviews and the hooks' code reviews
-  // land in it from outside. The selection resets only when the branch changes.
+  // land in it from outside. The selection resets only when the branch changes. The pull request is read
+  // so the tab can say when a merge would land on a record that is not clean.
   async reviews() {
     data.settings = readSettings();
     const path = await src.reviewsPath(cwd), runs = await loadReviews(path);
-    if (path === data.review.path && JSON.stringify(runs) === JSON.stringify(data.review.runs)) return;
-    // On the same branch the list can grow or reorder under the selection: keep it on the same finding.
-    const id = path === data.review.path ? listedAll()[ui.rsel]?.id : undefined;
-    if (path !== data.review.path) { ui.rsel = 0; ui.scroll.review = 0; }
-    data.review = { ...data.review, runs, path };
-    if (id !== undefined) { const all = listedAll(), at = all.findIndex((f) => f.id === id); ui.rsel = at >= 0 ? at : Math.max(0, Math.min(ui.rsel, all.length - 1)); }
+    const same = path === data.review.path && JSON.stringify(runs) === JSON.stringify(data.review.runs);
+    if (!same) {
+      // On the same branch the list can grow or reorder under the selection: keep it on the same finding.
+      const id = path === data.review.path ? listedAll()[ui.rsel]?.id : undefined;
+      if (path !== data.review.path) { ui.rsel = 0; ui.scroll.review = 0; }
+      data.review = { ...data.review, runs, path };
+      if (id !== undefined) { const all = listedAll(), at = all.findIndex((f) => f.id === id); ui.rsel = at >= 0 ? at : Math.max(0, Math.min(ui.rsel, all.length - 1)); }
+    }
+    await loadReviewRemote();
   },
 };
+
+// The commit a merge would use, and whether GitHub is offering that merge. A frame of another tab skips gh.
+async function loadReviewRemote() {
+  if (flag('--head')) data.review.head = flag('--head');
+  else if (!args.includes('--frame') || (flag('--tab') ?? 'plan') === 'review') data.review.head = await src.headCommit(cwd);
+  if (flag('--pr-json')) {
+    try { data.review.pr = JSON.parse(await readFile(flag('--pr-json'), 'utf8')); } catch { data.review.pr = null; }
+    return;
+  }
+  if (args.includes('--frame') && (flag('--tab') ?? 'plan') !== 'review') return;
+  if (!args.includes('--frame') && prFetched && Date.now() - prFetched < 30_000) return;
+  data.review.pr = await src.currentPullRequest(cwd);
+  prFetched = Date.now();
+}
 
 // ── Review: the branch's approach reviews and code reviews ───────────────────────
 // The tab shows the newest successful approach review and the newest code review (type 'code', recorded by
@@ -457,6 +478,13 @@ function reviewLines(w) {
     for (const l of wrapRuns([{ t: who, s: 'text' }], w)) push(dim(l));
     push('');
   }
+  const warn = mergeWarning(data.review.runs, { head: data.review.head, pr: data.review.pr });
+  if (warn) {
+
+    const colour = warn.tone === 'bad' ? C.red : C.yellow;
+    for (const l of wrapRuns([{ t: warn.text, s: 'text' }], w)) push(fg(colour, l));
+    push('');
+  }
   if (fail) { for (const l of wrapRuns([{ t: `✗ The last review failed: ${clean(fail.error)}`, s: 'text' }], w)) push(fg(C.red, l)); push(''); }
   const wideFail = wideFailed();
   if (!run && !code && !wide && !fail && !wideFail) {
@@ -613,7 +641,9 @@ if (args.includes('--frame')) {
   pick(flag('--tab') ?? 'plan');
   if (flag('--file') != null) { ui.tab = 'diff'; await openFile(+flag('--file')); }
   // A saved review record (reviewer.mjs's store), for testing the Review tab without running a review.
-  if (flag('--review-json')) { data.review = { running: null, runs: await loadReviews(flag('--review-json')) }; ui.tab = 'review'; }
+  if (flag('--review-json')) { data.review = { ...data.review, running: null, runs: await loadReviews(flag('--review-json')), path: flag('--review-json') }; ui.tab = 'review'; }
+  if (flag('--pr-json')) { try { data.review.pr = JSON.parse(await readFile(flag('--pr-json'), 'utf8')); } catch { data.review.pr = null; } }
+  if (flag('--head')) data.review.head = flag('--head');
   if (flag('--select') != null) ui.rsel = +flag('--select');
   if (flag('--jump') != null) await jumpTo(+flag('--jump'));
   console.log(frame(W, H).join('\n'));

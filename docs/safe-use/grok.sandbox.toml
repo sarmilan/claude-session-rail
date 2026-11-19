@@ -1,0 +1,14 @@
+# Starting point, not a guarantee. Merge into ~/.grok/sandbox.toml or .grok/sandbox.toml.
+# Replace /Users/you with your home directory. Built-in profiles do not hide ~/.ssh.
+# restrict_network is enforced on Linux. On macOS the child-network limit is a no-op.
+# ~/.grok/ stays writable so a session can be saved.
+
+[profiles.workbench]
+extends = "workspace"
+restrict_network = true
+deny = [
+  "/Users/you/.ssh",
+  "/Users/you/.aws",
+  "**/.env",
+  "**/*.pem",
+]

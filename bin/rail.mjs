@@ -11,11 +11,15 @@ import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import * as src from './sources.mjs';
 import { buildTree, layoutTree } from './branchmap.mjs';
+import { compactOffer, mainCheckout, planWorktrees, pruneLabel } from './prune.mjs';
 import { buildStory, layoutStory } from './sessionstory.mjs';
 import { ESC, fg, dim, bold, C, bgOpen, charWidth, width, trunc, wrap, clean, tabBar, usePalette, paneBgOn, paneBgOff } from './term.mjs';
 import { createMascot, creatureNames, stageFor, progressFor, doneFor, attentionFor, visitorsFor, droopFor, flinchAt } from './mascot.mjs';
 import { isApproved } from './brief.mjs';
 import { cacheView } from './cache.mjs';
+import { applyRecordedCost, costText } from './cost.mjs';
+import { placeChores } from './chore.mjs';
+import { listChores, startChore } from './chore-run.mjs';
 import { NAMES, COLOURS } from './names.mjs';
 import * as fontsize from './fontsize.mjs';
 
@@ -32,8 +36,8 @@ const agentBin = () => (agentName() === 'Grok' ? 'grok' : 'claude');
 const taskIndex = new src.TaskIndex();
 
 // ── Data ───────────────────────────────────────────────────────────────────────
-const data = { env: null, brief: null, account: null, usage: [], agents: [], overview: null, current: null, stats: null, connectors: null, prs: null,
-  worktrees: null, map: null, github: null, activity: null, chronicle: null,
+const data = { env: null, brief: null, account: null, usage: [], agents: [], overview: null, chores: [], current: null, stats: null, connectors: null, prs: null,
+  worktrees: null, map: null, github: null, activity: null, chronicle: null, prune: null,
   tasks: { running: [], finished: 0, done: [] } };
 // The two Git loaders both rebuild the map. A generation drops a result that started from an older pair.
 let mapGen = 0;
@@ -66,7 +70,8 @@ const loaders = {
       data.tasks = { running: data.activity?.tasks ?? [], finished: 0, done: [] };
     } else {
       await taskIndex.update(files.transcriptPath);
-      data.stats = taskIndex.context();
+      // The activity file holds Claude's live ledger (session.measure). It replaces a transcript total.
+      data.stats = applyRecordedCost(taskIndex.context(), data.activity?.cost);
       data.tasks = files.tasksDir ? await taskIndex.list(files.tasksDir) : { running: [], finished: 0, done: [] };
     }
   },
@@ -77,7 +82,16 @@ const loaders = {
     if (seenBranch !== undefined && branch !== seenBranch) refreshWorktrees();
     seenBranch = branch;
   },
-  async sessions() { data.overview = await src.sessionsOverview(data.agents, data.current?.pid, data.current?.sessionId); },
+  async sessions() {
+    const overview = await src.sessionsOverview(data.agents, data.current?.pid, data.current?.sessionId);
+    data.chores = choresEnabled ? await listChores(cwd) : [];
+    data.overview = placeChores(overview, data.chores);
+    const live = new Set((data.agents ?? []).map((s) => s.sessionId).filter(Boolean));
+    if (data.current?.sessionId) live.add(data.current.sessionId);
+    if (sessionFlag) live.add(sessionFlag);
+    await src.pruneActivity({ liveIds: [...live] });
+    refreshPrune();
+  },
   async account() {
     const host = hostOf();
     [data.account, data.usage] = await Promise.all([src.account(host, data.current?.configDir), src.usage(host, data.current?.configDir)]);
@@ -100,16 +114,33 @@ const loaders = {
     }
   },
   async worktrees() {
-    if (ui.tab !== 'git' && data.worktrees) return;
+    // The prune row is on Session as well as Git, so this list stays current on either tab.
+    // The branch map itself is still only rebuilt while Git is showing.
     data.worktrees = { ...(await src.worktrees(cwd)), at: Date.now() };
+    refreshPrune();
     if (ui.tab === 'git') await publishMap();
   },
   async connectors() { data.connectors = await src.connectors(hostOf()); },
 };
 
+// Cwds of sessions that are still running. The overview is the same list with branches filled in.
+const livePaths = () => (data.overview ?? data.agents ?? []).map((s) => s.cwd).filter(Boolean);
+let offeredCompactAt = 0;
+// The prune row, from the worktree list and the live sessions. After a compact, offer that branch once
+// when its worktree is actually removable (merged, clean, session gone).
+function refreshPrune() {
+  if (!data.worktrees?.ok) { data.prune = { remove: [], keep: [] }; return; }
+  data.prune = planWorktrees(data.worktrees.items, { mainPath: mainCheckout(data.worktrees.items), livePaths: livePaths() });
+  const hit = compactOffer(data.prune, data.activity?.compacted);
+  if (!hit || offeredCompactAt === data.activity.compacted.at) return;
+  offeredCompactAt = data.activity.compacted.at;
+  toast(`Remove the worktree for ${clean(hit.branch)}?`);
+}
+
 export async function collect() {
   await loaders.fast(); // Sessions builds on its list of sessions
   await Promise.all(Object.entries(loaders).filter(([k]) => k !== 'fast').map(([, f]) => f()));
+  refreshPrune();
   return { cwd, ...data };
 }
 
@@ -299,6 +330,10 @@ const pane = (argv, cb) => execFile(process.execPath, [PANE, ...argv], { timeout
 });
 // Bring a session's iTerm window (and tab) to the front; one without a terminal (the Claude app) gets its menu.
 const goTo = (s) => {
+  if (s.chore) {
+    const c = data.chores?.find((x) => `chore:${x.id}` === s.sessionId);
+    return viewText(s.title, (c?.summary || [s.doing]).join('\n\n'));
+  }
   if (s.current) return toast('This is the current session');
   if (!s.tty) return agentMenu(s);
   pane(['focus', s.tty], (state) => { if (state !== 'focused') toast(state === 'not-found' ? 'Not an iTerm tab' : "Couldn't switch"); });
@@ -306,6 +341,15 @@ const goTo = (s) => {
 
 // + new: the problem typed on the bottom line becomes a worktree and a new window running claude "/start <problem>".
 const sq = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
+// The CI chore, only when the setting is on. Its own worktree; the person reviews before any merge.
+const startChoreFromRail = async () => {
+  toast('Starting the CI chore…'); draw();
+  const result = await startChore({ cwd, settings: { chores: true }, openWindow: true });
+  toast(result.ok ? `${result.chore.id} · a person reviews before merge` : result.message);
+  await loaders.sessions();
+  draw();
+};
+
 const startSession = async (problem) => {
   toast('Adding a worktree…'); draw();
   const wt = await src.newWorktree(cwd, problem);
@@ -316,6 +360,47 @@ const startSession = async (problem) => {
 // A new iTerm window beside this session's, running command.
 const openWindow = (command, ok) => pane(['window', data.overview?.find((s) => s.current)?.tty ?? 'none', command],
   (state) => toast(state === 'opened' ? ok : "Couldn't open a window"));
+// One confirm, then git worktree remove. The source checks again and will not delete a dirty or unmerged tree.
+const dropWorktrees = async (rows) => {
+  const live = livePaths();
+  const results = [];
+  for (const r of rows) results.push({ row: r, ...(await src.removeWorktree(cwd, r.path, { confirm: true, livePaths: live })) });
+  const ok = results.filter((r) => r.ok);
+  const no = results.filter((r) => !r.ok);
+  try {
+    data.worktrees = { ...(await src.worktrees(cwd)), at: Date.now() };
+    refreshPrune();
+    if (ui.tab === 'git') await publishMap();
+  } catch { /* the list refreshes on its timer */ }
+  if (ok.length) mascot.tidy();
+  const name = (r) => clean(r.row.branch || r.row.name || 'worktree');
+  if (ok.length && !no.length) toast(ok.length === 1 ? `Removed ${name(ok[0])}` : `Removed ${ok.length} worktrees`);
+  else if (!ok.length) {
+    const why = { dirty: 'uncommitted files', unknown: "couldn't tell if it was clean", unmerged: 'not merged', live: 'a session is still there', current: 'this checkout', confirm: 'not confirmed' };
+    toast(no[0] ? `Left it: ${why[no[0].reason] || no[0].message || "couldn't remove it"}` : "Couldn't remove it");
+  } else toast(`Removed ${ok.length}; left ${no.length}`);
+  draw();
+};
+const confirmPrune = (onlyPath) => {
+  const plan = data.prune ?? { remove: [], keep: [] };
+  const remove = onlyPath ? plan.remove.filter((r) => r.path === onlyPath) : plan.remove;
+  const keep = onlyPath ? [] : plan.keep;
+  const options = remove.map((r) => ({
+    label: `Remove ${clean(r.branch || r.name || 'worktree')}`,
+    hint: r.reason === 'contained' ? 'clean · on main' : 'merged · clean',
+    run: () => dropWorktrees([r]),
+  }));
+  if (remove.length > 1 && !onlyPath) options.unshift({ label: `Remove all ${remove.length}`, hint: 'one confirm', run: () => dropWorktrees(remove) });
+  for (const r of keep) options.push({
+    label: clean(r.branch || r.name || 'worktree'),
+    hint: r.reason === 'dirty' && r.dirty ? `${r.dirty} uncommitted · kept` : 'kept',
+    keep: true,
+    run: () => toast('Left it in place'),
+  });
+  menu(remove.length ? 'Remove finished worktrees?' : 'Worktrees kept', options, [
+    'Merged and clean, and the session is gone. Dirty stays.',
+  ]);
+};
 // A session belongs to the deepest worktree holding its cwd (a worktree can sit inside another's folder).
 const sessionFor = (path) => {
   if (!path) return null;
@@ -346,6 +431,7 @@ const activateLane = async (row) => {
   if (row.activate === 'check' && row.url) return launch('open', [row.url], 'Opened the check');
   if (row.activate === 'pr' && row.url) return launch('open', [row.url], `Opened #${row.pr}`);
   if (row.activate === 'copy') return copy(row.branch, 'branch name');
+  if (row.activate === 'prune') return confirmPrune(row.path);
   if (row.activate === 'session') {
     const s = sessionFor(row.path);
     if (s) return goTo(s);
@@ -407,11 +493,22 @@ const fontMenu = () => {
 
 // The compactions (hooks/compact.ts reads the same file), each on unless settings.json turns it off:
 // autoCompact after a merged branch, warmCompact before a waiting session's cache goes cold (Claude only).
-const SETTINGS_FILE = join(homedir(), '.claude', 'session-rail', 'settings.json');
+const SETTINGS_FILE = process.env.SESSION_RAIL_SETTINGS || join(homedir(), '.claude', 'session-rail', 'settings.json');
 const readSettings = () => { try { return JSON.parse(readFileSync(SETTINGS_FILE, 'utf8')) ?? {}; } catch { return {}; } };
 const compactOn = { autoCompact: readSettings().autoCompact !== false, warmCompact: readSettings().warmCompact !== false };
 // Wide review stays off until this is true. The desk reads the same file and only then offers the action.
 const wideOn = { wideReview: readSettings().wideReview === true };
+// Chores default off. --chores on|off is a frame override and is not written unless the row is toggled.
+const choresFlag = flag('--chores');
+let choresEnabled = choresFlag === 'on' ? true : choresFlag === 'off' ? false : readSettings().chores === true;
+const toggleChores = () => {
+  choresEnabled = !choresEnabled;
+  try {
+    mkdirSync(dirname(SETTINGS_FILE), { recursive: true });
+    writeFileSync(SETTINGS_FILE, JSON.stringify({ ...readSettings(), chores: choresEnabled }, null, 2));
+    toast(choresEnabled ? 'Chores on: one CI chore, with a round budget' : 'Chores off');
+  } catch { choresEnabled = !choresEnabled; toast("Couldn't save the setting"); }
+};
 const COMPACT_TOASTS = {
   autoCompact: ['Auto-compact on: after each merged branch', 'Auto-compact off'],
   warmCompact: ['Compacts a waiting session before its cache goes cold', "Won't compact before the cache goes cold"],
@@ -491,6 +588,14 @@ function buildMain(W) {
   // Git: one tree of the open branches, and the one line that says what can land.
   // `spread` lays out pieces already truncated to fit: styled left, styled right, padded between.
   const spread = (left, right = '', id) => line(left + ' '.repeat(Math.max(right ? 1 : 0, inner - width(left) - width(right))) + right, id);
+  // Finished + new worktrees, on both tabs. Enter is the confirm. Dirty ones are listed there and not removed.
+  const pruneRow = () => {
+    const label = pruneLabel(data.prune);
+    if (!label) return;
+    const right = dim(label.right);
+    const left = trunc(clean(label.left), Math.max(1, inner - width(label.right) - 1));
+    spread(left, right, item('prune', () => confirmPrune()));
+  };
   // Style names from the tree, painted when the frame is drawn so the palette is the one in force.
   const paint = (parts) => (parts ?? []).map((p) => {
     const text = clean(String(p.text ?? ''));
@@ -511,6 +616,7 @@ function buildMain(W) {
     const repo = trunc(clean(wt?.repo ?? env?.repo ?? '…'), inner - 6);
     const baseName = wt?.base ? trunc(clean(wt.base), Math.max(0, inner - 6 - width(repo) - 3)) : '';
     spread(repo + (baseName ? ' · ' + dim(baseName) : ''), wt?.at ? dim(`↻ ${ago(wt.at)}`) : '');
+    pruneRow();
     const tree = data.map?.ok ? buildTree({
       base: data.map.base,
       onTrunk: Boolean(env?.branch && env.branch === data.map.base),
@@ -524,6 +630,8 @@ function buildMain(W) {
         const s = sessionFor(node.path);
         return s ? (s.current ? 'This session' : 'Go to session') : `Open ${agentBin()} here`;
       },
+      extra: (node) => (data.prune?.remove.some((r) => r.path && r.path === node.path)
+        ? [{ label: 'Remove worktree', activate: 'prune', id: `act:${node.name}:prune` }] : []),
     }) : null;
     if (data.github === false) line(dim('GitHub unavailable'));
     else if (data.prs?.truncated) line(dim('More pull requests than this map shows'));
@@ -553,6 +661,7 @@ function buildMain(W) {
   const list = data.overview ?? [];
   pair(`Sessions ${dim(list.length ? String(list.length) : '…')}`, '+ new', item('new-session', () => { ui.input = { text: '' }; }),
     { leftStyle: bold, rightStyle: (s) => fg(C.accent, s) });
+  pruneRow();
   const STATE = {
     busy: [() => fg(C.accent, ui.tick % 2 ? '●' : '◉'), (s) => fg(C.accent, s)],
     waiting: [() => fg(C.yellow, '◆'), (s) => fg(C.yellow, s)],
@@ -568,6 +677,7 @@ function buildMain(W) {
     line(`${s.current ? '▸' : ' '} ${dot()} ${s.current ? bold(l) : l}${' '.repeat(gap)}${paint(right)}`, id);
     pair(`    ${[s.repo, s.branch, clean(s.doing)].filter(Boolean).join(' · ')}`, '', id, { leftStyle: dim });
   }
+  if (choresEnabled) line(dim('  ↻ Re-run failing CI'), item('chore-start', startChoreFromRail));
 
   // This session: who is working, the words they were handed, and how the problem got here.
   // The banner is the one sentence. Enter opens an agent or a chapter. Enter on a prompt or a reply shows the text.
@@ -589,6 +699,7 @@ function buildMain(W) {
       tasks: data.tasks.running,
       desk: act?.desk,
       compacted: act?.compacted && Date.now() - act.compacted.at < 3600_000 ? act.compacted : null,
+      tests: act?.tests,
       now: Date.now(),
     });
     const told = layoutStory(story, { inner, open: ui.expanded });
@@ -641,7 +752,8 @@ function buildMain(W) {
     else {
       if (st.model) kv('Model', [st.model, st.effort].filter(Boolean).join(' · '));
       kv('Tokens', `${tokens(st.contextTokens)} / ${tokens(st.contextSize)}`);
-      if (st.costUsd != null) kv('Cost', `$${st.costUsd.toFixed(2)}${st.apiMs ? ` · API ${Math.round(st.apiMs / 60000)}m` : ''}`);
+      // The host's session dollars, or a dash. Never a price computed from the token row above.
+      kv('Cost', costText(st));
       if (st.linesAdded != null) kv('Lines', `+${st.linesAdded} −${st.linesRemoved ?? 0}`);
       kv('Cache', cacheView(data.activity?.cache, Date.now())?.text ?? '—'); // Claude's hooks record it; Grok has none
     }
@@ -687,7 +799,7 @@ function buildOverlay(W, bodyH) {
     if (!o.options.length) line(dim('Nothing here'));
     o.options.forEach((opt, i) => {
       const id = `opt:${i}`;
-      items.push({ id, activate: () => { if (!opt.keep) closeOverlay(); opt.run(); } });
+      items.push({ id, activate: () => { if (!opt.keep) closeOverlay(); return opt.run(); } });
       const hint = opt.hint ?? (opt.key ? `[${opt.key}]` : '');
       const l = trunc(opt.label, inner - (hint ? width(hint) + 1 : 0));
       line(l + ' '.repeat(Math.max(hint ? 1 : 0, inner - width(l) - width(hint))) + dim(hint), id);
@@ -734,6 +846,7 @@ function buildSettings() {
     rows.push({ id: 'compact', activate: toggleCompact('autoCompact'), label: '⟲ Auto-compact', value: `‹ ${compactOn.autoCompact ? 'on' : 'off'} ›` });
     rows.push({ id: 'wide', activate: toggleWide, label: 'Wide review', value: `‹ ${wideOn.wideReview ? 'on' : 'off'} ›` });
     if (agentName() !== 'Grok') rows.push({ id: 'warm', activate: toggleCompact('warmCompact'), label: '◷ Before cache cold', value: `‹ ${compactOn.warmCompact ? 'on' : 'off'} ›` });
+    rows.push({ id: 'chores', activate: toggleChores, label: '↻ Chores', value: `‹ ${choresEnabled ? 'on' : 'off'} ›` });
   }
   const toggle = { id: 'settings', activate: () => { ui.open.settings = !ui.open.settings; }, label: '⚙ settings' };
   return { rows, toggle };
@@ -825,6 +938,22 @@ if (args.includes('--frame')) {
     }
     recent.unshift({ tool: 'Grep', arg: 'agent.spawn', ok: true, at: t - 3000, ms: 40, agent: 'sample0' });
     data.activity = { ...a, claude: { state: 'tool', since: t - 20000 }, running, recent, agents: { ...a.agents, ...agents } };
+  }
+  // A failed Stop gate: one line in the story, and the same droop as a failed tool.
+  // `--tests-failed [command]` pins it for a frame. A following flag is not a command.
+  if (args.includes('--tests-failed')) {
+    const named = flag('--tests-failed');
+    const command = named && !named.startsWith('-') ? named : 'npm test';
+    const t = Date.now();
+    data.current = data.current || { host: hostFlag === 'grok' ? 'grok' : 'claude', status: 'waiting', statusSince: t, sessionId: 'frame', pid: 1, cwd };
+    const a = data.activity || { running: [], recent: [], agents: {} };
+    data.activity = {
+      ...a,
+      claude: a.claude || { state: 'waiting', since: t },
+      running: a.running || [],
+      recent: [{ tool: 'test', arg: command, ok: false, at: t, ms: 20 }, ...(a.recent || [])],
+      tests: { at: t, ok: false, command, detail: '' },
+    };
   }
   feedPet(W); mascot.setHeld(false);
   // let it walk to its spot on the road (at a past time, so no blink is left on the frame), then hold it there
@@ -934,6 +1063,7 @@ const handleKey = (k) => {
     if (ui.sel === 'compact' && ['\x1b[D', 'h', '\x1b[C', 'l'].includes(k)) return toggleCompact('autoCompact')();
     if (ui.sel === 'wide' && ['\x1b[D', 'h', '\x1b[C', 'l'].includes(k)) return toggleWide();
     if (ui.sel === 'warm' && ['\x1b[D', 'h', '\x1b[C', 'l'].includes(k)) return toggleCompact('warmCompact')();
+    if (ui.sel === 'chores' && ['\x1b[D', 'h', '\x1b[C', 'l'].includes(k)) return toggleChores();
     const p = selectedPr();
     if (p && k === 'o') return launch('open', [p.url], `Opened #${p.number}`);
     if (p && k === 'y') return copy(p.url, `link to #${p.number}`);
