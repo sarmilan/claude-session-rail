@@ -110,7 +110,8 @@ const briefHarness = (on: Parameters<Parameters<typeof test>[1]>[1], { branch = 
     return { value: undefined }
   })
   on('tool.call', (_, e) => {
-    edits.push(String((e as { file_path?: string }).file_path))
+    const ev = e as { tool?: string; file_path?: string; command?: string }
+    edits.push(ev.tool === 'Bash' ? `bash:${ev.command}` : String(ev.file_path ?? ''))
     return { result: { ok: true } } as never
   })
   return { base, files, edits }
@@ -173,6 +174,52 @@ test('a draft brief names what is missing, and /approve-brief refuses it', async
   expect((await approve($)).text).toContain("Can't approve yet")
 })
 
+const bash = (command: string) => ({ tool: 'Bash' as const, command })
+
+test('a shell write waits for the brief, and git log does not', async ($, on) => {
+  const { edits } = briefHarness(on)
+  const editDeny = ((await $.tool.call(edit('/repo/src/a.ts'))) as { deny?: string }).deny
+  const redirect = (await $.tool.call(bash('cat > src/a.ts'))) as { deny?: string }
+  const tee = (await $.tool.call(bash('tee src/a.ts'))) as { deny?: string }
+  expect(redirect.deny).toBe(editDeny)
+  expect(tee.deny).toContain('wait for the session brief')
+  expect(edits).toEqual([])
+  await $.tool.call(bash('git log'))
+  await $.tool.call(bash('echo hi > /dev/null'))
+  await $.tool.call(bash('git commit -m "x"'))
+  expect(edits).toEqual(['bash:git log', 'bash:echo hi > /dev/null', 'bash:git commit -m "x"'])
+})
+
+test('on main, a shell write in the repo waits for a branch, and one outside does not', async ($, on) => {
+  const { edits } = briefHarness(on, { branch: 'main' })
+  const r = (await $.tool.call(bash('echo hi > src/a.ts'))) as { deny?: string }
+  expect(r.deny).toContain('No brief for main')
+  expect(r.deny).toContain('Create a branch')
+  await $.tool.call(bash('echo hi > /tmp/plan.md'))
+  await $.tool.call(bash('git log'))
+  expect(edits).toEqual(['bash:echo hi > /tmp/plan.md', 'bash:git log'])
+})
+
+test('the brief can be written from the shell, and its approval file cannot', async ($, on) => {
+  const { base, edits } = briefHarness(on)
+  await $.tool.call(bash(`cat > ${base}.md <<'EOF'\n# T\nEOF`))
+  expect(edits).toEqual([`bash:cat > ${base}.md <<'EOF'\n# T\nEOF`])
+  const r = (await $.tool.call(bash(`echo '{}' > ${base}.approved.json`))) as { deny?: string }
+  expect(r.deny).toContain('only the person approves')
+  expect(edits).toEqual([`bash:cat > ${base}.md <<'EOF'\n# T\nEOF`])
+})
+
+test('a shell write is refused until the brief is approved, then it runs', async ($, on) => {
+  const { edits } = briefHarness(on, { brief: COMPLETE })
+  const r = (await $.tool.call(bash('cat > src/a.ts'))) as { deny?: string }
+  expect(r.deny).toContain('not approved yet')
+  expect(edits).toEqual([])
+  await approve($)
+  await $.tool.call(bash('cat > src/a.ts'))
+  await $.tool.call(bash('git log'))
+  expect(edits).toEqual(['bash:cat > src/a.ts', 'bash:git log'])
+})
+
 test('a complete brief asks for approval; once approved, edits go through and stay allowed', async ($, on) => {
   const { files, base, edits } = briefHarness(on, { brief: COMPLETE })
   expect(((await $.tool.call(edit('/repo/src/a.ts'))) as { deny?: string }).deny).toContain('not approved yet')
@@ -230,6 +277,8 @@ test('the system prompt explains the brief on a feature branch', async ($, on) =
   expect(s?.text).toContain('Call the review_approach tool')
   expect(s?.text).toContain('/code-review --fix')
   expect(s?.text).toContain('final: true')
+  expect(s?.text).toContain('shell command that writes a file')
+  expect(s?.text).toContain('git log')
   expect(s?.scope).toBe('session')
 })
 
@@ -318,6 +367,14 @@ test('a refused edit is a failed call, and the gate records what it refused', as
   const a = await activityOf(files)
   expect(a.gate).toMatchObject({ tool: 'Edit', file: '/repo/src/a.ts' })
   expect(a.recent[0]).toMatchObject({ tool: 'Edit', ok: false })
+})
+
+test('a refused shell write is the same gate record, so the rail holds and the pet does not droop', async ($, on) => {
+  const { files } = withActivity(on)
+  await $.tool.call(bash('tee src/a.ts') as never)
+  const a = await activityOf(files)
+  expect(a.gate).toMatchObject({ tool: 'Bash', file: '/repo/src/a.ts' })
+  expect(a.recent[0]).toMatchObject({ tool: 'Bash', ok: false })
 })
 
 // ── Named subagents (bin/names.mjs, agent.spawn) ──────────────────────────────

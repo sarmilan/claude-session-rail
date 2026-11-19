@@ -3,9 +3,10 @@
 // stdin and this process exits. Interactive `grok` only (a headless `grok -p` has no TTY and must not
 // open panes or gate an outer session). The Claude plugin stays in hooks/register.ts.
 //
-// It opens the desk and the rail, keeps the Now feed, refuses code edits until the brief is approved,
-// refuses `gh pr merge` until the reviews are in, and records a /review report. The go-ahead and
-// auto-compact run in grok-watch.mjs, because a hook can't type into the session on its own.
+// It opens the desk and the rail, keeps the Now feed, refuses code edits and a shell command that writes
+// a file until the brief is approved, refuses `gh pr merge` until the reviews are in, and records a
+// /review report. The go-ahead and auto-compact run in grok-watch.mjs, because a hook can't type into
+// the session on its own.
 import { execFileSync, spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -16,6 +17,7 @@ import { humanAsk, keep } from './sessionstory.mjs';
 import { briefInstructions, outsideRepoNote } from './brief-instructions.mjs';
 import { approvalRecord, briefFile, briefStatus, checkoutName, inWorkTree, mainCheckoutNote, NO_BRIEF_BRANCHES, parseBrief } from './brief.mjs';
 import { codeRun, gateReason as reviewWait, keptRuns, mergesPr, reportFromText, reviewsFile } from './cadence.mjs';
+import { resolveWritePath, shellWrites } from './shellwrite.mjs';
 import { findAgent, railHome } from './host.mjs';
 import { pickColour, pickName } from './names.mjs';
 
@@ -84,6 +86,26 @@ export function editReason(b, file, checkout) {
   const brief = parseBrief(b.text);
   if (brief.missing.length) return `session-rail: code edits wait for the session brief, which is missing: ${brief.missing.join(', ')}. ${where}`;
   return `session-rail: the session brief is complete but not approved yet. Ask the person to review it in the desk's Plan tab and press Approve there, then carry on. ${where}`;
+}
+
+// A shell write uses the same reason as Edit. `null` from shellWrites is a write with no literal path,
+// treated as a file in the checkout so the person runs it themselves. The refusal is the Held banner.
+export function shellEdit(cwd, command) {
+  const targets = shellWrites(command);
+  if (!targets) return null;
+  const b = readBrief(cwd);
+  const head = gitHead(cwd);
+  const root = head?.root || head?.cwd || cwd;
+  const base = head?.cwd || cwd;
+  const checkout = !b && head && NO_BRIEF_BRANCHES.includes(head.branch)
+    ? { branch: head.branch, cwd: head.root || head.cwd } : null;
+  for (const target of targets) {
+    const file = target == null ? `${root}/shell-write` : resolveWritePath(base, target);
+    if (!file) continue;
+    const reason = editReason(b, file, checkout);
+    if (reason) return { reason, file };
+  }
+  return null;
 }
 
 export function slashCommand(text) {
@@ -370,13 +392,23 @@ export function handle(event, agent) {
     }
   }
 
-  if (kind === 'pre' && SHELL.has(tool) && mergesPr(input.command || '')) {
-    const b = readBrief(cwd);
-    if (b?.approval?.approvedAt) {
-      const head = git(cwd, ['rev-parse', 'HEAD']);
-      const runs = (readJson(reviewsFile(b.common, b.branch))?.runs ?? []).filter((r) => r && Array.isArray(r.findings));
-      const reason = head ? reviewWait(runs, { head }) : null;
-      if (reason) { save(); return { decision: 'deny', reason }; }
+  if (kind === 'pre' && SHELL.has(tool)) {
+    const write = shellEdit(cwd, input.command || '');
+    if (write) {
+      const b = readBrief(cwd);
+      if (b) writeProcedure(b); // the deny drops any attached procedure, so the reason points at the file
+      activity = act.refused(activity, tool, write.file, now);
+      save();
+      return { decision: 'deny', reason: write.reason };
+    }
+    if (mergesPr(input.command || '')) {
+      const b = readBrief(cwd);
+      if (b?.approval?.approvedAt) {
+        const head = git(cwd, ['rev-parse', 'HEAD']);
+        const runs = (readJson(reviewsFile(b.common, b.branch))?.runs ?? []).filter((r) => r && Array.isArray(r.findings));
+        const reason = head ? reviewWait(runs, { head }) : null;
+        if (reason) { save(); return { decision: 'deny', reason }; }
+      }
     }
   }
 

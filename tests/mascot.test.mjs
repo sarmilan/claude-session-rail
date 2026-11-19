@@ -138,6 +138,8 @@ test('Claude: the brief gate is not a droop, and a failed Bash is', () => {
   const gate = { at: 100, tool: 'Edit', file: 'a.js' };
   assert.equal(droopFor(claude({ recent: [{ tool: 'Edit', ok: false, at: 100 }], gate })), false);
   assert.equal(droopFor(claude({ recent: [{ tool: 'Bash', ok: false, at: 200 }, { tool: 'Edit', ok: false, at: 100 }], gate })), true);
+  const shellGate = { at: 200, tool: 'Bash', file: '/repo/src/a.ts' };
+  assert.equal(droopFor(claude({ recent: [{ tool: 'Bash', ok: false, at: 200 }], gate: shellGate })), false);
   assert.equal(droopFor(claude({ recent: [{ tool: 'Bash', ok: true, at: 300 }, { tool: 'Bash', ok: false, at: 200 }] })), false);
   const held = { at: 150, tool: 'Edit', file: 'a.js' };
   assert.equal(flinchAt(claude({ recent: [{ tool: 'Edit', ok: false, at: 150 }, { tool: 'Bash', ok: false, at: 100 }], gate: held }), 0), 100);

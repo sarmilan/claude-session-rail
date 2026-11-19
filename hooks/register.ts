@@ -8,6 +8,7 @@ import { pickColour, pickName } from '../bin/names.mjs'
 import { keep } from '../bin/sessionstory.mjs'
 import { nextCache } from '../bin/cache.mjs'
 import { codeRun, gateReason as reviewWait, keptRuns, mergesPr, reportFromText, reviewsFile } from '../bin/cadence.mjs'
+import { resolveWritePath, shellWrites } from '../bin/shellwrite.mjs'
 import { lockPath, performGate, projectCommand, runInProgress, RUN_TIMEOUT_MS, sessionIdOf, shellLine, reuseDecision } from '../bin/stopgate.mjs'
 
 // The controller (bin/pane.mjs) does the iTerm work; this module only decides when to call it.
@@ -44,10 +45,12 @@ const runStart = async ($: EngineInterface) => {
 
 // ── The session brief (bin/brief.mjs) ─────────────────────────────────────────
 // On a feature branch, Claude writes the branch's brief before editing code, and the person approves it
-// in the desk (Approve, or A) or with /approve-brief. Until then Edit, Write and NotebookEdit are refused,
-// except on the brief itself. Once approved, edits stay allowed even if the brief changes later: the desk
-// shows "changed since approval" and a review of the change. On main, master, or a detached HEAD there is
-// no brief: the prompt says to branch first, and a repo edit is refused with that note. Bash isn't gated.
+// in the desk (Approve, or A) or with /approve-brief. Until then Edit, Write, NotebookEdit, and a shell
+// command that writes a file (bin/shellwrite.mjs) are refused, except on the brief itself. Once approved,
+// edits stay allowed even if the brief changes later: the desk shows "changed since approval" and a review
+// of the change. On main, master, or a detached HEAD there is no brief: the prompt says to branch first,
+// and a repo edit is refused with that note. A shell command that only reads (git log, tests) still runs,
+// and so does a commit. gh pr merge stays on the review gate.
 type Brief = {
   branch: string
   common: string
@@ -117,7 +120,7 @@ Work the brief out with the person before editing any code. Don't wait to be ask
 
 ${BRIEF_SHAPE}
 
-Keep the solution and the outline the simplest way to reach the goal. Edit, Write and NotebookEdit calls on any other file are refused until the brief has a problem, a solution and at least one chunk, and the person has approved it. When it's complete, call the review_approach tool on it (a plan review: the cheapest time to change course), work its findings into the brief, then ask them to review it and press Approve in the desk's Plan tab. Never approve it yourself or write its approval file.
+Keep the solution and the outline the simplest way to reach the goal. Edit, Write and NotebookEdit calls, and a shell command that writes a file in the checkout, are refused on any other file until the brief has a problem, a solution and at least one chunk, and the person has approved it. A read-only command such as git log still runs. When it's complete, call the review_approach tool on it (a plan review: the cheapest time to change course), work its findings into the brief, then ask them to review it and press Approve in the desk's Plan tab. Never approve it yourself or write its approval file.
 
 While you work, keep the brief current: if the problem, the solution or the outline changes, update the brief right away.
 
@@ -162,6 +165,24 @@ const gate = async ($: EngineInterface, tool: string, file: string) => {
     : gateReason(b)
   if (reason) record($, a => act.refused(a, tool, file, Date.now()))
   return reason
+}
+
+// A shell write waits on the same gate as Edit. shellWrites names the files; a `null` entry is a write
+// whose path isn't literal, so it's treated as a file in the checkout (the person can run it themselves).
+// The refusal is the same record the rail shows as Held, and the pet's ? rather than a droop.
+const shellGate = async ($: EngineInterface, command: string) => {
+  const targets = shellWrites(command)
+  if (!targets) return null
+  const head = await gitHead($)
+  const cwd = head?.cwd ?? (await $.session.cwd())
+  const root = head?.root || cwd
+  for (const target of targets) {
+    const file = target == null ? `${root}/shell-write` : resolveWritePath(cwd, target)
+    if (!file) continue
+    const deny = await gate($, 'Bash', file)
+    if (deny) return deny
+  }
+  return null
 }
 
 // ── The review cadence (bin/cadence.mjs) ──────────────────────────────────────
@@ -641,7 +662,8 @@ export const register: Register = on => {
     }
   })
 
-  // The gate: code edits wait for an approved brief. A failure in the gate lets the edit through.
+  // The gate: code edits, including a shell command that writes a file, wait for an approved brief.
+  // A failure in the gate lets the edit through.
   on('tool.call', { tool: 'Edit' }, async ($, e, next) => {
     const deny = await gate($, 'Edit', e.file_path)
     return deny ? { deny } : next(e)
@@ -658,7 +680,7 @@ export const register: Register = on => {
   // The review cadence: merges wait for the reviews, and /code-review's report is recorded.
   on('tool.call', { tool: 'mcp__session-rail__review_approach' }, async ($, e) => ({ result: await runReview($, e as never) }) as never)
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
-    const deny = await reviewGate($, e.command)
+    const deny = (await shellGate($, e.command)) ?? (await reviewGate($, e.command))
     return deny ? { deny } : next(e)
   }).catch(($, e, next) => next(e))
   // /code-review's output contract is a JSON block, not ReportFindings: on a gated branch an armed run's prompt

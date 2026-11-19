@@ -59,7 +59,7 @@ test('Grok starter stays on ask and does not auto-allow bash', () => {
   assert.match(project, /Bash\(git push \*\)/);
 });
 
-test('Safe use docs state the host-Mac risk, the pending shell-write PR, and the official docs', () => {
+test('Safe use docs state the host-Mac risk, the shell-write gate, and the official docs', () => {
   const page = read('docs/safe-use.md');
   const readme = read('README.md');
   for (const text of [page, readme]) {
@@ -68,8 +68,8 @@ test('Safe use docs state the host-Mac risk, the pending shell-write PR, and the
     assert.match(text, /https:\/\/code\.claude\.com\/docs\/en\/sandboxing/);
     assert.match(text, /https:\/\/docs\.x\.ai\/build\/features\/permissions/);
     assert.match(text, /https:\/\/docs\.x\.ai\/build\/features\/sandbox/);
-    assert.match(text, /github\.com\/sarmilan\/workbench\/pull\/61/);
-    assert.match(text, /not merged/);
+    assert.match(text, /bin\/shellwrite\.mjs/);
+    assert.doesNotMatch(text, /not merged/);
   }
   assert.match(page, /host Mac/);
   assert.match(readme, /your Mac/);
