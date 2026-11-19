@@ -21,6 +21,9 @@ export type Activity = {
   recent: Finished[]
   // The brief gate's latest refusal.
   gate?: { at: number; tool: string; file: string }
+  // The Stop test gate's latest run. A failure is also a row in `recent` (tool `test`), so the pet
+  // flinches and droops the way it does for any failed call. `detail` is one line of the output.
+  tests?: { at: number; ok: boolean; command: string; detail: string }
   // Subagents by agentId, named at their spawn: the live ones, and the last few that ended (so the story can name them).
   agents?: Record<string, Agent>
   // What the person asked and what the main agent answered, newest last. The transcript is the long copy.
@@ -92,6 +95,16 @@ export function notedCost(a: Activity, usd: number, now: number): Activity {
 }
 export function refused(a: Activity, tool: string, file: string, now: number): Activity {
   return { ...a, updatedAt: now, gate: { at: now, tool, file } }
+}
+// The Stop test gate. The same `at` recorded twice (the command hook and this module) is one row.
+export function noteTests(a: Activity, note: { at?: number; ok?: boolean; command?: string; detail?: string; ms?: number }, now: number): Activity {
+  const at = note.at || now
+  const command = oneLine(note.command, 120)
+  const ok = note.ok === true
+  const detail = oneLine(note.detail, 200)
+  const row: Finished = { tool: 'test', arg: command || 'tests', ok, at, ms: note.ms || 0 }
+  const recent = [row, ...a.recent.filter(r => !(r.tool === 'test' && r.at === at))].slice(0, RECENT)
+  return { ...a, updatedAt: now, recent, tests: { at, ok, command, detail } }
 }
 export function agentStarted(a: Activity, id: string, agent: Agent): Activity {
   return { ...a, updatedAt: agent.since, agents: { ...a.agents, [id]: agent } }

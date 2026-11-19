@@ -17,6 +17,8 @@ import { createMascot, creatureNames, stageFor, progressFor, doneFor, attentionF
 import { isApproved } from './brief.mjs';
 import { cacheView } from './cache.mjs';
 import { applyRecordedCost, costText } from './cost.mjs';
+import { placeChores } from './chore.mjs';
+import { listChores, startChore } from './chore-run.mjs';
 import { NAMES, COLOURS } from './names.mjs';
 import * as fontsize from './fontsize.mjs';
 
@@ -33,7 +35,7 @@ const agentBin = () => (agentName() === 'Grok' ? 'grok' : 'claude');
 const taskIndex = new src.TaskIndex();
 
 // ── Data ───────────────────────────────────────────────────────────────────────
-const data = { env: null, brief: null, account: null, usage: [], agents: [], overview: null, current: null, stats: null, connectors: null, prs: null,
+const data = { env: null, brief: null, account: null, usage: [], agents: [], overview: null, chores: [], current: null, stats: null, connectors: null, prs: null,
   worktrees: null, map: null, github: null, activity: null, chronicle: null,
   tasks: { running: [], finished: 0, done: [] } };
 // The two Git loaders both rebuild the map. A generation drops a result that started from an older pair.
@@ -79,7 +81,11 @@ const loaders = {
     if (seenBranch !== undefined && branch !== seenBranch) refreshWorktrees();
     seenBranch = branch;
   },
-  async sessions() { data.overview = await src.sessionsOverview(data.agents, data.current?.pid, data.current?.sessionId); },
+  async sessions() {
+    const overview = await src.sessionsOverview(data.agents, data.current?.pid, data.current?.sessionId);
+    data.chores = choresEnabled ? await listChores(cwd) : [];
+    data.overview = placeChores(overview, data.chores);
+  },
   async account() {
     const host = hostOf();
     [data.account, data.usage] = await Promise.all([src.account(host, data.current?.configDir), src.usage(host, data.current?.configDir)]);
@@ -301,6 +307,10 @@ const pane = (argv, cb) => execFile(process.execPath, [PANE, ...argv], { timeout
 });
 // Bring a session's iTerm window (and tab) to the front; one without a terminal (the Claude app) gets its menu.
 const goTo = (s) => {
+  if (s.chore) {
+    const c = data.chores?.find((x) => `chore:${x.id}` === s.sessionId);
+    return viewText(s.title, (c?.summary || [s.doing]).join('\n\n'));
+  }
   if (s.current) return toast('This is the current session');
   if (!s.tty) return agentMenu(s);
   pane(['focus', s.tty], (state) => { if (state !== 'focused') toast(state === 'not-found' ? 'Not an iTerm tab' : "Couldn't switch"); });
@@ -308,6 +318,15 @@ const goTo = (s) => {
 
 // + new: the problem typed on the bottom line becomes a worktree and a new window running claude "/start <problem>".
 const sq = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
+// The CI chore, only when the setting is on. Its own worktree; the person reviews before any merge.
+const startChoreFromRail = async () => {
+  toast('Starting the CI chore…'); draw();
+  const result = await startChore({ cwd, settings: { chores: true }, openWindow: true });
+  toast(result.ok ? `${result.chore.id} · a person reviews before merge` : result.message);
+  await loaders.sessions();
+  draw();
+};
+
 const startSession = async (problem) => {
   toast('Adding a worktree…'); draw();
   const wt = await src.newWorktree(cwd, problem);
@@ -409,9 +428,20 @@ const fontMenu = () => {
 
 // The compactions (hooks/compact.ts reads the same file), each on unless settings.json turns it off:
 // autoCompact after a merged branch, warmCompact before a waiting session's cache goes cold (Claude only).
-const SETTINGS_FILE = join(homedir(), '.claude', 'session-rail', 'settings.json');
+const SETTINGS_FILE = process.env.SESSION_RAIL_SETTINGS || join(homedir(), '.claude', 'session-rail', 'settings.json');
 const readSettings = () => { try { return JSON.parse(readFileSync(SETTINGS_FILE, 'utf8')) ?? {}; } catch { return {}; } };
 const compactOn = { autoCompact: readSettings().autoCompact !== false, warmCompact: readSettings().warmCompact !== false };
+// Chores default off. --chores on|off is a frame override and is not written unless the row is toggled.
+const choresFlag = flag('--chores');
+let choresEnabled = choresFlag === 'on' ? true : choresFlag === 'off' ? false : readSettings().chores === true;
+const toggleChores = () => {
+  choresEnabled = !choresEnabled;
+  try {
+    mkdirSync(dirname(SETTINGS_FILE), { recursive: true });
+    writeFileSync(SETTINGS_FILE, JSON.stringify({ ...readSettings(), chores: choresEnabled }, null, 2));
+    toast(choresEnabled ? 'Chores on: one CI chore, with a round budget' : 'Chores off');
+  } catch { choresEnabled = !choresEnabled; toast("Couldn't save the setting"); }
+};
 const COMPACT_TOASTS = {
   autoCompact: ['Auto-compact on: after each merged branch', 'Auto-compact off'],
   warmCompact: ['Compacts a waiting session before its cache goes cold', "Won't compact before the cache goes cold"],
@@ -560,6 +590,7 @@ function buildMain(W) {
     line(`${s.current ? '▸' : ' '} ${dot()} ${s.current ? bold(l) : l}${' '.repeat(gap)}${paint(right)}`, id);
     pair(`    ${[s.repo, s.branch, clean(s.doing)].filter(Boolean).join(' · ')}`, '', id, { leftStyle: dim });
   }
+  if (choresEnabled) line(dim('  ↻ Re-run failing CI'), item('chore-start', startChoreFromRail));
 
   // This session: who is working, the words they were handed, and how the problem got here.
   // The banner is the one sentence. Enter opens an agent or a chapter. Enter on a prompt or a reply shows the text.
@@ -581,6 +612,7 @@ function buildMain(W) {
       tasks: data.tasks.running,
       desk: act?.desk,
       compacted: act?.compacted && Date.now() - act.compacted.at < 3600_000 ? act.compacted : null,
+      tests: act?.tests,
       now: Date.now(),
     });
     const told = layoutStory(story, { inner, open: ui.expanded });
@@ -726,6 +758,7 @@ function buildSettings() {
     rows.push({ id: 'pet', activate: petMenu, label: '◐ Pet', value: `‹ ${mascot.state.creature} ›` });
     rows.push({ id: 'compact', activate: toggleCompact('autoCompact'), label: '⟲ Auto-compact', value: `‹ ${compactOn.autoCompact ? 'on' : 'off'} ›` });
     if (agentName() !== 'Grok') rows.push({ id: 'warm', activate: toggleCompact('warmCompact'), label: '◷ Before cache cold', value: `‹ ${compactOn.warmCompact ? 'on' : 'off'} ›` });
+    rows.push({ id: 'chores', activate: toggleChores, label: '↻ Chores', value: `‹ ${choresEnabled ? 'on' : 'off'} ›` });
   }
   const toggle = { id: 'settings', activate: () => { ui.open.settings = !ui.open.settings; }, label: '⚙ settings' };
   return { rows, toggle };
@@ -817,6 +850,22 @@ if (args.includes('--frame')) {
     }
     recent.unshift({ tool: 'Grep', arg: 'agent.spawn', ok: true, at: t - 3000, ms: 40, agent: 'sample0' });
     data.activity = { ...a, claude: { state: 'tool', since: t - 20000 }, running, recent, agents: { ...a.agents, ...agents } };
+  }
+  // A failed Stop gate: one line in the story, and the same droop as a failed tool.
+  // `--tests-failed [command]` pins it for a frame. A following flag is not a command.
+  if (args.includes('--tests-failed')) {
+    const named = flag('--tests-failed');
+    const command = named && !named.startsWith('-') ? named : 'npm test';
+    const t = Date.now();
+    data.current = data.current || { host: hostFlag === 'grok' ? 'grok' : 'claude', status: 'waiting', statusSince: t, sessionId: 'frame', pid: 1, cwd };
+    const a = data.activity || { running: [], recent: [], agents: {} };
+    data.activity = {
+      ...a,
+      claude: a.claude || { state: 'waiting', since: t },
+      running: a.running || [],
+      recent: [{ tool: 'test', arg: command, ok: false, at: t, ms: 20 }, ...(a.recent || [])],
+      tests: { at: t, ok: false, command, detail: '' },
+    };
   }
   feedPet(W); mascot.setHeld(false);
   // let it walk to its spot on the road (at a past time, so no blink is left on the frame), then hold it there
@@ -925,6 +974,7 @@ const handleKey = (k) => {
     if (ui.sel === 'pet' && (k === '\x1b[C' || k === 'l')) return nextCreature(1);
     if (ui.sel === 'compact' && ['\x1b[D', 'h', '\x1b[C', 'l'].includes(k)) return toggleCompact('autoCompact')();
     if (ui.sel === 'warm' && ['\x1b[D', 'h', '\x1b[C', 'l'].includes(k)) return toggleCompact('warmCompact')();
+    if (ui.sel === 'chores' && ['\x1b[D', 'h', '\x1b[C', 'l'].includes(k)) return toggleChores();
     const p = selectedPr();
     if (p && k === 'o') return launch('open', [p.url], `Opened #${p.number}`);
     if (p && k === 'y') return copy(p.url, `link to #${p.number}`);

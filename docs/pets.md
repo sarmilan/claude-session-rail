@@ -102,7 +102,7 @@ A tick is about 200ms.
 
 **Hop and shake.** Adult hops a short arc about every three seconds. Heavy hops twice as often, higher, and sometimes rattles in place. A chunk just marked Done hops once, higher, whatever the stage.
 
-**Flinch.** A failed tool call shakes the body and pops a red-and-orange puff for a second and a half. The fliers scatter and the babies duck behind it. After the puff, a small red droop stays, and the body sits a little lower, until a later tool call succeeds. A refusal from the brief gate does not flinch. Red is only this.
+**Flinch.** A failed tool call shakes the body and pops a red-and-orange puff for a second and a half. The fliers scatter and the babies duck behind it. After the puff, a small red droop stays, and the body sits a little lower, until a later tool call succeeds. A refusal from the brief gate does not flinch. Red is only this. A failed test gate is the same flinch and the same droop. The rail's one line under Now names it (`tests failed`); there is no separate mark.
 
 ![a tool call fails: the crab shakes, a red puff pops, the fliers scatter, the baby hides behind it, then a small red droop stays](media/reactions/flinch.gif)
 

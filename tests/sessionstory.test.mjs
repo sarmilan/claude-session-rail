@@ -217,6 +217,20 @@ test('a transcript row keeps the person\'s ask and the spawn prompt', () => {
   assert.equal(claude[0].what, 'run the tests');
 });
 
+test('a failed test gate is one line, and a pass is not', () => {
+  const failed = buildStory({
+    host: 'Claude', now: 5_000, claude: { state: 'waiting', since: 1_000 },
+    tests: { at: 4_000, ok: false, command: 'npm test', detail: 'not ok' },
+  });
+  const rows = joined(viewOf(failed));
+  assert.match(rows[1], /✗ tests failed +npm test/);
+  const passed = buildStory({
+    host: 'Claude', now: 5_000, claude: { state: 'waiting', since: 1_000 },
+    tests: { at: 4_000, ok: true, command: 'npm test', detail: '' },
+  });
+  assert.equal(joined(viewOf(passed)).some((r) => r.includes('tests failed')), false);
+});
+
 test('every row fits the column', () => {
   const story = buildStory({
     host: 'Grok', now: 10_000, claude: { state: 'thinking', since: 9_000 },
