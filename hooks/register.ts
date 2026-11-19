@@ -433,9 +433,10 @@ const message = (state: string, panel: Panel) => {
 }
 
 // ── The Stop test gate (bin/stopgate.mjs) ─────────────────────────────────────
-// The command comes from the checkout's tests.json, then session-rail.json, then the AGENTS.md
-// seam, then a real package.json test script, then this repo's own checks. Nothing configured
-// means the stop is allowed. The lock lets this hook and the command hook share one run.
+// The command comes from the checkout's tests.json, then session-rail.json, then a command
+// named in AGENTS.md, then a real package.json test script, then this repo's own checks.
+// Nothing configured means the stop is allowed. The lock lets this hook and the command hook
+// share one run.
 const readText = async ($: EngineInterface, path: string) => {
   try { return String(await $.fs.read(path)) } catch { return null }
 }

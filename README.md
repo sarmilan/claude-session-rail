@@ -233,15 +233,29 @@ The command is chosen in this order:
 
 1. This checkout, `.git/session-rail/tests.json`: `{ "command": "npm test" }`, or `{ "command": false }` to turn the gate off here without changing the project.
 2. `session-rail.json` at the repo root: `{ "testCommand": "npm test" }`, or `{ "testCommand": false }` to turn the gate off for the project.
-3. A command named in the project's `AGENTS.md`. That file is not read for a command yet (a later change will); the hook already calls the function that will parse it.
+3. A command named in the host project's `AGENTS.md`, the git toplevel of the session. The hook uses the first fence tagged `test` (one command per line, joined with `&&`), otherwise a line such as `Tests: npm test` or `- Run tests: \`npm test\``, otherwise the first command under a heading named Tests. It takes a command only from those shapes, so a file that only discusses tests leaves the stop alone.
 4. `npm test`, when `package.json` has a real `scripts.test`. npm's placeholder (`no test specified`) does not count.
-5. In this Workbench repo only, when nothing above is set: `claude plugin test .` and the frame checks from the dev notes.
+5. In this Workbench repo only, when nothing above names a command: `claude plugin test .` and the frame checks from the dev notes. This repo's `AGENTS.md` names a command, so the hook runs that fence, which starts with `claude plugin validate .`.
 
 A failing command blocks the stop once. Claude's hook exits 2 and the reason on stderr is what Claude is told. Grok gets the same reason as a block decision and exits 0, which is how its hooks report a block. The reason includes the tail of the test output. If this stop is already a continuation (`stop_hook_active`), the hook exits 0 and does not block again, so it cannot loop. A turn the person interrupted is left alone.
 
 The rail shows one line, `tests failed`, and the pet flinches and droops the way it does when a tool fails. A later pass clears both. There is no separate mark for the gate.
 
 Turn the gate off with `"testCommand": false` in `session-rail.json`, or `"command": false` in `.git/session-rail/tests.json` for this checkout only.
+
+A host project can keep the same kind of map. A fresh session reads `AGENTS.md` for how to test. A short file is enough, and the `test` fence is the command the Stop hook runs:
+
+````markdown
+# AGENTS.md
+
+## Tests
+
+```test
+npm test
+```
+````
+
+Point the rest at the project's longer docs.
 
 ## What you need
 

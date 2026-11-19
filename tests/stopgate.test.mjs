@@ -5,6 +5,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { noteTests, fresh } from '../bin/activity.mjs';
 import { droopFor } from '../bin/mascot.mjs';
 import { loadProject, runStop } from '../bin/stop-hook.mjs';
@@ -15,12 +16,28 @@ import {
 
 const HOOK = new URL('../bin/stop-hook.mjs', import.meta.url).pathname;
 
-test('the command resolves setting, then package script, then this repo, and off wins', () => {
-  assert.equal(commandFromAgents('## Tests\n\nnpm test\n'), null);
+test('the command resolves setting, then AGENTS.md, then package script, then this repo, and off wins', () => {
+  assert.equal(commandFromAgents('## Tests\n\nnpm test\n'), 'npm test');
+  assert.equal(commandFromAgents('Tests: npm test\n'), 'npm test');
+  assert.equal(commandFromAgents('- Run tests: `pnpm test`\n'), 'pnpm test');
+  assert.equal(commandFromAgents('**Test command:** `make -C src check`\n'), 'make -C src check');
+  assert.equal(commandFromAgents('run npm test'), null);
+  assert.equal(commandFromAgents('## Setup\n\n```bash\nnpm install\n```\n'), null);
+  assert.equal(commandFromAgents('## Testing\n\nSee CLAUDE.md for the deeper notes.\n'), null);
+  assert.equal(commandFromAgents('```js\nTests: npm test\n```\n'), null);
+  assert.equal(commandFromAgents('## Tests\n\n```test\nclaude plugin validate .\nclaude plugin test .\n```\n'), 'claude plugin validate . && claude plugin test .');
+  assert.equal(commandFromAgents('```test\nnpm test\n```\n\nTests: make lint\n'), 'npm test');
+  assert.equal(commandFromAgents('## Tests\n\nRun the suite.\n\nnpm test\n'), 'npm test');
+  assert.equal(commandFromAgents('## Tests\n\n```ts\nconst x = 1\n```\n\nnpm test\n'), 'npm test');
+  assert.equal(commandFromAgents('<!--\n```test\nnpm test\n```\n-->\nHello.\n'), null);
+  assert.equal(commandFromAgents('## Tests\r\n\r\nnpm test\r\n'), 'npm test');
+  assert.equal(commandFromAgents(null), null);
+  assert.equal(commandFromAgents(''), null);
   assert.equal(packageTestCommand('echo "Error: no test specified" && exit 1'), null);
   assert.equal(packageTestCommand('node --test'), 'npm test');
-  assert.deepEqual(resolveTestCommand({ setting: false, packageScript: 'node --test', repoDefault: 'make test' }), { command: null, source: 'off' });
-  assert.deepEqual(resolveTestCommand({ setting: 'make check' }), { command: 'make check', source: 'setting' });
+  assert.deepEqual(resolveTestCommand({ setting: false, agentsText: '## Tests\n\nnpm test\n', packageScript: 'node --test', repoDefault: 'make test' }), { command: null, source: 'off' });
+  assert.deepEqual(resolveTestCommand({ setting: 'make check', agentsText: '## Tests\n\nnpm test\n' }), { command: 'make check', source: 'setting' });
+  assert.deepEqual(resolveTestCommand({ agentsText: '## Tests\n\nnpm test\n', packageScript: 'node --test', repoDefault: 'make test' }), { command: 'npm test', source: 'agents' });
   assert.deepEqual(resolveTestCommand({ agentsText: 'run npm test', packageScript: 'node --test' }), { command: 'npm test', source: 'package' });
   assert.deepEqual(resolveTestCommand({}), { command: null, source: null });
   assert.equal(settingFrom({ testCommand: 'make test' }, { command: false }), false);
@@ -112,7 +129,7 @@ function fixture(files) {
   return dir;
 }
 
-test('the project files are read in order, and AGENTS.md is not parsed yet', () => {
+test('the project files are read in order, and AGENTS.md supplies the command', () => {
   const dir = fixture({
     'session-rail.json': '{"testCommand":"make check"}\n',
     'package.json': '{"scripts":{"test":"node --test"}}\n',
@@ -129,6 +146,24 @@ test('the project files are read in order, and AGENTS.md is not parsed yet', () 
     assert.equal(loadProject(dir).source, 'off');
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+  const agents = fixture({
+    'AGENTS.md': '## Tests\n\nnpm test\n',
+    'package.json': '{"scripts":{"test":"node --test"}}\n',
+  });
+  try {
+    assert.deepEqual(loadProject(agents), { root: agents, command: 'npm test', source: 'agents' });
+  } finally {
+    rmSync(agents, { recursive: true, force: true });
+  }
+  const prose = fixture({
+    'AGENTS.md': 'run npm test\n',
+    'package.json': '{"scripts":{"test":"node --test"}}\n',
+  });
+  try {
+    assert.deepEqual(loadProject(prose), { root: prose, command: 'npm test', source: 'package' });
+  } finally {
+    rmSync(prose, { recursive: true, force: true });
   }
   const pkg = fixture({ 'package.json': '{"scripts":{"test":"echo \\"Error: no test specified\\" && exit 1"}}\n' });
   try {
@@ -202,6 +237,51 @@ test('a fixture repo blocks a red stop and allows a green one, on both hosts', a
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('the stop hook runs the command named in AGENTS.md', async () => {
+  const dir = fixture({
+    'AGENTS.md': '# Map\n\n## Tests\n\n```test\nnode check.mjs\n```\n',
+    'package.json': '{"scripts":{"test":"node from-package.mjs"}}\n',
+    'check.mjs': "import { writeFileSync, readFileSync } from 'node:fs';\nwriteFileSync('ran', 'agents');\nprocess.exit(Number(readFileSync('code.txt', 'utf8')));\n",
+    'code.txt': '1\n',
+  });
+  try {
+    assert.deepEqual(loadProject(dir), { root: dir, command: 'node check.mjs', source: 'agents' });
+    const red = await runHook(dir, { last_assistant_message: 'red agents' }, 'claude');
+    assert.equal(red.code, 2);
+    assert.match(red.stderr, /tests failed \(node check\.mjs\)/);
+    assert.equal(readFileSync(join(dir, 'ran'), 'utf8'), 'agents');
+    writeFileSync(join(dir, 'code.txt'), '0\n');
+    const green = await runHook(dir, { last_assistant_message: 'green agents' }, 'grok');
+    assert.equal(green.code, 0);
+    assert.equal(green.stderr, '');
+    assert.equal(green.stdout, '');
+    const activity = JSON.parse(readFileSync(join(dir, 'home', '.claude', 'session-rail', 'activity', 'demo.json'), 'utf8'));
+    assert.equal(activity.tests.ok, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+const REPO_TEST_COMMAND = [
+  'claude plugin validate .',
+  'claude plugin test .',
+  'node bin/rail.mjs --frame 42 40',
+  'node bin/rail.mjs --frame 42 40 --tab git',
+  'node bin/desk.mjs --frame 80 40 --tab diff',
+].join(' && ');
+
+test('this repo takes its test command from AGENTS.md', () => {
+  const root = fileURLToPath(new URL('..', import.meta.url));
+  const text = readFileSync(join(root, 'AGENTS.md'), 'utf8');
+  assert.ok(text.split('\n').length < 80, 'AGENTS.md stays short');
+  assert.match(text, /CLAUDE\.md/);
+  assert.equal(text.includes('Say the plan is in the Plan tab'), false);
+  assert.equal(commandFromAgents(text), REPO_TEST_COMMAND);
+  const loaded = loadProject(root);
+  assert.equal(loaded.source, 'agents');
+  assert.equal(loaded.command, REPO_TEST_COMMAND);
 });
 
 test('runStop agrees with the process for a pass and a headless skip', async () => {
