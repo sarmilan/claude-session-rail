@@ -1,0 +1,10 @@
+# Starting point, not a guarantee. Merge into ~/.grok/config.toml (user config).
+# permission_mode and [sandbox] belong here, not in a project's .grok/config.toml.
+# ask is the host default. This file keeps it, and it leaves auto_allow_bash off.
+
+[ui]
+permission_mode = "ask"
+
+[sandbox]
+profile = "workbench"
+auto_allow_bash = false
