@@ -225,6 +225,24 @@ Two reviews, each where it pays off:
 
 The gate only covers commands Claude runs, so you can always merge yourself. A `/code-review` you type yourself counts too. **Run review** in the desk runs an approach review on demand.
 
+## Tests before a stop
+
+When a turn ends, a Stop hook can run the project's tests and send the agent back if they fail. The same rules run for Claude and for Grok. Nothing is run, and the stop is allowed, when no test command is configured, so a folder with no tests is never blocked.
+
+The command is chosen in this order:
+
+1. This checkout, `.git/session-rail/tests.json`: `{ "command": "npm test" }`, or `{ "command": false }` to turn the gate off here without changing the project.
+2. `session-rail.json` at the repo root: `{ "testCommand": "npm test" }`, or `{ "testCommand": false }` to turn the gate off for the project.
+3. A command named in the project's `AGENTS.md`. That file is not read for a command yet (a later change will); the hook already calls the function that will parse it.
+4. `npm test`, when `package.json` has a real `scripts.test`. npm's placeholder (`no test specified`) does not count.
+5. In this Workbench repo only, when nothing above is set: `claude plugin test .` and the frame checks from the dev notes.
+
+A failing command blocks the stop once. Claude's hook exits 2 and the reason on stderr is what Claude is told. Grok gets the same reason as a block decision and exits 0, which is how its hooks report a block. The reason includes the tail of the test output. If this stop is already a continuation (`stop_hook_active`), the hook exits 0 and does not block again, so it cannot loop. A turn the person interrupted is left alone.
+
+The rail shows one line, `tests failed`, and the pet flinches and droops the way it does when a tool fails. A later pass clears both. There is no separate mark for the gate.
+
+Turn the gate off with `"testCommand": false` in `session-rail.json`, or `"command": false` in `.git/session-rail/tests.json` for this checkout only.
+
 ## What you need
 
 - A Mac with iTerm2
@@ -275,7 +293,7 @@ It has these parts:
 1. **The rail** (`bin/rail.mjs`) draws the narrow panel in the terminal. It's plain Node with no dependencies. `bin/sessionstory.mjs` turns the activity feed and the transcript into the Session tab's tree: the banner, the cast, and the chapters.
 2. **The desk** (`bin/desk.mjs`) draws the wider panel. It reads the branch's brief (`bin/brief.mjs`), finds the plan file in the session's conversation log, asks `git` for the diff and `gh` for the board's Todo issues. Its reviewer (`bin/reviewer.mjs`) runs the approach review through `claude -p` with a JSON schema for the findings, read-only tools, no MCP servers and no saved session, and keeps each branch's reviews in `.git/session-rail/reviews/`. Claude runs the same reviewer through its CLI (`node bin/reviewer.mjs --run [--final] [--notes …]`), which the plugin's `review_approach` tool calls. `bin/cadence.mjs` holds the rules: finding statuses, what's open, and when a merge must wait.
 3. **The pane opener** (`bin/pane.mjs`) uses iTerm2's AppleScript support to fill the screen, split Claude's pane, run each panel (desk next to Claude, rail on the far right), size them in one pass, and hand focus back to Claude. The rail also uses it to bring another session's window to the front and to open the window for a new session.
-4. **The plugin** (`hooks/register.ts`) keeps a live record of what the session is doing (`hooks/activity.ts`: turns, every tool call, the prompt cache from each main-loop request (`bin/cache.mjs`), subagents with the names it gave them at `agent.spawn`, the prompt each one was handed, what it answered, and the brief gate) in `~/.claude/session-rail/activity/<session id>.json`, which the rail reads every second; the desk adds its running review beside it. Grok's hook (`bin/grok-hook.mjs`) writes the same file. It also opens both panels when a session starts, adds `/rail`, `/desk` and `/approve-brief`, and closes them when the session ends. On a feature branch it adds the brief's instructions to Claude's system prompt, refuses code edits until the brief is approved, watches for the approval (`hooks/goahead.ts`) to tell Claude to start, compacts the session after a finished, merged branch and before a waiting session's cache goes cold (`hooks/compact.ts`), serves `review_approach`, records each `/code-review` report in the branch's reviews, and refuses `gh pr merge` until the final reviews are in. Settings shared by the rail and the hooks (font size, auto-compact, warm compact) live in `~/.claude/session-rail/settings.json`; each rail keeps its open tab in `<session id>.rail.json` beside the session's activity file.
+4. **The plugin** (`hooks/register.ts`) keeps a live record of what the session is doing (`hooks/activity.ts`: turns, every tool call, the prompt cache from each main-loop request (`bin/cache.mjs`), subagents with the names it gave them at `agent.spawn`, the prompt each one was handed, what it answered, and the brief gate) in `~/.claude/session-rail/activity/<session id>.json`, which the rail reads every second; the desk adds its running review beside it. Grok's hook (`bin/grok-hook.mjs`) writes the same file. It also opens both panels when a session starts, adds `/rail`, `/desk` and `/approve-brief`, and closes them when the session ends. On a feature branch it adds the brief's instructions to Claude's system prompt, refuses code edits until the brief is approved, watches for the approval (`hooks/goahead.ts`) to tell Claude to start, compacts the session after a finished, merged branch and before a waiting session's cache goes cold (`hooks/compact.ts`), serves `review_approach`, records each `/code-review` report in the branch's reviews, and refuses `gh pr merge` until the final reviews are in. When a turn ends, `bin/stop-hook.mjs` runs the project's tests and holds the stop if they fail (`bin/stopgate.mjs` has the rules, shared with Claude's `classic.Stop`). Settings shared by the rail and the hooks (font size, auto-compact, warm compact) live in `~/.claude/session-rail/settings.json`; each rail keeps its open tab in `<session id>.rail.json` beside the session's activity file.
 
 ## Good to know
 

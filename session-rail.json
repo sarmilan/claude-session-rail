@@ -1,0 +1,3 @@
+{
+  "testCommand": "claude plugin test . && node bin/rail.mjs --frame 42 40 && node bin/rail.mjs --frame 42 40 --tab git && node bin/desk.mjs --frame 80 40 --tab diff"
+}
