@@ -7,7 +7,7 @@ import test from 'node:test';
 import { callFinished, callStarted, fresh, heard, noteReply, replied, trackTasks, turnEnded, turnStarted } from '../bin/activity.mjs';
 import { attentionFor } from '../bin/mascot.mjs';
 import { approvalRecord, briefFile, checkoutName, inWorkTree, mainCheckoutNote, parseBrief } from '../bin/brief.mjs';
-import { armTurn, editReason, handle, procedure, readBrief, slashCommand, takeProcedure } from '../bin/grok-hook.mjs';
+import { armTurn, editReason, handle, procedure, readBrief, schedulePublish, slashCommand, takeProcedure } from '../bin/grok-hook.mjs';
 import { briefInstructions, deskOutsideNote, outsideRepoNote } from '../bin/brief-instructions.mjs';
 import { C, fg, paneBgOff, paneBgOn, usePalette } from '../bin/term.mjs';
 import { connectorsFrom, contextFrom, eventsFromText, rowFromActive, usageFromBilling } from '../bin/sources.mjs';
@@ -20,6 +20,21 @@ const brief = {
   approvedPath: '/repo/.git/session-rail/briefs/x.approved.json', dir: '/repo/.git/session-rail/',
   text: null, approval: null,
 };
+
+test('a saved code review schedules the pull request status', () => {
+  const seen = [];
+  const ok = schedulePublish('/repo', (bin, args, opts) => {
+    seen.push({ bin, args, opts });
+    return { unref() {} };
+  });
+  assert.equal(ok, true);
+  assert.equal(seen[0].bin, process.execPath);
+  assert.match(seen[0].args[0], /publish\.mjs$/);
+  assert.deepEqual(seen[0].args.slice(1), ['--cwd', '/repo']);
+  assert.equal(seen[0].opts.detached, true);
+  assert.equal(seen[0].opts.stdio, 'ignore');
+  assert.equal(schedulePublish('/repo', () => { throw new Error('no'); }), false);
+});
 
 test('a Grok review verdict in the message text is the payload', () => {
   const verdict = { verdict: 'on-track', summary: 'ok', findings: [], checks: [] };

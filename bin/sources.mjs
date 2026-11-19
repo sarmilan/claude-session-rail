@@ -6,6 +6,7 @@ import { basename, dirname, join } from 'node:path';
 import { parseBrief, briefStatus, NO_BRIEF_BRANCHES } from './brief.mjs';
 import { buildTree, reviewLineFrom } from './branchmap.mjs';
 import { eventsFromRecord, keep, splitAsk } from './sessionstory.mjs';
+import { usdFromTicks } from './cost.mjs';
 
 const HOME = homedir();
 const CLAUDE = join(HOME, '.claude');
@@ -155,7 +156,7 @@ export async function activity(sessionId) {
   const review = desk?.review && desk.pid && alive(desk.pid) ? desk.review : null;
   if (!feed?.claude) return review ? { claude: null, running: [], recent: [], desk: review } : null;
   return { claude: feed.claude, running: feed.running ?? [], recent: feed.recent ?? [], gate: feed.gate ?? null, compacted: feed.compacted ?? null,
-    agents: feed.agents ?? {}, turns: feed.turns ?? [], tasks: feed.tasks ?? [], desk: review };
+    agents: feed.agents ?? {}, turns: feed.turns ?? [], tasks: feed.tasks ?? [], cache: feed.cache ?? null, cost: feed.cost ?? null, desk: review };
 }
 
 // The session's own transcript: what the person asked, the prompt each handoff carried, and what came back.
@@ -631,7 +632,17 @@ const prettyModel = (id = '') => {
 };
 
 // Context for a Grok session, from signals.json (usage is already a percent; a 0–1 fraction is scaled).
-// ledger is the session's usage.json; costUsdTicks is 1e10 per dollar.
+// ledger is the session's usage.json. costUsdTicks is the host's figure (1e10 per dollar); a missing
+// total is left unset so the rail shows a dash. The latest turn's ticks are this turn, when that turn has them.
+const turnTicks = (ledger) => {
+  const turns = Array.isArray(ledger?.turns) ? ledger.turns : [];
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const t = turns[i];
+    const n = t?.usage?.costUsdTicks ?? t?.costUsdTicks;
+    if (typeof n === 'number') return n;
+  }
+  return null;
+};
 export function contextFrom(signals, summary, ledger) {
   if (!signals && !summary) return null;
   const tokens = Number.isFinite(signals?.contextTokensUsed) ? signals.contextTokensUsed : null;
@@ -645,10 +656,11 @@ export function contextFrom(signals, summary, ledger) {
     pct = Math.min(100, Math.round(asFraction ? usage * 100 : usage));
   } else if (tokens != null && size) pct = Math.min(100, Math.round((tokens / size) * 100));
   const id = summary?.current_model_id || signals?.primaryModelId || '';
-  const ticks = ledger?.session?.costUsdTicks;
-  const costUsd = Number.isFinite(ticks) ? ticks / 1e10 : null;
+  const costUsd = usdFromTicks(ledger?.session?.costUsdTicks);
+  const turnUsd = usdFromTicks(turnTicks(ledger));
+  const apiMs = ledger?.session?.apiDurationMs;
   return { model: prettyModel(id), effort: summary?.reasoning_effort || null, contextTokens: tokens, contextSize: size, contextPct: pct,
-    ...(costUsd != null ? { costUsd } : {}) };
+    ...(costUsd != null ? { costUsd, ...(turnUsd != null ? { turnUsd } : {}), ...(Number.isFinite(apiMs) && apiMs >= 0 ? { apiMs } : {}) } : {}) };
 }
 
 export async function grokContext(files) {
@@ -715,6 +727,29 @@ export async function connectors(host) {
 
 // ── Changes: your open PRs in this repo ────────────────────────────────────────
 // The tree's parents come from this list, so the cap has to cover the open set, not a short preview.
+// This checkout's pull request, for the desk's merge warning. null when there isn't one or gh can't say.
+export async function currentPullRequest(cwd) {
+  const out = await run('gh', ['pr', 'view', '--json', 'number,state,isDraft,mergeable,mergeStateStatus,url,headRefOid'], { cwd, timeout: 8_000 });
+  if (!out) return null;
+  try {
+    const p = JSON.parse(out);
+    if (!p || typeof p !== 'object') return null;
+    return {
+      number: p.number, state: p.state, draft: Boolean(p.isDraft),
+      mergeable: typeof p.mergeable === 'boolean' ? p.mergeable : null,
+      mergeStateStatus: typeof p.mergeStateStatus === 'string' ? p.mergeStateStatus : null,
+      url: typeof p.url === 'string' ? p.url : null,
+      head: typeof p.headRefOid === 'string' ? p.headRefOid : null,
+    };
+  } catch { return null; }
+}
+
+// HEAD's full commit id, or null. A short or missing id is not a status target.
+export async function headCommit(cwd) {
+  const sha = (await run('git', ['rev-parse', 'HEAD'], { cwd, timeout: 5_000 }))?.trim() ?? '';
+  return /^[0-9a-f]{40}$/i.test(sha) ? sha : null;
+}
+
 export async function prs(cwd, limit = 100) {
   const out = await run('gh', ['pr', 'list', '--author', '@me', '--state', 'open', '--limit', String(limit),
     '--json', 'number,title,state,isDraft,url,headRefName,baseRefName,updatedAt,mergeStateStatus,reviewDecision,statusCheckRollup'], { cwd, timeout: 15_000 });
@@ -915,11 +950,25 @@ export async function recentWork(cwd, { prs = 5, commits = 8 } = {}) {
 }
 
 // ── Background tasks: indexed incrementally from the session transcript ───────
-const KEYWORDS = ['run_in_background', 'backgroundTaskId', 'agentId', 'task-notification', '"name":"Agent"', '"name":"Task"', '"usage"', '/plans/'];
+const KEYWORDS = ['run_in_background', 'backgroundTaskId', 'agentId', 'task-notification', '"name":"Agent"', '"name":"Task"', '"usage"', 'costUSD', 'total_cost_usd', '/plans/'];
 
 export class TaskIndex {
   constructor() { this.path = null; this.offset = 0; this.partial = ''; this.reset(); }
-  reset() { this.calls = new Map(); this.tasks = new Map(); this.done = new Map(); this.usage = null; this.model = null; this.planPath = null; }
+  reset() {
+    this.calls = new Map(); this.tasks = new Map(); this.done = new Map(); this.usage = null; this.model = null; this.planPath = null;
+    // Host-written dollars only. sessionUsd is a result's total_cost_usd. The sum is used when every
+    // main-thread reply carried costUSD (older transcripts) and no total was written.
+    this.sessionUsd = null; this.usageRows = 0; this.priced = 0; this.sumUsd = 0; this.lastUsd = null;
+  }
+
+  // A total the transcript itself recorded, or null. Tokens are not priced.
+  hostCost() {
+    if (typeof this.sessionUsd === 'number' && this.sessionUsd >= 0) return { costUsd: this.sessionUsd };
+    if (this.usageRows > 0 && this.priced === this.usageRows && this.sumUsd >= 0) {
+      return { costUsd: this.sumUsd, ...(this.lastUsd > 0 ? { turnUsd: this.lastUsd } : {}) };
+    }
+    return null;
+  }
 
   // Context from the latest main-thread reply: tokens in the prompt = input + cache read + cache write.
   context() {
@@ -927,8 +976,10 @@ export class TaskIndex {
     const u = this.usage;
     const tokens = (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
     const size = windowFor(this.model);
+    const cost = this.hostCost();
     return { model: prettyModel(this.model), contextTokens: tokens, contextSize: size,
-      contextPct: Math.min(100, Math.round((tokens / size) * 100)) };
+      contextPct: Math.min(100, Math.round((tokens / size) * 100)),
+      ...(cost ? cost : {}) };
   }
 
   async update(transcriptPath) {
@@ -954,7 +1005,17 @@ export class TaskIndex {
     if (e.type === 'assistant' && !e.isSidechain && e.message?.usage && e.message.model !== '<synthetic>') {
       this.usage = e.message.usage;
       this.model = e.message.model;
+      this.usageRows++;
+      // Older transcripts stored the host's per-message dollars. A gap means the sum is not the session.
+      if (typeof e.costUSD === 'number' && Number.isFinite(e.costUSD) && e.costUSD >= 0) {
+        this.priced++;
+        this.sumUsd += e.costUSD;
+        this.lastUsd = e.costUSD;
+      }
     }
+    // The result's total is the host's cumulative figure for the turn's query. It wins over a per-message sum.
+    if (e.type === 'result' && !e.isSidechain && typeof e.total_cost_usd === 'number' && Number.isFinite(e.total_cost_usd) && e.total_cost_usd >= 0)
+      this.sessionUsd = e.total_cost_usd;
     for (const c of Array.isArray(e.message?.content) ? e.message.content : []) {
       if (c.type === 'tool_use' && c.name === 'Bash' && c.input?.run_in_background)
         this.calls.set(c.id, { kind: 'shell', label: c.input.description || c.input.command?.slice(0, 60) || 'shell' });

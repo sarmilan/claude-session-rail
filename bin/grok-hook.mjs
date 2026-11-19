@@ -242,6 +242,18 @@ function recordCodeReview(cwd, report) {
   const earlier = (readJson(path)?.runs ?? []).filter((r) => r && Array.isArray(r.findings));
   const runs = [codeRun(report, { head, dirty: dirty == null || dirty !== '', at: Date.now() }), ...earlier];
   writeJson(path, { runs: keptRuns(runs) });
+  schedulePublish(cwd);
+}
+
+// The review file is already written. Detached, so a slow gh does not hold the hook.
+export function schedulePublish(cwd, spawnFn = spawn) {
+  try {
+    const child = spawnFn(process.execPath, [join(ROOT, 'bin', 'publish.mjs'), '--cwd', cwd], {
+      detached: true, stdio: 'ignore',
+    });
+    child?.unref?.();
+    return true;
+  } catch { return false; }
 }
 
 function startWatch(pid, sessionId, state) {

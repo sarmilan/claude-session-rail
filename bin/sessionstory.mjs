@@ -315,7 +315,7 @@ function agentLamp(agent, running) {
  */
 export function buildStory({
   host = 'Claude', claude = null, gate = null, agents = null, fileAgents = [], events = [], turns = [],
-  running = [], recent = [], tasks = [], desk = null, compacted = null, now = Date.now(),
+  running = [], recent = [], tasks = [], desk = null, compacted = null, tests = null, now = Date.now(),
 } = {}) {
   const everyone = mergeAgents(fileAgents, agents);
   const cast = link(everyone.filter((a) => !a.endedAt));
@@ -349,7 +349,8 @@ export function buildStory({
   // Every subagent that has finished, newest first. The live ones stay in the cast above this list.
   const history = everyone.filter((a) => a.endedAt)
     .sort((a, b) => (b.endedAt || b.since || 0) - (a.endedAt || a.since || 0));
-  return { host, claude, banner, cast, history, chapters, running: running || [], recent: recent || [], tasks: tasks || [], desk, compacted, said: oneLine(said), now };
+  const failedTests = tests && tests.ok === false ? tests : null;
+  return { host, claude, banner, cast, history, chapters, running: running || [], recent: recent || [], tasks: tasks || [], desk, compacted, tests: failedTests, said: oneLine(said), now };
 }
 
 function push(rows, inner, row) {
@@ -389,6 +390,13 @@ export function layoutStory(story, { inner = 40, open = {} } = {}) {
   const now = story.now || Date.now();
   const hostKey = 'who:main';
   const hostOpen = Boolean(open[hostKey]);
+  // One line for a failed test gate. The pet already droops; this names the failure. No new glyph.
+  if (story.tests && story.tests.ok === false) {
+    const command = show(story.tests.command || '');
+    push(rows, inner, {
+      left: [part('✗ ', 'red'), part('tests failed', 'red'), part(command ? `  ${command}` : '', 'dim')],
+    });
+  }
   // The banner is the only status. This row is the caret for the call log, so it carries no second
   // "waiting" or "reading", and the reply under it does not repeat the name.
   push(rows, inner, {
