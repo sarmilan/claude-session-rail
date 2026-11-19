@@ -7,6 +7,7 @@ import { parseBrief, briefStatus, NO_BRIEF_BRANCHES } from './brief.mjs';
 import { buildTree, reviewLineFrom } from './branchmap.mjs';
 import { activityNames, mainCheckout, planWorktrees, staleActivity, ACTIVITY_GRACE_MS } from './prune.mjs';
 import { eventsFromRecord, keep, splitAsk } from './sessionstory.mjs';
+import { mergeReviewerAgents } from './wide.mjs';
 import { usdFromTicks } from './cost.mjs';
 
 const HOME = homedir();
@@ -170,11 +171,19 @@ export async function activity(sessionId) {
   if (!sessionId) return null;
   const dir = join(CLAUDE, 'session-rail', 'activity');
   const [feed, desk] = await Promise.all([readJson(join(dir, `${sessionId}.json`)), readJson(join(dir, `${sessionId}.desk.json`))]);
-  const review = desk?.review && desk.pid && alive(desk.pid) ? desk.review : null;
-  if (!feed?.claude) return review ? { claude: null, running: [], recent: [], desk: review } : null;
+  // The desk's wide-review cast counts only while that desk is alive, then joins the session's agents.
+  const live = Boolean(desk?.pid && alive(desk.pid));
+  const review = live && desk.review ? desk.review : null;
+  const reviewers = live && Array.isArray(desk.reviewers) ? desk.reviewers : [];
+  const agents = mergeReviewerAgents(feed?.agents ?? {}, reviewers);
+  if (!feed?.claude) {
+    if (!review && !reviewers.length) return null;
+    return { claude: null, running: [], recent: [], agents, turns: [], tasks: [], desk: review };
+  }
   return { claude: feed.claude, running: feed.running ?? [], recent: feed.recent ?? [], gate: feed.gate ?? null, compacted: feed.compacted ?? null,
-    agents: feed.agents ?? {}, turns: feed.turns ?? [], tasks: feed.tasks ?? [], cache: feed.cache ?? null, cost: feed.cost ?? null, desk: review };
+    agents, turns: feed.turns ?? [], tasks: feed.tasks ?? [], cache: feed.cache ?? null, cost: feed.cost ?? null, desk: review };
 }
+
 
 // Session files on disk, live or not: Claude's ~/.claude/sessions/<pid>.json and Grok's active list.
 // A pid that is gone marks that session id dead, so its activity can be deleted without waiting out the grace.

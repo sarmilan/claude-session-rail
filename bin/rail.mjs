@@ -496,6 +496,8 @@ const fontMenu = () => {
 const SETTINGS_FILE = process.env.SESSION_RAIL_SETTINGS || join(homedir(), '.claude', 'session-rail', 'settings.json');
 const readSettings = () => { try { return JSON.parse(readFileSync(SETTINGS_FILE, 'utf8')) ?? {}; } catch { return {}; } };
 const compactOn = { autoCompact: readSettings().autoCompact !== false, warmCompact: readSettings().warmCompact !== false };
+// Wide review stays off until this is true. The desk reads the same file and only then offers the action.
+const wideOn = { wideReview: readSettings().wideReview === true };
 // Chores default off. --chores on|off is a frame override and is not written unless the row is toggled.
 const choresFlag = flag('--chores');
 let choresEnabled = choresFlag === 'on' ? true : choresFlag === 'off' ? false : readSettings().chores === true;
@@ -510,6 +512,14 @@ const toggleChores = () => {
 const COMPACT_TOASTS = {
   autoCompact: ['Auto-compact on: after each merged branch', 'Auto-compact off'],
   warmCompact: ['Compacts a waiting session before its cache goes cold', "Won't compact before the cache goes cold"],
+};
+const toggleWide = () => {
+  wideOn.wideReview = !wideOn.wideReview;
+  try {
+    mkdirSync(dirname(SETTINGS_FILE), { recursive: true });
+    writeFileSync(SETTINGS_FILE, JSON.stringify({ ...readSettings(), wideReview: wideOn.wideReview }, null, 2));
+    toast(wideOn.wideReview ? 'Wide review on. The desk offers it on a large diff.' : 'Wide review off');
+  } catch { wideOn.wideReview = !wideOn.wideReview; toast("Couldn't save the setting"); }
 };
 const toggleCompact = (key) => () => {
   compactOn[key] = !compactOn[key];
@@ -834,6 +844,7 @@ function buildSettings() {
     rows.push({ id: 'font', activate: fontMenu, label: 'Aa Font size', value: pt ? `‹ ${pt}pt ›` : '—' });
     rows.push({ id: 'pet', activate: petMenu, label: '◐ Pet', value: `‹ ${mascot.state.creature} ›` });
     rows.push({ id: 'compact', activate: toggleCompact('autoCompact'), label: '⟲ Auto-compact', value: `‹ ${compactOn.autoCompact ? 'on' : 'off'} ›` });
+    rows.push({ id: 'wide', activate: toggleWide, label: 'Wide review', value: `‹ ${wideOn.wideReview ? 'on' : 'off'} ›` });
     if (agentName() !== 'Grok') rows.push({ id: 'warm', activate: toggleCompact('warmCompact'), label: '◷ Before cache cold', value: `‹ ${compactOn.warmCompact ? 'on' : 'off'} ›` });
     rows.push({ id: 'chores', activate: toggleChores, label: '↻ Chores', value: `‹ ${choresEnabled ? 'on' : 'off'} ›` });
   }
@@ -1050,6 +1061,7 @@ const handleKey = (k) => {
     if (ui.sel === 'pet' && (k === '\x1b[D' || k === 'h')) return nextCreature(-1);
     if (ui.sel === 'pet' && (k === '\x1b[C' || k === 'l')) return nextCreature(1);
     if (ui.sel === 'compact' && ['\x1b[D', 'h', '\x1b[C', 'l'].includes(k)) return toggleCompact('autoCompact')();
+    if (ui.sel === 'wide' && ['\x1b[D', 'h', '\x1b[C', 'l'].includes(k)) return toggleWide();
     if (ui.sel === 'warm' && ['\x1b[D', 'h', '\x1b[C', 'l'].includes(k)) return toggleCompact('warmCompact')();
     if (ui.sel === 'chores' && ['\x1b[D', 'h', '\x1b[C', 'l'].includes(k)) return toggleChores();
     const p = selectedPr();

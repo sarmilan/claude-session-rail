@@ -71,6 +71,11 @@ function codeList(code, who) {
     + (f.checked && f.status === 'open' ? ' You reopened it earlier: check whether it is fixed now.' : '')
     + (f.reply ? `\n  ${who}'s reply: ${f.reply}` : '')).join('\n');
 }
+// Open findings from the optional wide review, checked the same way as earlier approach findings.
+function wideList(wide, who) {
+  return wide.map((f) => `- id ${f.id} · ${f.file ? `${f.file}${f.line ? `:${f.line}` : ''}` : 'wide'}: ${f.title}${f.detail ? `\n  ${f.detail}` : ''}`
+    + (f.reply ? `\n  ${who}'s reply: ${f.reply}` : '')).join('\n');
+}
 
 // The last JSON object in a headless reply. Grok may print a log line before it.
 function parseReply(out) {
@@ -97,7 +102,7 @@ export function reviewPayload(reply) {
 // Review the approach. `brief` is a parsed brief with its text (sources.readBrief), `files` the Diff tab's
 // list, `earlier` the open findings of earlier reviews to check, `final` the review before the merge.
 // Resolves { verdict, summary, findings, checks, core, done, startedAt, finishedAt, error? }. `signal` aborts it.
-export async function reviewApproach(cwd, { brief, files = [], earlier = [], codeFindings = [], final = false, signal, timeoutMs = 540_000, host = 'claude' } = {}) {
+export async function reviewApproach(cwd, { brief, files = [], earlier = [], codeFindings = [], wideFindings = [], final = false, signal, timeoutMs = 540_000, host = 'claude' } = {}) {
   const startedAt = Date.now();
   const result = { startedAt, ...reviewedState(brief), findings: [] };
   const grok = host === 'grok';
@@ -125,7 +130,11 @@ export async function reviewApproach(cwd, { brief, files = [], earlier = [], cod
       + 'and return a check for it: applied (a claimed fix really landed in the code), declined (a skip or "no change needed" is sound; '
       + 'say why) or open (the fix didn\'t land, or it should be fixed after all; say why). Read the code to check. Don\'t raise them again as new findings.\n'
       + `${codeList(codeFindings, who)}\n\n` : '')
-    + (earlier.length || codeFindings.length ? '' : 'There are no earlier findings to check: return an empty checks list.\n\n')
+    + (wideFindings.length ? `A wide review (file reviewers and a skeptic, run only when asked) left these findings. Check each against the code `
+      + `and return a check: applied (the work now does it), declined (${who}'s reply gives a sound reason not to; say why) or open (not done, `
+      + 'and no sound reason). Don\'t raise them again as new findings.\n'
+      + `${wideList(wideFindings, who)}\n\n` : '')
+    + (earlier.length || codeFindings.length || wideFindings.length ? '' : 'There are no earlier findings to check: return an empty checks list.\n\n')
     + 'Return a verdict (on-track, simpler-path or off-goal), a summary of at most two sentences, and the findings, most '
     + 'important first, each with its chunk number (null when it is about the whole plan).';
   // Read-only whatever the user's settings say: no Edit/Write at all, Bash only for git, and dontAsk denies
@@ -157,7 +166,7 @@ export async function reviewApproach(cwd, { brief, files = [], earlier = [], cod
       if (j?.is_error) return done({ error: String(j.result || 'Review failed').slice(0, 200) });
       const o = reviewPayload(j), findings = normalise(o?.findings);
       if (findings) {
-        const ids = new Set([...earlier, ...codeFindings].map((f) => f.id));
+        const ids = new Set([...earlier, ...codeFindings, ...wideFindings].map((f) => f.id));
         const checks = (Array.isArray(o.checks) ? o.checks : []).filter((c) => c && ids.has(c.id) && STATUSES.includes(c.status))
           .map((c) => ({ id: c.id, status: c.status, note: typeof c.note === 'string' ? c.note : '' }));
         return done({ findings, checks, verdict: VERDICTS.includes(o.verdict) ? o.verdict : findings.length ? 'simpler-path' : 'on-track',
@@ -210,8 +219,8 @@ export async function reviewAndSave(cwd, { final = false, manual = false, notes 
   const replies = new Map((Array.isArray(notes) ? notes : []).filter((n) => n && typeof n.note === 'string').map((n) => [n.id, n.note]));
   const withReplies = (runs) => runs.map((r) => ({ ...r, findings: r.findings.map((f) => (replies.has(f.id) ? { ...f, reply: replies.get(f.id) } : f)) }));
   const prior = withReplies(await loadReviews(path));
-  const earlier = openFindings(prior).approach, codeFindings = staffCheck(prior);
-  const run = await reviewApproach(cwd, { brief, files, earlier, codeFindings, final, signal, host });
+  const earlier = openFindings(prior).approach, codeFindings = staffCheck(prior), wideFindings = openFindings(prior).wide;
+  const run = await reviewApproach(cwd, { brief, files, earlier, codeFindings, wideFindings, final, signal, host });
   if (run.error === 'Review cancelled') return run;
   const { checks = [], ...rest } = run;
   const saved = { ...rest, type: 'approach', final, ...(manual ? { manual: true } : {}), head: head?.trim() ?? null, dirty: status === null || Boolean(status.trim()), // unknown counts as dirty
@@ -239,7 +248,7 @@ export function reviewText(result) {
     lines.push('', 'New findings:');
     for (const f of result.findings) lines.push(`- ${f.id} [${f.severity}] ${f.kind}${f.chunk ? ` · chunk ${f.chunk}` : ''}: ${f.title}${f.detail ? `\n  ${f.detail}` : ''}`);
   }
-  const { approach, code } = openFindings(result.runs), open = [...approach, ...code];
+  const { approach, code, wide = [] } = openFindings(result.runs), open = [...approach, ...code, ...wide];
   const unchecked = uncheckedFixes(result.runs);
   if (unchecked.length) lines.push('', `${unchecked.length} code review finding${unchecked.length === 1 ? '' : 's'} still need${unchecked.length === 1 ? 's' : ''} a check (${unchecked.map((f) => f.id).join(', ')}): call review_approach again.`);
   if (!open.length && unchecked.length) return lines.join('\n');
