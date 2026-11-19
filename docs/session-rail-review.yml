@@ -1,0 +1,39 @@
+# Optional. This file is not a workflow until you copy it to
+# .github/workflows/session-rail-review.yml.
+#
+# It fails when the commit status session-rail/review is missing or is not
+# success. The session-rail plugin posts that status from the saved review
+# record. This workflow only reads it and does not create a passing status.
+#
+# Copying the file makes the check run. It still does not block a merge until
+# you mark a check required: the status context session-rail/review, or this
+# workflow's check "session-rail review". Both are off until you do that.
+# A person can merge by hand while the check is not required, and git merge
+# is never blocked.
+
+name: session-rail review
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  statuses: read
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Read the session-rail review status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -eu
+          state="$(gh api "repos/${REPO}/commits/${SHA}/statuses" --jq '[.[] | select(.context=="session-rail/review")][0].state // "missing"')"
+          echo "session-rail/review: ${state}"
+          if [ "${state}" != "success" ]; then
+            echo "A passing review is posted by the session-rail plugin only after the cadence is clean. This workflow does not create a passing status."
+            exit 1
+          fi

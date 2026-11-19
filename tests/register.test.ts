@@ -574,7 +574,7 @@ const block = (run: string | null, findings: unknown[]) => 'Done.\n```json\n' + 
 const FINDINGS = [{ summary: 'off by one', outcome: 'fixed' }, { summary: 'docs', outcome: 'skipped' }, { summary: 'left' }]
 
 test('a /code-review run is recorded from the answer that carries its token, whoever gives it', async ($, on) => {
-  const { files } = reviewHarness(on)
+  const { files, calls } = reviewHarness(on)
   await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
   // Preloaded, not run: the prompt is left alone.
   expect(await prompt($)).toBe('Review the diff.')
@@ -594,6 +594,7 @@ test('a /code-review run is recorded from the answer that carries its token, who
   // Recorded once: the run is over.
   await $.turn.complete(done('f1', block(token, [])))
   expect(JSON.parse(files[RECORD]!).runs.length).toBe(1)
+  expect(calls.filter(c => c.includes('publish.mjs') && c.includes('--cwd')).length).toBe(1)
 })
 
 test('an inline or typed /code-review is read from the main loop, and an aborted answer records nothing', async ($, on) => {
@@ -789,3 +790,86 @@ for (const [name, opts, ms] of [
     await poll($)
     expect(compactions).toEqual([])
   })
+
+// ── The Stop test gate ────────────────────────────────────────────────────────
+// The command itself is stubbed. bin/stopgate.mjs decides; this checks Claude's hook wires it.
+const stopHarness = (on: Parameters<Parameters<typeof test>[1]>[1], opts: { file?: string | null; exitCode?: number; stderr?: string } = {}) => {
+  const file = 'file' in opts ? opts.file : '{"testCommand":"npm test"}'
+  const exitCode = opts.exitCode ?? 1
+  const stderr = opts.stderr ?? 'not ok 1'
+  const files: Record<string, string> = {}
+  if (file) files['/repo/session-rail.json'] = file
+  const calls: string[] = []
+  on('session.cwd', () => ({ value: '/repo' }))
+  on('session.id', () => ({ value: 's1' }))
+  on('env.get', (_, e) => ({ value: e.name === 'HOME' ? '/home' : undefined }))
+  on('classic.Stop', () => ({ continued: true }))
+  on('fs.read', (_, e) => (e.path in files ? { value: files[e.path]! } : { deny: 'ENOENT' }))
+  on('fs.write', (_, e) => {
+    files[e.path] = e.text
+    return { value: undefined }
+  })
+  on('process.run', (_, e) => {
+    const cmd = (e.argv ?? []).join(' ')
+    calls.push(cmd)
+    if (e.argv?.[0] === 'git') return { value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    if (cmd.includes('npm test')) return { value: { exitCode, stdout: '', stderr, isStdoutTruncated: false, isStderrTruncated: false } }
+    return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  return { files, calls }
+}
+const stopEvent = (extra: Record<string, unknown> = {}) => ({
+  hook_event_name: 'Stop', session_id: 's1', cwd: '/repo', last_assistant_message: 'done', ...extra,
+})
+
+test('a failing test blocks Claude from stopping and the rail can see it', async ($, on) => {
+  const { files, calls } = stopHarness(on)
+  const result = await $.classic.Stop(stopEvent() as never)
+  expect(result.preventContinuation).toBe(true)
+  expect(result.stopReason).toContain('tests failed')
+  expect(result.stopReason).toContain('not ok 1')
+  expect(calls.some(c => c.includes('npm test'))).toBe(true)
+  let saved = ''
+  for (let i = 0; i < 20 && !saved; i++) {
+    saved = files['/home/.claude/session-rail/activity/s1.json'] ?? ''
+    if (!saved) await new Promise(r => setTimeout(r, 10))
+  }
+  const activity = JSON.parse(saved)
+  expect(activity.tests.ok).toBe(false)
+  expect(activity.recent[0]).toMatchObject({ tool: 'test', ok: false })
+})
+
+test('a passing test lets Claude stop', async ($, on) => {
+  const { calls } = stopHarness(on, { exitCode: 0, stderr: '' })
+  const result = await $.classic.Stop(stopEvent({ last_assistant_message: 'all green' }) as never)
+  expect(result).toMatchObject({ continued: true })
+  expect(calls.some(c => c.includes('npm test'))).toBe(true)
+})
+
+test('stop_hook_active does not block Claude a second time', async ($, on) => {
+  const { calls } = stopHarness(on)
+  const result = await $.classic.Stop(stopEvent({ stop_hook_active: true }) as never)
+  expect(result).toMatchObject({ continued: true })
+  expect(calls.some(c => c.includes('npm test'))).toBe(false)
+})
+
+test('no test command lets Claude stop without running anything', async ($, on) => {
+  const { calls } = stopHarness(on, { file: null })
+  const result = await $.classic.Stop(stopEvent() as never)
+  expect(result).toMatchObject({ continued: true })
+  expect(calls.some(c => c.includes('npm test'))).toBe(false)
+})
+
+test('an explicit off switch lets Claude stop', async ($, on) => {
+  const { calls } = stopHarness(on, { file: '{"testCommand":false}' })
+  const result = await $.classic.Stop(stopEvent() as never)
+  expect(result).toMatchObject({ continued: true })
+  expect(calls.some(c => c.includes('npm test'))).toBe(false)
+})
+
+test('an interrupt lets Claude stop without running tests', async ($, on) => {
+  const { calls } = stopHarness(on)
+  const result = await $.classic.Stop(stopEvent({ interrupted: true }) as never)
+  expect(result).toMatchObject({ continued: true })
+  expect(calls.some(c => c.includes('npm test'))).toBe(false)
+})
