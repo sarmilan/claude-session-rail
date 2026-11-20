@@ -1,8 +1,10 @@
 # Workbench
 
-A visual, product-first harness for Claude Code and Grok in iTerm2.
+A visual, product-first harness for Claude Code in iTerm2.
 
-Workbench is the desk and the rail beside the agent. Harness engineering is the work around the model: the tool loop, context and memory, permissions, done-checks, and state kept on disk, in `.git/session-rail/`, and in a worktree per session. Those controls are the panes you work in: you approve the plan, read the diff, and follow the review there.
+Workbench is the desk and the rail beside Claude Code. Harness engineering is the work around the model: the tool loop, context and memory, permissions, done-checks, and state kept on disk, in `.git/session-rail/`, and in a worktree per session. Those controls are the panes you work in: you approve the plan, read the diff, and follow the review there.
+
+It also works with Grok. The install and the settings that differ are in [Install](#install) and [Safe use](#safe-use).
 
 ## Why a harness
 
@@ -23,7 +25,7 @@ Each row is a harness piece and the surface you use it from. The sections after 
 
 | Piece | Where you see it |
 | --- | --- |
-| Desk | Plan, Diff, and Review, between the agent and the rail. `/desk` toggles it. It opens on Plan. |
+| Desk | Plan, Diff, and Review, between Claude and the rail. `/desk` toggles it. It opens on Plan. |
 | Tool loop | The rail's Session tab. Now names who is working and the ask. Open an agent for the prompt it was handed and what it answered. |
 | Brief | Plan. The file is `.git/session-rail/briefs/<branch>.md`, inside `.git`, so it is never committed. Approve on the tab, with `A`, or with `/approve-brief`. A newer plan file replaces the brief on that tab and has no Approve button. |
 | Edit gate | Edit, Write, and NotebookEdit in the checkout wait until the brief has a problem, a solution, and at least one chunk, and you have approved it. On `main`, `master`, or a detached HEAD, create a branch first. On those checkouts, a path outside the repo is left alone. |
@@ -31,20 +33,20 @@ Each row is a harness piece and the surface you use it from. The sections after 
 | Stop hook | When a turn ends, `bin/stop-hook.mjs` runs the project's tests. The command comes from `.git/session-rail/tests.json`, then `session-rail.json`, then `AGENTS.md`, then a real `npm test` script. A failure blocks that stop once. With no command, the stop is allowed. |
 | Worktrees | **+ new** on Sessions adds a detached worktree of the default branch at `<repo>.worktrees/<name>` and opens another iTerm window. Remove is offered when the session is gone and the tree is clean, for a merged branch or a worktree that never left the default branch. |
 | Approach review | The Review tab, and `review_approach`. A read-only headless pass on the brief and after each chunk. Findings are open, applied, or declined. |
-| Code review | The newest `/code-review` on the Review tab, with file and line. Enter jumps to that line in the diff. Grok records `/review` the same way. |
+| Code review | The newest `/code-review` on the Review tab, with file and line. Enter jumps to that line in the diff. |
 | Wide review | Off until **Wide review** is on. On a diff of at least 8 files or 400 lines, Review offers it (`w`). Up to four file-level slices, each in a throwaway worktree, then one skeptic. Findings it keeps stay open and wait with the rest. Running it is optional. |
-| Merge gate | The agent's `gh pr merge` waits until the code review has run since the last chunk review, the final approach review has run after it on the last commit with a clean tree, and nothing is open. Commits go through. A merge you run yourself goes through. |
+| Merge gate | Claude's `gh pr merge` waits until the code review has run since the last chunk review, the final approach review has run after it on the last commit with a clean tree, and nothing is open. Commits go through. A merge you run yourself goes through. |
 | Pull request status | After each saved approach review and code review, the commit status `session-rail/review` and one pull request comment. `success` only when that gate is clear. `SESSION_RAIL_PUBLISH=0` posts nothing. |
-| Context and cost | The Context row on the rail: the percent, an eight-segment meter, the model, tokens, session cost, prompt cache, and the account usage windows. No cost figure is `—`. The cache row is `—` under Grok. |
+| Context and cost | The Context row on the rail: the percent, an eight-segment meter, the model, tokens, session cost, prompt cache, and the account usage windows. No cost figure is `—`. |
 | Chores | Off until **Chores** is on. One chore re-checks failing CI in its own worktree. The budget counts rounds (default 5). Two empty rounds or a spent budget stops it. It does not merge. |
-| Auto-compact | After the session leaves a branch whose brief has a Done chunk and whose tip is in the default branch. Claude also compacts a waiting session in the last stretch of a large prompt cache. Both switches are in the rail's settings. |
-| Permissions | The starter in [docs/safe-use](docs/safe-use.md). Manual mode for Claude, ask mode for Grok, the Bash sandbox on, auto-allow off. A starting point, not a guarantee. Workbench runs on your Mac. |
+| Auto-compact | After Claude leaves a branch whose brief has a Done chunk and whose tip is in the default branch. It also compacts a waiting session in the last stretch of a large prompt cache. Both switches are in the rail's settings. |
+| Permissions | The starter in [docs/safe-use](docs/safe-use.md). Manual mode, the Bash sandbox on, auto-allow off. A starting point, not a guarantee. Workbench runs on your Mac. |
 | AGENTS.md | The host project's map. A fence tagged `test` is the command the Stop hook runs when nothing else names one. |
 | Pet | The creature at the bottom of the rail. `[!!!]` for a critical context window, a held `?` while the brief blocks edits, a building mood as the window fills, and a body that grows as chunks are marked Done. |
 
 ## The panes
 
-Starting `claude` or `grok` in iTerm2 opens the desk and the rail on the right. `/rail` and `/desk` hide a pane or bring it back. If you have a `/start` command of your own, it runs as soon as the session starts.
+Starting `claude` in iTerm2 opens the desk and the rail on the right. `/rail` and `/desk` hide a pane or bring it back. If you have a `/start` command of your own, it runs as soon as the session starts.
 
 ![workbench in iterm: claude on the left, the desk with the plan tab in the middle, the rail with sessions, now, context and the turtle on the right](docs/media/workbench-window.png)
 
@@ -90,7 +92,7 @@ The rail has two tabs: **Session**, how this session is thinking, and **Git**, w
 ```
  ▌ Now  Wren and Otto
  ────────────────────────────────────────
- ▸ ● Grok
+ ▸ ● Claude
    the tab now opens each handoff
    ├ Wren    how the session tab is drawn
    │    asked   how the session tab is drawn
@@ -110,15 +112,15 @@ The rail has two tabs: **Session**, how this session is thinking, and **Git**, w
 
 The banner is the only status. `Now` names who is working and the ask they were given. Two people read `Wren and Otto`. `Held` means the brief just stopped an edit. `waiting for you` means the turn has ended. A tool with no handoff names the file, as in `reading rail.mjs`. That sentence is not repeated on the row below.
 
-Under it is this second. Grok or Claude is the root, with no second status beside the name. The latest reply sits under the name, and Enter opens the whole text. Each subagent hangs under the one that asked it. Names are purple. The lamp is how long the agent has been going, or `running` while a shell is in flight. When one agent is working, the banner already has the ask, so the row is the name and the lamp. With several, each row keeps its ask. A background agent sits level with Grok or Claude, and is left out of the banner while someone in the foreground is named. A shell still running is a `◇` on its own row, and Enter opens its output. The desk's review is a row while it runs.
+Under it is this second. Claude is the root, with no second status beside the name. The latest reply sits under the name, and Enter opens the whole text. Each subagent hangs under the one that asked it. Names are purple. The lamp is how long that row has been going, or `running` while a shell is in flight. When one agent is working, the banner already has the ask, so the row is the name and the lamp. With several, each row keeps its ask. A background agent sits level with Claude, and is left out of the banner while someone in the foreground is named. A shell still running is a `◇` on its own row, and Enter opens its output. The desk's review is a row while it runs.
 
 Open an agent. `asked` is the one line it was given. `prompt` is the handoff itself, the words that were sent. `said` is what came back. `doing` is the call in flight. Enter on `prompt` or `said` opens the whole text. Nothing here is inferred.
 
 A subagent that has finished stays on its own row under the live ones: the name, the task it was given, and how long ago it finished. Newest first. Enter opens the prompt and what it answered. The list is every subagent this session spun up.
 
-Under that, each thing you typed is a chapter, newest first. Open it for what the agent said it was going to do (`why`), the agents that turn handed work to, and what it answered. The reply already under Now is not printed again. `⟲ compacted after <branch>` stays for an hour after a boundary compact. A warm compact reads `⟲ compacted before the cache went cold`.
+Under that, each thing you typed is a chapter, newest first. Open it for what Claude said it was going to do (`why`), the agents that turn handed work to, and what it answered. The reply already under Now is not printed again. `⟲ compacted after <branch>` stays for an hour after a boundary compact. A warm compact reads `⟲ compacted before the cache went cold`.
 
-The words come from the session. The hook keeps the prompt, the reply, and your turns in the activity file as they happen. The rail also reads the transcript: Grok's `chat_history.jsonl` and `subagents/<id>/meta.json`, and Claude's session log. A subagent's prompt is the `prompt` it was spawned with. Its reply is what it returned.
+The words come from the session. The hook keeps the prompt, the reply, and your turns in the activity file as they happen. The rail also reads Claude's session log. A subagent's prompt is the `prompt` it was spawned with. Its reply is what it returned.
 
 - **Sessions:** every session on your Mac, this one first (▸), then the ones that need you. Each shows its brief's title (or its branch), whether it's busy, waiting for you, blocked (the brief gate just held an edit) or idle, and underneath, its repo, branch, and what it's doing right now. Every rail shows the same list.
 - **Environment:** your computer, account, repo, and branch, labeled host, repo, and git, with the lines added and removed since the branch forked from the default branch (committed plus uncommitted; untracked files are not counted). The account and Remote Control stay on dim rows under those three.
@@ -168,7 +170,7 @@ Click a row, or use the arrow keys and Enter, to open it. On Session, Enter expa
 
 ### Working on several things at once
 
-**+ new**, on the Sessions heading, starts another session in its own checkout. Type the problem on the rail's bottom line and press Enter (Esc cancels). The rail fetches, adds a detached git worktree of the default branch beside the repo in `<repo>.worktrees/<name>`, opens a new iTerm window there at the same size and place as this one, and runs this rail's agent with `/start <your problem>` (`claude` or `grok`). `/start` files the issue and makes the branch inside that worktree. Each window gets its own agent │ desk │ rail. With one tab per window iTerm shows no tab bar: the Sessions list is how you move between them.
+**+ new**, on the Sessions heading, starts another session in its own checkout. Type the problem on the rail's bottom line and press Enter (Esc cancels). The rail fetches, adds a detached git worktree of the default branch beside the repo in `<repo>.worktrees/<name>`, opens a new iTerm window there at the same size and place as this one, and runs `claude "/start <your problem>"`. `/start` files the issue and makes the branch inside that worktree. Each window gets its own Claude │ desk │ rail. With one tab per window iTerm shows no tab bar: the Sessions list is how you move between them.
 
 When that session is gone and the branch is merged, or the worktree never left the default branch, Sessions and Git both offer to remove it. Enter, then Remove: one confirm runs `git worktree remove`. A dirty worktree is listed in that menu and left where it is. Unmerged work is not offered, and the checkout you are in is never removed. After the session compacts itself off a merged branch, the rail offers that worktree too, for an hour, when it is still there and safe to remove.
 
@@ -229,7 +231,7 @@ Details and the empty-round example are in [docs/chores.md](docs/chores.md).
 - **Plan:** the plan, live. That is the branch's brief, with an **Approve** button when it's ready, unless the session's plan file is newer, in which case that file is the body and has no button. A change of either one selects Plan and scrolls to the top. With nothing written, the tab says so (on `main`, create a branch; on a feature branch, the brief is not written yet), then lists the **Todo** issues and recent work.
 - **Diff:** every file changed since the branch forked from the default branch, the same base as the rail's `+N −N`, grouped under the brief's chunks with each chunk's summary. Untracked files are included, marked `new`. Open a file to see its diff.
 - **Review:** the branch's reviews and what became of each finding.
-  - **Approach:** a staff-engineer review in a separate headless process. It reads the brief, each chunk's summary and files, and how much each file changed. It says whether this is the simplest, most elegant and least costly way to the goal: on track, a simpler path exists, or off the goal. Findings are a simpler design, work beyond the goal, avoidable cost, or part of the goal not covered. Claude's run is `dontAsk` with Read, Grep, Glob, and `Bash(git *)`. Grok's run uses `--always-approve` with only `read_file`, `grep`, and `list_dir` left on; write, shell, and web tools are removed.
+  - **Approach:** a staff-engineer review in a separate headless process. It reads the brief, each chunk's summary and files, and how much each file changed. It says whether this is the simplest, most elegant and least costly way to the goal: on track, a simpler path exists, or off the goal. Findings are a simpler design, work beyond the goal, avoidable cost, or part of the goal not covered. The run is `dontAsk` with Read, Grep, Glob, and `Bash(git *)`.
   - **Code review:** the newest `/code-review`, finding by finding, with its file and line. `Enter` jumps to that line in the diff.
   - Each finding shows ● open, ✓ applied or ✗ declined (✓ fixed, ✓ no change or ✓ skipped for code), and a declined one shows the reason. Older runs are listed one line each. Reviews are saved per branch in `.git/session-rail/reviews/`.
 
@@ -237,9 +239,9 @@ The desk opens on Plan. A change of the plan selects Plan again.
 
 ### The session brief
 
-On any branch but `main` or `master`, and not on a detached HEAD, the session keeps a brief: what it sets out to do, and what the work is checked against at the end. It lives at `.git/session-rail/briefs/<branch>.md`, so it is never committed. On `main`, `master`, or a detached HEAD there is no brief. The agent is told to create a branch first, and an edit of a file in the repo, including a shell command that writes one, is refused until that branch has a brief you have approved. On those checkouts, a path outside the repo is left alone.
+On any branch but `main` or `master`, and not on a detached HEAD, the session keeps a brief: what it sets out to do, and what the work is checked against at the end. It lives at `.git/session-rail/briefs/<branch>.md`, so it is never committed. On `main`, `master`, or a detached HEAD there is no brief. Claude is told to create a branch first, and an edit of a file in the repo, including a shell command that writes one, is refused until that branch has a brief you have approved. On those checkouts, a path outside the repo is left alone.
 
-The desk reads the folder the session was started in. A session started in a parent of this repo is not in a repo, so its Plan tab has no brief, and a brief written here does not show on that desk. The agent says the plan is in the Plan tab only after rendering this session's desk and seeing the brief there.
+The desk reads the folder the session was started in. A session started in a parent of this repo is not in a repo, so its Plan tab has no brief, and a brief written here does not show on that desk. Claude says the plan is in the Plan tab only after rendering this session's desk and seeing the brief there.
 
 ```
 # <title>
@@ -257,16 +259,16 @@ Files: src/a.ts, src/b.ts
 
 ![the desk's plan tab showing an approved brief: problem, solution, design, mockups and engineering chunks](docs/media/desk-plan-brief.png)
 
-- As you talk the problem through, the agent says when it's scoped out and writes the brief. You don't need to ask. It tells you the plan is in the Plan tab only after rendering this session's desk and seeing the brief there. The brief file itself can still be written before approval. Its approval file cannot. The agent never approves the brief.
+- As you talk the problem through, Claude says when it's scoped out and writes the brief. You don't need to ask. It tells you the plan is in the Plan tab only after rendering this session's desk and seeing the brief there. The brief file itself can still be written before approval. Its approval file cannot. Claude never approves the brief.
 - Edits wait until the brief has a problem, a solution, and at least one chunk, and you've pressed **Approve** (or `A`, or `/approve-brief` when the desk isn't open). That covers Edit, Write, and NotebookEdit, and a shell command that would create, overwrite, move, or delete a file in the checkout (`cat >`, `tee`, `cp`, `mv`, `rm`, `sed -i`, `git checkout --`, `git apply`, and the like). `git log`, `git status`, and the tests still run. A command whose path is not a literal is treated as a write, so you run it yourself. The refusal is the Held banner, and the pet's `?`. See [Safe use](#safe-use).
 
   ![a hatchling snail standing still at the left edge with a yellow ? over its head, babies piled at its heel](docs/media/reactions/held.gif)
-- Approving writes the approval file. Within a couple of seconds, once the agent is idle, Claude is sent a message to start on chunk 1, and Grok has the same line typed into the session.
-- Once approved, the edit gate stays open, including after the brief changes. If the problem, solution, or outline changes, the Plan tab says `approved · changed since` and offers **Approve again**, which tells the agent the change is approved so it carries on. Adding `Done:` and `Files:` lines does not count as a change.
-- Both hosts are told to work the chunks in order. For each chunk: check it against the plan and run the tests, add `Done:` and `Files:`, run the approach review and apply its findings (at most two rounds), run what the chunk built once for real, commit that chunk, and push, opening the pull request after the first chunk. Then the next chunk, unless something needs your decision.
-- When the session leaves a branch whose brief has a Done chunk and whose tip is in the default branch (`origin/HEAD`, `main`, or `master`), the session compacts itself after the turn ends. The summary keeps the board, how you like work done, open issues, and what's next, and shrinks the finished branch to a line. Leaving an unmerged branch does not compact. Turn it off with **Auto-compact** in the rail's settings (`autoCompact` in `settings.json`; on unless set false). Grok gets `/compact` typed in; Claude compacts through the host. Up to three tries. If that branch still has a clean **+ new** worktree and no session is using it, the rail then offers to remove the worktree.
+- Approving writes the approval file. Within a couple of seconds, once Claude is idle, it is sent a message to start on chunk 1.
+- Once approved, the edit gate stays open, including after the brief changes. If the problem, solution, or outline changes, the Plan tab says `approved · changed since` and offers **Approve again**, which tells Claude the change is approved so it carries on. Adding `Done:` and `Files:` lines does not count as a change.
+- Claude is told to work the chunks in order. For each chunk: check it against the plan and run the tests, add `Done:` and `Files:`, run the approach review and apply its findings (at most two rounds), run what the chunk built once for real, commit that chunk, and push, opening the pull request after the first chunk. Then the next chunk, unless something needs your decision.
+- When Claude leaves a branch whose brief has a Done chunk and whose tip is in the default branch (`origin/HEAD`, `main`, or `master`), the session compacts itself after the turn ends. The summary keeps the board, how you like work done, open issues, and what's next, and shrinks the finished branch to a line. Leaving an unmerged branch does not compact. Turn it off with **Auto-compact** in the rail's settings (`autoCompact` in `settings.json`; on unless set false). Claude compacts through the host, up to three tries. If that branch still has a clean **+ new** worktree and no session is using it, the rail then offers to remove the worktree.
 - Before a waiting Claude session's prompt cache goes cold, and only while the cache still holds at least 50k tokens, the session compacts itself. The window is the cache's last stretch: the last 10 minutes of a plan's hour, the last minute of an API key's 5 minutes, and it stops 15 seconds before expiry. A cache that is already cold is left. It tries at most three times per request. The summary keeps the task in hand, the files, the test command, and the next step. Turn it off with **Before cache cold** (`warmCompact` in `settings.json`; on unless set false). Claude only. The rail hides that row under Grok. On an API key you can choose the 1-hour cache (`"promptCacheTtl": "1h"` in Claude's settings, or `CLAUDE_CODE_PROMPT_CACHE_TTL=1h`).
-- The agent is told to run an approach review on the plan and on every chunk, and a code review of the whole branch before a merge.
+- Claude is told to run an approach review on the plan and on every chunk, and a code review of the whole branch before a merge.
 
 Keys:
 
@@ -284,31 +286,31 @@ Keys:
 | `x` | cancel a running review |
 | `q` | close the desk |
 
-An approach review is a separate headless run: `claude -p` on Claude, `grok -p` on Grok, with the tools above.
+An approach review is a separate headless `claude -p` run, with the tools above.
 
 ### Reviews
 
 Two reviews, each where it pays off, plus an optional third:
 
-- **The approach review** (`review_approach` on Claude, `node bin/reviewer.mjs --run` on Grok; the desk's Run review calls the same reviewer) runs often:
+- **The approach review** (`review_approach`; the desk's Run review calls the same reviewer) runs often:
   - **On the plan:** once the brief is complete, before you're asked to approve it.
-  - **After each chunk:** once its `Done:` line is in. The agent applies each finding and calls the tool once more to check them, at most two rounds. Each review marks the earlier findings **applied**, **declined** (with a reason), or still **open**.
-  - Then the agent is told to run what the chunk built once for real, before committing.
-- **The code review** is what the agent is told to run once the person says to merge, over the whole branch: `/code-review --fix` on Claude, `/review` or `/code-review` on Grok. Its fixes are committed. Then `review_approach` with `final: true` checks that claimed fixes landed, and accepts each skip or "no change" or reopens it. The agent applies what it finds, commits, and calls it once more to check, at most two rounds. Anything still open after that is listed in the PR, and the agent asks you instead of looping.
-  - Claude notices the Skill tool running `/code-review`, or you typing it, gives the run a token, and asks it to end with its findings as a JSON block that carries the token. The answer that carries the token is the report, forked or inline. Grok arms the same record when you type `/review` or `/code-review`, and records the final message's JSON findings block.
+  - **After each chunk:** once its `Done:` line is in. Claude applies each finding and calls the tool once more to check them, at most two rounds. Each review marks the earlier findings **applied**, **declined** (with a reason), or still **open**.
+  - Then Claude is told to run what the chunk built once for real, before committing.
+- **The code review** is what Claude is told to run once you say to merge, over the whole branch: `/code-review --fix`. Its fixes are committed. Then `review_approach` with `final: true` checks that claimed fixes landed, and accepts each skip or "no change" or reopens it. Claude applies what it finds, commits, and calls it once more to check, at most two rounds. Anything still open after that is listed in the PR, and Claude asks you instead of looping.
+  - The plugin notices the Skill tool running `/code-review`, or you typing it, gives the run a token, and asks it to end with its findings as a JSON block that carries the token. The answer that carries the token is the report, forked or inline.
 - **Wide review** is off unless **Wide review** is on. On a diff of at least 8 files or 400 lines, the Review tab offers **Wide review** (`w`). It splits the diff into at most four slices, reviews each in a throwaway worktree with a short file-level pass, and runs one skeptic that can decline a finding. What the skeptic keeps stays open in that one report. What it drops is declined. A later approach review can mark a kept finding applied. The file reviewers and the skeptic show on the rail as named subagents, with a visitor each, while they run. The approach review and `/code-review` keep their own cadence. A merge waits on a wide review only for open findings the newest one kept. `node bin/widereview.mjs` runs it from the shell. Set `wideModel` in `settings.json` to send those calls to a smaller model.
-- **The gate:** the plugin refuses the agent's `gh pr merge` until the code review has run since the last chunk's review, the final approach review has run after it on the last commit with nothing uncommitted, and nothing is open, including open findings from the newest wide review. The agent is told what's missing. Commits are not gated. You can merge the pull request yourself, and `git merge` still runs.
+- **The gate:** the plugin refuses Claude's `gh pr merge` until the code review has run since the last chunk's review, the final approach review has run after it on the last commit with nothing uncommitted, and nothing is open, including open findings from the newest wide review. Claude is told what's missing. Commits are not gated. You can merge the pull request yourself, and `git merge` still runs.
 - **On the pull request:** after each approach review and each code review, the plugin posts a commit status named `session-rail/review` on that commit, and updates one comment on the pull request. `success` is posted only when the gate above is clear. Open findings, a missing code review, or a final review that has not run are `failure`. The plugin does not post `success` from a review's prose, and it does not post a status you did not record. Do not post `session-rail/review` yourself. Set `SESSION_RAIL_PUBLISH=0` to leave the record only in `.git`. `node bin/publish.mjs --require` exits 1 unless that status is already success.
 - GitHub still allows the merge until you add `session-rail/review` as a required status check (Settings → Rules → Rulesets, or the branch protection rule). The context shows up in the list after it has been posted once; you can type the name. That rule is off until you add it.
 - To also fail a pull request that has no status at all, copy `docs/session-rail-review.yml` to `.github/workflows/session-rail-review.yml`. The workflow only reads the status. It fails when `session-rail/review` is missing or not `success`, and it does not create a passing status. It does not run until that copy is in `.github/workflows`. Mark the workflow required as well if a missing status should block the merge. Until you do, it only reports.
 - The desk's Review tab says when the pull request is already merged, or when GitHub will let a person merge it while the record is not clean.
-- **The PR's Progress checklist** is part of the procedure the agent is given: each chunk notes its approach review. The status and the comment are the record a teammate can see without this Mac's `.git` directory.
+- **The PR's Progress checklist** is part of the procedure Claude is given: each chunk notes its approach review. The status and the comment are the record a teammate can see without this Mac's `.git` directory.
 
-The gate covers commands the agent runs. A `/code-review` you type yourself counts too. **Run review** in the desk runs an approach review on demand. A desk run is marked manual, so it does not make the code review stale.
+The gate covers commands Claude runs. A `/code-review` you type yourself counts too. **Run review** in the desk runs an approach review on demand. A desk run is marked manual, so it does not make the code review stale.
 
 ## Tests before a stop
 
-When a turn ends, a Stop hook can run the project's tests and send the agent back if they fail. The same rules run for Claude and for Grok. Nothing is run, and the stop is allowed, when no test command is configured, so a folder with no tests is never blocked.
+When a turn ends, a Stop hook can run the project's tests and send Claude back if they fail. Nothing is run, and the stop is allowed, when no test command is configured, so a folder with no tests is never blocked.
 
 The command is chosen in this order:
 
@@ -318,7 +320,7 @@ The command is chosen in this order:
 4. `npm test`, when `package.json` has a real `scripts.test`. npm's placeholder (`no test specified`) does not count.
 5. In this Workbench repo only, when nothing above names a command: `claude plugin test .` and the frame checks. This repo's `AGENTS.md` names a command, so the hook runs that fence, which starts with `claude plugin validate .`.
 
-A failing command blocks the stop once. Claude's hook exits 2 and the reason on stderr is what Claude is told. Grok gets the same reason as a block decision and exits 0, which is how its hooks report a block. The reason includes the tail of the test output. If this stop is already a continuation (`stop_hook_active`), the hook exits 0 and does not block again, so it cannot loop. A turn the person interrupted is left alone.
+A failing command blocks the stop once. Claude's hook exits 2 and the reason on stderr is what Claude is told. The reason includes the tail of the test output. If this stop is already a continuation (`stop_hook_active`), the hook exits 0 and does not block again, so it cannot loop. A turn you interrupted is left alone.
 
 The rail shows one line, `tests failed`, and the pet flinches and droops the way it does when a tool fails. A later pass clears both. There is no separate mark for the gate.
 
@@ -362,18 +364,28 @@ grok plugin marketplace add <this folder>
 grok plugin install <this folder> --trust
 ```
 
-Start a new `grok` in iTerm2. The desk and the rail open on the right, and the brief, the reviews, and **+ new** work the same way. Plan shows the branch brief, and a newer `plan.md` (the file plan mode writes) replaces it until the brief catches up. A change of either one selects Plan. Claude's plan file works the same way. The pet follows the activity feed, since a Grok session file never says busy. `/rail` and `/desk` are in the slash menu, and the two panels use Grok's colours. A session that is already open does not pick the plugin up until you start another one. The install copies this folder; refresh it with `grok plugin uninstall session-rail --confirm`, then the install again.
+Start a new `grok` in iTerm2. The desk and the rail open on the right, in Grok's colours, and `/rail` and `/desk` are in the slash menu. The brief gate, the reviews, the Stop hook, and **+ new** work the same way. **+ new** runs `grok "/start <your problem>"`.
+
+What differs:
+
+- Approving the brief types the go-ahead into the session. A finished branch is compacted by typing `/compact`. `bin/grok-watch.mjs` types both, and `/start`.
+- A failing Stop hook is a block decision, and the process exits 0.
+- `/review` is recorded the same way as `/code-review`. The approach review is `node bin/reviewer.mjs --run`: a headless `grok -p` with `--always-approve` and only `read_file`, `grep`, and `list_dir` left on.
+- The rail reads `chat_history.jsonl` and `subagents/<id>/meta.json`. The Cache row stays `—`, and **Before cache cold** is hidden. Session cost is `costUsdTicks` in that session's usage file (10¹⁰ per dollar). Connectors come from `grok mcp list`, the account catalog, the linked X account, and whether `gh` is logged in.
+- A newer `plan.md` replaces the brief on Plan until the brief catches up, and that file has no Approve button. The pet follows the activity feed, since a Grok session file never says busy.
+
+A session that is already open does not pick the plugin up until you start another one. The install copies this folder. Refresh it with `grok plugin uninstall session-rail --confirm`, then the install again.
 
 If macOS asks whether to allow controlling iTerm2, allow it. That's how the panels open their panes and how the rail switches between sessions.
 
 ## Use
 
-- The rail and the desk open by themselves when you start `claude` or `grok`.
+- The rail and the desk open by themselves when you start `claude`.
 - `/rail` hides or shows the rail, and `/desk` the desk.
-- They close when you quit the agent.
+- They close when you quit Claude.
 - Keys: `↑` `↓` to move, `Enter` to open, `Esc` to go back, `c` to change creature, `q` to close the rail.
-- **settings**, in the rail's bottom-right corner, opens the rows under the creature. `←` `→` on **Font size** makes the agent pane, the desk, and the rail bigger or smaller together (`Enter` for Reset). `←` `→` on **Pet** picks the creature. `←` `→` on **Auto-compact** turns compaction after a merged branch off or on. `←` `→` on **Wide review** turns the optional wide-diff review off or on (off unless you turn it on). `←` `→` on **Before cache cold** does the same for the warm compact (hidden under Grok). `←` `→` on **Chores** turns the CI chore on or off. It ships off. The font size is remembered. It works by switching the panes to iTerm profiles the plugin generates (`session-rail 15pt` and so on), which show up in iTerm's Profiles menu.
-- A pixel creature wanders along the bottom: a snail, a turtle (green shell, amber when heavy), or a crab. It walks through its habitat (woodland, a pond, or a beach) on speckled ground, with plants swaying in iTerm2. Sand puffs under the crab, and the reeds bend when the turtle hops. It hurries while the agent is busy, looks left and fidgets while it is waiting for you, and falls asleep only after a real lull. Your pick is remembered. The full reading is in [docs/pets.md](docs/pets.md).
+- **settings**, in the rail's bottom-right corner, opens the rows under the creature. `←` `→` on **Font size** makes the Claude pane, the desk, and the rail bigger or smaller together (`Enter` for Reset). `←` `→` on **Pet** picks the creature. `←` `→` on **Auto-compact** turns compaction after a merged branch off or on. `←` `→` on **Wide review** turns the optional wide-diff review off or on (off unless you turn it on). `←` `→` on **Before cache cold** does the same for the warm compact (hidden under Grok). `←` `→` on **Chores** turns the CI chore on or off. It ships off. The font size is remembered. It works by switching the panes to iTerm profiles the plugin generates (`session-rail 15pt` and so on), which show up in iTerm's Profiles menu.
+- A pixel creature wanders along the bottom: a snail, a turtle (green shell, amber when heavy), or a crab. It walks through its habitat (woodland, a pond, or a beach) on speckled ground, with plants swaying in iTerm2. Sand puffs under the crab, and the reeds bend when the turtle hops. It hurries while Claude is busy, looks left and fidgets while it is waiting for you, and falls asleep only after a real lull. Your pick is remembered. The full reading is in [docs/pets.md](docs/pets.md).
 - The strip is the branch's road, left to right. The creature paces around a spot that moves right as the brief's chunks get Done, from the left edge before approval to the right edge when all of them are. Each Done chunk leaves a marker (a mushroom, a lily pad, or a shell) and the creature hops with a gold sparkle. With no brief, that spot is how full the context window is. Until the window's size is known, it wanders the whole strip.
 - Each running subagent brings a visitor: a bee, butterfly, dragonfly, or ladybird, tinted with that subagent's colour (up to 4, and a `+n` when more are running). They flutter around the creature, settle when things are quiet, scatter when a tool fails, and fly off when their subagent finishes.
 - A baby of the creature trails behind it for each running background command (up to 3, then a `+n`). Babies tuck in when it sleeps, pile up while the brief is unapproved, and hide behind it when it flinches. A failed tool makes it flinch, pop a red puff, and stay drooped until the next tool succeeds. A failed Stop-hook test is the same flinch. The brief gate does not flinch: it stands still with a yellow `?`.
@@ -384,18 +396,18 @@ If macOS asks whether to allow controlling iTerm2, allow it. That's how the pane
 
 ## How it works
 
-The rail reads files the agent already keeps on your Mac: the list of running sessions, the session's conversation log, each subagent's prompt and reply, and the output of each background task. Claude's session cost is the ledger the plugin records from `session.measure` into the activity file. Grok's is read from the session's usage file. It also asks `git` (worktrees, ahead/behind, commits) and `gh` (your pull requests and their checks, in one call). Connectors come from `claude mcp list`, or under Grok from `grok mcp list` plus the account catalog, the linked X account, and whether `gh` is logged in.
+The rail reads files Claude already keeps on your Mac: the list of running sessions, the session's conversation log, each subagent's prompt and reply, and the output of each background task. Session cost is the ledger the plugin records from `session.measure` into the activity file. It also asks `git` (worktrees, ahead/behind, commits), `gh` (your pull requests and their checks, in one call), and `claude mcp list` for the connectors.
 
 1. **The rail** (`bin/rail.mjs`) draws the narrow panel. Plain Node, no dependencies. `bin/sessionstory.mjs` turns the activity feed and the transcript into the Session tab's tree.
-2. **The desk** (`bin/desk.mjs`) draws the wider panel. It reads the brief (`bin/brief.mjs`), finds the plan file in the session log, asks `git` for the diff, and asks `gh` for the board's Todo issues. `bin/reviewer.mjs` runs the approach review through `claude -p` or headless `grok`, with a JSON schema, read-only tools, and no saved session, and keeps each branch's reviews in `.git/session-rail/reviews/`. The same reviewer is `node bin/reviewer.mjs --run [--final] [--notes …]`, which `review_approach` calls. `bin/cadence.mjs` holds finding statuses and `gateReason`, which says why a merge must wait. Wide review is `bin/wide.mjs` and `bin/widereview.mjs`.
-3. **The pane opener** (`bin/pane.mjs`) uses iTerm2's AppleScript support to fill the screen, split the agent's pane, run each panel, size them, and hand focus back. It never launches iTerm2, and it stops at the nearest `grok` or `claude` process. A headless run with no TTY owns no pane. The rail uses it to bring another session's window to the front and to open the window for a new session.
-4. **The plugin** (`hooks/register.ts` for Claude, `bin/grok-hook.mjs` for Grok) writes `~/.claude/session-rail/activity/<session id>.json`: turns, tool calls, the prompt cache (`bin/cache.mjs`), the session cost (`bin/cost.mjs`), subagents and the names given at spawn, and the brief gate. The rail reads it every second. The desk writes `<session id>.desk.json` beside it. Claude opens both panels on session start, adds `/rail`, `/desk`, and `/approve-brief`, and closes them on session end. On a feature branch it adds the brief to the system prompt, refuses repo edits and shell writes until the brief is approved (`bin/shellwrite.mjs`), watches for the approval (`hooks/goahead.ts`), and compacts after a finished merged branch and before a waiting cache goes cold (`hooks/compact.ts`). Grok attaches the same brief procedure on the first tool call of each turn. `bin/grok-watch.mjs` types the go-ahead, `/compact`, and `/start`, which a hook cannot do itself. Both hosts refuse `gh pr merge` until `gateReason` is clear, and `bin/stop-hook.mjs` runs the test gate (`bin/stopgate.mjs`). Settings live in `~/.claude/session-rail/settings.json`. Each rail keeps its tab in `<session id>.rail.json`.
+2. **The desk** (`bin/desk.mjs`) draws the wider panel. It reads the brief (`bin/brief.mjs`), finds the plan file in the session log, asks `git` for the diff, and asks `gh` for the board's Todo issues. `bin/reviewer.mjs` runs the approach review through `claude -p`, with a JSON schema, read-only tools, and no saved session, and keeps each branch's reviews in `.git/session-rail/reviews/`. The same reviewer is `node bin/reviewer.mjs --run [--final] [--notes …]`, which `review_approach` calls. `bin/cadence.mjs` holds finding statuses and `gateReason`, which says why a merge must wait. Wide review is `bin/wide.mjs` and `bin/widereview.mjs`.
+3. **The pane opener** (`bin/pane.mjs`) uses iTerm2's AppleScript support to fill the screen, split Claude's pane, run each panel, size them, and hand focus back. It never launches iTerm2, and it stops at the nearest `claude` or `grok` process. A headless run with no TTY owns no pane. The rail uses it to bring another session's window to the front and to open the window for a new session.
+4. **The plugin** (`hooks/register.ts`) writes `~/.claude/session-rail/activity/<session id>.json`: turns, tool calls, the prompt cache (`bin/cache.mjs`), the session cost (`bin/cost.mjs`), subagents and the names given at spawn, and the brief gate. The rail reads it every second. The desk writes `<session id>.desk.json` beside it. It opens both panels on session start, adds `/rail`, `/desk`, and `/approve-brief`, and closes them on session end. On a feature branch it adds the brief to the system prompt, refuses repo edits and shell writes until the brief is approved (`bin/shellwrite.mjs`), watches for the approval (`hooks/goahead.ts`), and compacts after a finished merged branch and before a waiting cache goes cold (`hooks/compact.ts`). It refuses `gh pr merge` until `gateReason` is clear, and `bin/stop-hook.mjs` runs the test gate (`bin/stopgate.mjs`). Settings live in `~/.claude/session-rail/settings.json`. Each rail keeps its tab in `<session id>.rail.json`. Grok's hook is `bin/grok-hook.mjs`. `bin/grok-watch.mjs` types the go-ahead, `/compact`, and `/start`, which that hook cannot do itself.
 
 ## Safe use
 
-Workbench runs on your Mac. It is not a container. The plugin can split iTerm2, focus a session, open a window, and type a line into a pane (`bin/pane.mjs`). Those calls run as you. Claude Code's Bash sandbox and Grok's sandbox profile do not wrap them, and they do not wrap file tools, MCP servers, or plugin hooks. A session can read and write what you approve, including files outside the repo. [OpenHands](https://docs.openhands.dev/openhands/usage/sandboxes/overview) runs the agent in a Docker sandbox by default. This plugin does not. An unattended loop wants a disposable machine and credentials that are not your real ones.
+Workbench runs on your Mac. It is not a container. The plugin can split iTerm2, focus a session, open a window, and type a line into a pane (`bin/pane.mjs`). Those calls run as you. Claude Code's Bash sandbox does not wrap them, and it does not wrap file tools, MCP servers, or plugin hooks. Grok's sandbox profile does not wrap them either. A session can read and write what you approve, including files outside the repo. [OpenHands](https://docs.openhands.dev/openhands/usage/sandboxes/overview) runs the agent in a Docker sandbox by default. This plugin does not. An unattended loop wants a disposable machine and credentials that are not your real ones.
 
-Start Claude in Manual mode, without `--dangerously-skip-permissions`. Start Grok in ask mode, without `--always-approve`. Approve a brief for a checkout you mean the agent to edit. The sample in [docs/safe-use](docs/safe-use.md) is a starting point, not a guarantee. Merge [`claude.settings.json`](docs/safe-use/claude.settings.json) into `~/.claude/settings.json`, and the Grok files on that page into `~/.grok/`. It keeps Manual mode, asks before `git push` and `gh pr merge`, denies a few destructive and credential paths, and turns the Bash sandbox on with auto-allow left off. Workbench does not change your permission mode.
+Start Claude Code in Manual mode, without `--dangerously-skip-permissions`. Approve a brief for a checkout you mean Claude to edit. The sample in [docs/safe-use](docs/safe-use.md) is a starting point, not a guarantee. Merge [`claude.settings.json`](docs/safe-use/claude.settings.json) into `~/.claude/settings.json`. It keeps Manual mode, asks before `git push` and `gh pr merge`, denies a few destructive and credential paths, and turns the Bash sandbox on with auto-allow left off. Workbench does not change your permission mode. For Grok, merge the files on that page into `~/.grok/` and stay in ask mode, without `--always-approve`.
 
 A Bash deny matches the command text. `Bash(curl *)` does not stop `/usr/bin/curl` or `sh -c 'curl …'`. The sandbox is the operating-system boundary for shell commands. File tools follow permission rules, outside that sandbox.
 
@@ -411,7 +423,7 @@ The brief gate covers Edit, Write, and NotebookEdit, and a shell command that cr
 ## Good to know
 
 - It works in iTerm2 on a Mac. Elsewhere the plugin stays quiet.
-- When a session starts, the iTerm window fills the screen (without switching to macOS full screen). The desk takes 28% of the width, the rail 18.5%, and the agent keeps the rest. `/rail` and `/desk` take their share from the agent's pane, and the window never grows.
+- When a session starts, the iTerm window fills the screen (without switching to macOS full screen). The desk takes 28% of the width, the rail 18.5%, and Claude keeps the rest. `/rail` and `/desk` take their share from Claude's pane, and the window never grows.
 - A second Claude login (`CLAUDE_CONFIG_DIR=~/.claude-work claude`, or any `~/.claude-<name>`) works too: the rail lists its sessions and reads its context, plan, background tasks, account, and rate limits from that dir. The panes, the pet, and the settings stay shared.
 - Context shows tokens, the model, and the session cost when the host reports one. No figure is `—`.
 - It reads Claude Code's own files, which can change between Claude Code versions.
