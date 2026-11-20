@@ -15,8 +15,11 @@ const harness = (on: Parameters<Parameters<typeof test>[1]>[1], reply = 'opened'
   on('command.list', () => ({ value: commands.map(name => ({ name, description: '', source: 'user' as const })) }))
   on('process.run', (_, e) => {
     const argv = e.argv ?? []
-    // argv: sh -c 'exec node "$0" "$1" "$2"' <plugin root>/bin/pane.mjs <action> <panel>
-    calls.push(`${String(argv[3] ?? '').endsWith('/bin/pane.mjs') ? 'pane.mjs' : '?'} ${String(argv[4] ?? '')} ${String(argv[5] ?? '')}`.trim())
+    // argv: sh -c '…' $0 $1 $2. A pane's $0 is bin/pane.mjs. Anything else keeps its $0, so
+    // session-rail-forget stays visible next to the session id in $1.
+    const bin = String(argv[3] ?? '')
+    const name = bin.endsWith('/bin/pane.mjs') ? 'pane.mjs' : bin ? `? ${bin}` : '?'
+    calls.push(`${name} ${String(argv[4] ?? '')} ${String(argv[5] ?? '')}`.trim())
     return { value: { exitCode: 0, stdout: `{"state":"${reply}"}\n`, stderr: '' } }
   })
   on('session.start', (_, e) => ({ cwd: e.cwd }))
@@ -799,7 +802,7 @@ test('session.measure records the host cost, a later reading is the turn, and a 
   await measure(0.14)
   a = await activityOf(files)
   expect(a.cost.usd).toBe(0.14)
-  expect(a.cost.turnUsd).toBeCloseTo(0.04)
+  expect(Math.abs(a.cost.turnUsd - 0.04) < 1e-12).toBe(true)
   await measure(undefined, ['rateLimits'])
   expect((await activityOf(files)).cost.usd).toBe(0.14)
   await measure(0.01)
