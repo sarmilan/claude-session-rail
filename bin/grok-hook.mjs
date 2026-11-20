@@ -5,10 +5,11 @@
 //
 // It keeps the Now feed, attaches the brief instructions on the first tool call of each turn, refuses
 // code edits and a shell command that writes a file until the brief is approved, refuses `gh pr merge`
-// until the reviews are in, and records a /review report. It does not open the desk or the rail, and it
-// does not type into the session. Claude opens both panes itself.
+// until the reviews are in, and records a /review report. A message that is exactly `approved` or
+// `approved!`, and `/approve-brief`, approve the brief. `/rail` and `/desk` toggle those panes. It does
+// not open them on session start, and it does not type into the session. Claude opens both panes itself.
 import { execFileSync, spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -80,13 +81,24 @@ export function editReason(b, file, checkout) {
     if (checkout.cwd && !inWorkTree(checkout.cwd, file)) return null;
     return mainCheckoutNote(branch);
   }
-  if (file === b.approvedPath) return 'session-rail: only the person approves the brief, in the desk or with /approve-brief.';
+  if (file === b.approvedPath) return 'session-rail: only the person approves the brief, in the desk, with /approve-brief, or with a message that is exactly approved.';
   if ((file && file.startsWith(b.dir)) || b.approval?.approvedAt) return null;
   const where = `The brief for ${b.branch} is at ${b.path}. The procedure is in ${join(RAIL, 'grok-brief.md')}.`;
   if (b.text === null) return `session-rail: code edits wait for the session brief. Write it first. ${where}`;
   const brief = parseBrief(b.text);
   if (brief.missing.length) return `session-rail: code edits wait for the session brief, which is missing: ${brief.missing.join(', ')}. ${where}`;
-  return `session-rail: the session brief is complete but not approved yet. Ask the person to review it in the desk's Plan tab and press Approve there, then carry on. ${where}`;
+  return `session-rail: the session brief is complete but not approved yet. Ask the person to review it in the desk's Plan tab and press Approve there, or to send a message that is exactly approved. ${where}`;
+}
+
+// `/var` and `/private/var` are the same directory. The gate compares one real path.
+function canonical(p) {
+  if (!p || !p.startsWith('/')) return p;
+  const parts = p.split('/');
+  for (let i = parts.length; i > 1; i--) {
+    const prefix = parts.slice(0, i).join('/') || '/';
+    try { return join(realpathSync(prefix), ...parts.slice(i)); } catch { /* this prefix is not there yet */ }
+  }
+  return p;
 }
 
 // A shell write uses the same reason as Edit. `null` from shellWrites is a write with no literal path,
@@ -96,12 +108,11 @@ export function shellEdit(cwd, command) {
   if (!targets) return null;
   const b = readBrief(cwd);
   const head = gitHead(cwd);
-  const root = head?.root || head?.cwd || cwd;
-  const base = head?.cwd || cwd;
+  const root = canonical(head?.root || head?.cwd || cwd);
   const checkout = !b && head && NO_BRIEF_BRANCHES.includes(head.branch)
-    ? { branch: head.branch, cwd: head.root || head.cwd } : null;
+    ? { branch: head.branch, cwd: root } : null;
   for (const target of targets) {
-    const file = target == null ? `${root}/shell-write` : resolveWritePath(base, target);
+    const file = target == null ? `${root}/shell-write` : canonical(resolveWritePath(head?.cwd || cwd, target));
     if (!file) continue;
     const reason = editReason(b, file, checkout);
     if (reason) return { reason, file };
@@ -111,9 +122,14 @@ export function shellEdit(cwd, command) {
 
 export function slashCommand(text) {
   const t = String(text ?? '');
-  return t.trim().match(/^\/(?:[\w.-]+:)?(approve-brief)\b/)?.[1]
-    || t.match(/session-rail-command:\s*(approve-brief)/)?.[1]
+  return t.trim().match(/^\/(?:[\w.-]+:)?(rail|desk|approve-brief)\b/)?.[1]
+    || t.match(/session-rail-command:\s*(rail|desk|approve-brief)/)?.[1]
     || null;
+}
+
+// A chat approval is the whole message. A longer note that mentions the word is not one.
+export function chatApproval(text) {
+  return /^approved!?$/i.test(String(text ?? '').trim());
 }
 
 const kindOf = (e) => {
@@ -167,6 +183,31 @@ function resultId(result) {
   }
   const m = String(result ?? '').match(/subagent_id["']?\s*[:=]\s*["']([^"']+)/);
   return m?.[1] || null;
+}
+
+export function panelMessage(state, panel) {
+  const name = panel === 'rail' ? 'Rail' : 'Desk';
+  const messages = {
+    opened: `${name} opened.`,
+    'already-open': `${name} is already open.`,
+    closed: `${name} closed.`,
+    'already-closed': `${name} is already closed.`,
+    'not-iterm': `The ${name.toLowerCase()} only opens when Grok runs in iTerm2.`,
+    'not-authorized': 'macOS is blocking control of iTerm2. Allow it under System Settings → Privacy & Security → Automation, then try again.',
+    'no-claude': "Couldn't find this Grok session's terminal.",
+  };
+  return messages[state] ?? `Couldn't open or close the ${name.toLowerCase()} (is node on your PATH?).`;
+}
+
+function runPane(action, panel, sessionId) {
+  const args = [join(ROOT, 'bin', 'pane.mjs'), action];
+  if (panel) args.push(panel);
+  try {
+    const out = execFileSync(process.execPath, args, {
+      encoding: 'utf8', timeout: 20_000, env: { ...process.env, SESSION_RAIL_SESSION: sessionId || '' },
+    });
+    return JSON.parse(out).state || 'error';
+  } catch { return 'error'; }
 }
 
 function approve(cwd) {
@@ -245,7 +286,8 @@ function modelOf(cwd, id) {
 }
 
 // `agent` is the grok process this event belongs to. Returns a hook reply, or null to say nothing.
-export function handle(event, agent) {
+// `io.toggle` replaces the pane call in tests.
+export function handle(event, agent, io) {
   // A headless review (`grok -p`) sets this so it never opens panes on the desk that launched it.
   if (process.env.SESSION_RAIL_HEADLESS) return null;
   if (!agent || agent.host !== 'grok' || !agent.tty) return null;
@@ -288,10 +330,16 @@ export function handle(event, agent) {
 
   if (kind === 'prompt') {
     armTurn(state);
-    const cmd = slashCommand(promptOf(event));
-    if (cmd === 'approve-brief') {
+    const saidPrompt = promptOf(event);
+    const cmd = slashCommand(saidPrompt);
+    if (cmd === 'approve-brief' || chatApproval(saidPrompt)) {
       save();
       return { decision: 'block', reason: approve(cwd) };
+    }
+    if (cmd === 'rail' || cmd === 'desk') {
+      const state = io?.toggle ? io.toggle(cmd, id) : runPane('toggle', cmd, id);
+      save();
+      return { decision: 'block', reason: panelMessage(state, cmd) };
     }
     if (/^\/(review|code-review)\b/.test(promptOf(event).trim())) state.codeReview = { at: now };
     const said = humanAsk(promptOf(event));
@@ -349,10 +397,10 @@ export function handle(event, agent) {
   if (kind === 'pre' && EDIT.has(tool)) {
     const raw = input.file_path || input.path || input.target_file || input.notebook_path || '';
     if (raw) {
-      const file = resolve(cwd, raw);
+      const file = canonical(resolve(cwd, raw));
       const b = readBrief(cwd);
       const head = b ? null : gitHead(cwd);
-      const checkout = head && NO_BRIEF_BRANCHES.includes(head.branch) ? { branch: head.branch, cwd: head.root || head.cwd } : null;
+      const checkout = head && NO_BRIEF_BRANCHES.includes(head.branch) ? { branch: head.branch, cwd: canonical(head.root || head.cwd) } : null;
       const reason = editReason(b, file, checkout);
       if (reason) {
         if (b) writeProcedure(b); // the deny drops any attached procedure, so the reason points at the file

@@ -7,7 +7,7 @@ import test from 'node:test';
 import { callFinished, callStarted, fresh, heard, noteReply, replied, trackTasks, turnEnded, turnStarted } from '../bin/activity.mjs';
 import { attentionFor } from '../bin/mascot.mjs';
 import { approvalRecord, briefFile, checkoutName, inWorkTree, mainCheckoutNote, parseBrief } from '../bin/brief.mjs';
-import { armTurn, editReason, handle, procedure, readBrief, schedulePublish, slashCommand, takeProcedure } from '../bin/grok-hook.mjs';
+import { armTurn, chatApproval, editReason, handle, panelMessage, procedure, readBrief, schedulePublish, slashCommand, takeProcedure } from '../bin/grok-hook.mjs';
 import { briefInstructions, deskOutsideNote, outsideRepoNote } from '../bin/brief-instructions.mjs';
 import { C, fg, paneBgOff, paneBgOn, usePalette } from '../bin/term.mjs';
 import { connectorsFrom, contextFrom, eventsFromText, rowFromActive, usageFromBilling } from '../bin/sources.mjs';
@@ -125,24 +125,50 @@ test('a second user prompt hears the procedure again', () => {
   assert.equal(takeProcedure(state, 'write the brief'), 'write the brief');
 });
 
-test('slash commands are approve-brief only', () => {
+test('slash commands are the rail, the desk and approve', () => {
   assert.equal(slashCommand('/approve-brief'), 'approve-brief');
   assert.equal(slashCommand('/session-rail:approve-brief'), 'approve-brief');
   assert.equal(slashCommand('session-rail-command: approve-brief'), 'approve-brief');
-  assert.equal(slashCommand('/rail'), null);
-  assert.equal(slashCommand('  /desk now'), null);
-  assert.equal(slashCommand('session-rail-command: rail'), null);
-  assert.equal(slashCommand('/session-rail:desk'), null);
+  assert.equal(slashCommand('/rail'), 'rail');
+  assert.equal(slashCommand('  /desk now'), 'desk');
+  assert.equal(slashCommand('session-rail-command: rail'), 'rail');
+  assert.equal(slashCommand('/session-rail:desk'), 'desk');
   assert.equal(slashCommand('please /rail later'), null);
 });
 
-test('a desk or rail prompt is not blocked', () => {
+test('a message that is exactly approved is a chat approval', () => {
+  assert.equal(chatApproval('approved'), true);
+  assert.equal(chatApproval('  Approved! '), true);
+  assert.equal(chatApproval('approved?'), false);
+  assert.equal(chatApproval('please approved'), false);
+  assert.equal(chatApproval('/approve-brief'), false);
+});
+
+test('approved blocks the prompt and writes nothing when there is no brief', () => {
+  const agent = { host: 'grok', tty: '/dev/ttys000', pid: process.pid };
+  const id = `approved-${process.pid}`;
+  const reply = handle({ hook_event_name: 'UserPromptSubmit', session_id: id, cwd: '/tmp', prompt: 'approved' }, agent);
+  assert.equal(reply.decision, 'block');
+  assert.match(reply.reason, /no session brief/);
+});
+
+test('a desk or rail prompt toggles that pane and does not continue', () => {
   const agent = { host: 'grok', tty: '/dev/ttys000', pid: process.pid };
   const id = `desk-prompt-${process.pid}`;
-  const desk = handle({ hook_event_name: 'UserPromptSubmit', session_id: id, cwd: '/tmp', prompt: '/desk' }, agent);
-  const rail = handle({ hook_event_name: 'UserPromptSubmit', session_id: `${id}-rail`, cwd: '/tmp', prompt: '/rail' }, agent);
-  assert.equal(desk, null);
-  assert.equal(rail, null);
+  const toggled = [];
+  const real = handle;
+  const desk = real({ hook_event_name: 'UserPromptSubmit', session_id: id, cwd: '/tmp', prompt: 'session-rail-command: desk' }, agent, {
+    toggle: (panel) => { toggled.push(panel); return 'opened'; },
+  });
+  const rail = real({ hook_event_name: 'UserPromptSubmit', session_id: `${id}-rail`, cwd: '/tmp', prompt: '/rail' }, agent, {
+    toggle: (panel) => { toggled.push(panel); return 'not-authorized'; },
+  });
+  assert.deepEqual(toggled, ['desk', 'rail']);
+  assert.equal(desk.decision, 'block');
+  assert.equal(desk.reason, 'Desk opened.');
+  assert.equal(rail.decision, 'block');
+  assert.equal(rail.reason, panelMessage('not-authorized', 'rail'));
+  assert.match(rail.reason, /Automation/);
 });
 
 test('a grok session draws GrokNight and a claude session keeps its palette', () => {
@@ -326,6 +352,30 @@ function initRepo(branch) {
   execFileSync('git', [...git, 'commit', '-q', '-m', 'init']);
   return cwd;
 }
+
+test('approved on a complete brief writes the approval file', () => {
+  const prev = process.env.SESSION_RAIL_HEADLESS;
+  delete process.env.SESSION_RAIL_HEADLESS;
+  const cwd = initRepo('feature/x');
+  const id = `chat-ok-${process.pid}`;
+  try {
+    const common = execFileSync('git', ['-C', cwd, 'rev-parse', '--path-format=absolute', '--git-common-dir'], { encoding: 'utf8' }).trim();
+    const path = briefFile(common, 'feature/x', 'md');
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, BRIEF);
+    const reply = handle({ hook_event_name: 'UserPromptSubmit', session_id: id, cwd, prompt: 'approved!' }, agent);
+    assert.equal(reply.decision, 'block');
+    assert.match(reply.reason, /Brief approved/);
+    const saved = JSON.parse(readFileSync(briefFile(common, 'feature/x', 'approved.json'), 'utf8'));
+    assert.equal(typeof saved.approvedAt, 'number');
+    const again = handle({ hook_event_name: 'UserPromptSubmit', session_id: `${id}-2`, cwd, prompt: 'approved' }, agent);
+    assert.match(again.reason, /already approved/);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+    if (prev === undefined) delete process.env.SESSION_RAIL_HEADLESS;
+    else process.env.SESSION_RAIL_HEADLESS = prev;
+  }
+});
 
 function approveRepo(cwd, branch) {
   const common = execFileSync('git', ['-C', cwd, 'rev-parse', '--path-format=absolute', '--git-common-dir'], { encoding: 'utf8' }).trim();

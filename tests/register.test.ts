@@ -73,6 +73,13 @@ test('outside iTerm2 the message names the panel', async ($, on) => {
   expect(result.text).toBe('The desk only opens when Claude runs in iTerm2.')
 })
 
+test('a blocked Apple Event names Automation, not iTerm', async ($, on) => {
+  harness(on, 'not-authorized')
+  const result = await $.command.run({ command: 'rail', args: '' })
+  expect(result.text).toContain('Privacy & Security')
+  expect(result.text).not.toContain('only opens when')
+})
+
 test('session end closes both panels and drops its activity files, but /clear keeps them', async ($, on) => {
   const calls = harness(on, 'closed')
   await $.session.end({ reason: 'clear', sessionId: 'a' })

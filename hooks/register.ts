@@ -45,7 +45,7 @@ const runStart = async ($: EngineInterface) => {
 
 // ── The session brief (bin/brief.mjs) ─────────────────────────────────────────
 // On a feature branch, Claude writes the branch's brief before editing code, and the person approves it
-// in the desk (Approve, or A) or with /approve-brief. Until then Edit, Write, NotebookEdit, and a shell
+// in the desk (Approve, or A), with /approve-brief, or with a message that is exactly approved. Until then Edit, Write, NotebookEdit, and a shell
 // command that writes a file (bin/shellwrite.mjs) are refused, except on the brief itself. Once approved,
 // edits stay allowed even if the brief changes later: the desk shows "changed since approval" and a review
 // of the change. On main, master, or a detached HEAD there is no brief: the prompt says to branch first,
@@ -120,7 +120,7 @@ Work the brief out with the person before editing any code. Don't wait to be ask
 
 ${BRIEF_SHAPE}
 
-Keep the solution and the outline the simplest way to reach the goal. Edit, Write and NotebookEdit calls, and a shell command that writes a file in the checkout, are refused on any other file until the brief has a problem, a solution and at least one chunk, and the person has approved it. A read-only command such as git log still runs. When it's complete, call the review_approach tool on it (a plan review: the cheapest time to change course), work its findings into the brief, then ask them to review it and press Approve in the desk's Plan tab. Never approve it yourself or write its approval file.
+Keep the solution and the outline the simplest way to reach the goal. Edit, Write and NotebookEdit calls, and a shell command that writes a file in the checkout, are refused on any other file until the brief has a problem, a solution and at least one chunk, and the person has approved it. A read-only command such as git log still runs. When it's complete, call the review_approach tool on it (a plan review: the cheapest time to change course), work its findings into the brief, then ask them to review it and press Approve in the desk's Plan tab, or to send a message that is exactly approved. Never approve it yourself or write its approval file.
 
 While you work, keep the brief current: if the problem, the solution or the outline changes, update the brief right away.
 
@@ -144,7 +144,7 @@ const gateReason = (b: Brief) => {
   if (b.text === null) return `session-rail: code edits wait for the session brief. Write it first, in the shape the system prompt gives. ${where}`
   const brief = parseBrief(b.text)
   if (brief.missing.length) return `session-rail: code edits wait for the session brief, which is missing: ${brief.missing.join(', ')}. ${where}`
-  return `session-rail: the session brief is complete but not approved yet. Ask the person to review it in the desk's Plan tab and press Approve there, then carry on. ${where}`
+  return `session-rail: the session brief is complete but not approved yet. Ask the person to review it in the desk's Plan tab and press Approve there, or to send a message that is exactly approved. ${where}`
 }
 
 // Why an edit of `file` is refused, or null to let it through. The brief itself (anything under
@@ -160,7 +160,7 @@ const gate = async ($: EngineInterface, tool: string, file: string) => {
     return reason
   }
   const reason =
-    file === b.approvedPath ? 'session-rail: only the person approves the brief, in the desk or with /approve-brief.'
+    file === b.approvedPath ? 'session-rail: only the person approves the brief, in the desk, with /approve-brief, or with a message that is exactly approved.'
     : file.startsWith(b.dir) || b.approval?.approvedAt ? null
     : gateReason(b)
   if (reason) record($, a => act.refused(a, tool, file, Date.now()))
@@ -310,7 +310,7 @@ const approveCommand = async ($: EngineInterface) => {
 }
 
 // ── The go-ahead (goahead.ts) ─────────────────────────────────────────────────
-// Approving the brief (the desk's button or A, or /approve-brief) only writes the approval file, so the hooks
+// Approving the brief (the desk's button or A, /approve-brief, or a message that is exactly approved) only writes the approval file, so the hooks
 // look for a new approval every 2 seconds and tell Claude to start (or, after a change, to carry on). One
 // sender for every way to approve; $.prompt.submit waits until Claude is idle and never types over the person.
 const APPROVAL_SEEN = { plugin: 'session-rail', key: 'approvalSeen' } as const
@@ -448,6 +448,7 @@ const message = (state: string, panel: Panel) => {
     closed: `${name} closed.`,
     'already-closed': `${name} is already closed.`,
     'not-iterm': `The ${name.toLowerCase()} only opens when Claude runs in iTerm2.`,
+    'not-authorized': 'macOS is blocking control of iTerm2. Allow it under System Settings → Privacy & Security → Automation, then try again.',
     'no-claude': "Couldn't find this Claude session's terminal.",
   }
   return messages[state] ?? `Couldn't open or close the ${name.toLowerCase()} (is node on your PATH?).`
