@@ -27,16 +27,16 @@ The picture is a mock. The session text and the numbers are made up.
 │                                   │ ▌ Now  Wren · find the callers   │
 │  > fix the login redirect         │ ▸ ● Claude                       │
 │                                   │   the redirect drops the query   │
-│  ● Reading src/auth/login.ts      │   └▸ ◆ Wren                  38s │
+│  ● Reading src/auth/login.ts      │   └ Wren                     38s │
 │  ● Editing src/auth/redirect.ts   │ ▾ you  fix the login redirect    │
-│                                   │ │  ├▸ ◆ Wren  find the callers   │
-│                                   │ │  └  Claude  the redirect drops │
+│                                   │ │   why  the redirect drops it   │
+│                                   │ │ ├ Wren  find the callers       │
 │                                   │ ──────────────────────────────── │
 │                                   │ Environment ▾                    │
 │                                   │ Context ▾          33% ▰▰▰▱▱▱▱▱  │
 │                                   │   Model    Opus 4.6              │
 │                                   │   Tokens   66k / 200k            │
-│                                   │   Cost     $0.55 session         │
+│                                   │   Cost     $0.55                 │
 │                                   │   Cache    plan · 1h · warm 42m  │
 │                                   │ ──────────────────────────────── │
 │                                   │ Connectors ▸         4 connected │
@@ -55,16 +55,17 @@ The rail has two tabs: **Session**, how this session is thinking, and **Git**, w
  ────────────────────────────────────────
  ▸ ● Grok
    the tab now opens each handoff
-   ├▾ ◆ Wren    how the session tab is drawn
+   ├ Wren    how the session tab is drawn
    │    asked   how the session tab is drawn
    │    prompt  Read the session tab and say what a person can learn
    │    said    It lists tool calls. The ask itself is missing.
-   └▸ ◆ Otto    run the tests                 running
- ▸ ◆ Rue     read the pet stages            2h
+   └ Otto    run the tests                 running
+ ▸ Rue     read the pet stages            2h
+ ◇ bun test                               12s
  ▾ you   bring that attitude to the session tab
- │    why     I'll look at the session tab first
- │  ├▸ ◆ Wren  how the session tab is drawn
- │  └  the tab now opens each handoff
+ │   why  I'll look at the session tab first
+ │ ├ Wren  how the session tab is drawn
+ │ └ Otto  run the tests
  ▸ you   the pet should follow the session
 ```
 
@@ -72,20 +73,20 @@ The rail has two tabs: **Session**, how this session is thinking, and **Git**, w
 
 The banner is the only status. `Now` names who is working and the ask they were given. Two people read `Wren and Otto`. `Held` means the brief just stopped an edit. `waiting for you` means the turn has ended. A tool with no handoff names the file, as in `reading rail.mjs`. That sentence is not repeated on the row below.
 
-Under it is this second. Grok or Claude is the root, with no second status beside the name. The latest reply sits under the name, without the name again, and Enter opens the whole text. Each subagent hangs under the one that asked it. When one agent is working, the banner already has the ask, so the row is the name and what it is doing. With several, each row keeps its ask. A shell still running is a `◇` under the root, and Enter opens its output. The desk's review is a row while it runs.
+Under it is this second. Grok or Claude is the root, with no second status beside the name. The latest reply sits under the name, without the name again, and Enter opens the whole text. Each subagent hangs under the one that asked it. Names are purple. The lamp is how long the agent has been going, or `running` while a shell is in flight. When one agent is working, the banner already has the ask, so the row is the name and the lamp. With several, each row keeps its ask. A background agent sits level with Grok or Claude, and is left out of the banner while someone in the foreground is named. A shell still running is a `◇` on its own row, and Enter opens its output. The desk's review is a row while it runs.
 
 Open an agent. `asked` is the one line it was given. `prompt` is the handoff itself, the words that were actually sent. `said` is what came back. `doing` is the call in flight. Enter on `prompt` or `said` opens the whole text. The calls sit under that. Nothing here is inferred.
 
 A subagent that has finished stays on its own row under the live ones: the name, the task it was given, and how long ago it finished. Newest first. Enter opens the prompt and what it answered. The list is every subagent this session spun up.
 
-Under that, each thing you typed is a chapter, newest first. Open it for what the agent said it was going to do (`why`) and what it answered. The reply already under Now is not printed again. `⟲ compacted after <branch>` stays for an hour after the session compacts itself.
+Under that, each thing you typed is a chapter, newest first. Open it for what the agent said it was going to do (`why`), the agents that turn handed work to, and what it answered. The reply already under Now is not printed again. `⟲ compacted after <branch>` stays for an hour after the session compacts itself.
 
 The words come from the session itself. The hook keeps the prompt, the reply and your turns in the activity file as they happen. The rail also reads the transcript: Grok's `chat_history.jsonl` and `subagents/<id>/meta.json`, and Claude's session log. A subagent's prompt is the `prompt` it was spawned with. Its reply is what it returned.
 
 - **Sessions:** every session on your Mac, this one first (▸), then the ones that need you. Each shows its brief's title (or its branch), whether it's busy, waiting for you, blocked (the brief gate just held an edit) or idle, and underneath, its repo, branch and what it's doing right now. Every rail shows the same list.
-- **Environment:** your computer, account, repo, and branch, with the lines added and removed since the branch forked from the default branch (committed plus uncommitted; untracked files are not counted)
+- **Environment:** your computer, account, repo, and branch, labeled host, repo, and git, with the lines added and removed since the branch forked from the default branch (committed plus uncommitted; untracked files are not counted). The account and Remote Control stay on dim rows under those three.
 - **Context:** how full the context window is. It starts open, with the model, the token count, the session cost, the prompt cache, and the usage windows.
-- **Cost:** this session's spend, in US dollars, when the host reports a figure. Claude's number is its session ledger (the same dollars as `/usage` and the status line). It starts over when `/clear` starts a new session, and it is not the 5-hour or 7-day plan window — those stay percentages on the rows under it. A later reading adds the rise since the one before, as `turn`. Grok's number is the session total in that session's usage file (`costUsdTicks`, 10¹⁰ per dollar), with this turn beside it when that turn recorded a cost. A host with no figure shows `—`. The rail does not price tokens.
+- **Cost:** this session's spend, in US dollars, when the host reports a figure. Claude's number is its session ledger (the same dollars as `/usage` and the status line). It starts over when `/clear` starts a new session, and it is not the 5-hour or 7-day plan window — those stay percentages on the rows under it. The row prints the dollars without the word session, as in `$1.87 · API 24m`. A later reading adds the rise since the one before, as `turn`. Grok's number is the session total in that session's usage file (`costUsdTicks`, 10¹⁰ per dollar), with this turn beside it when that turn recorded a cost. A host with no figure shows `—`. The rail does not price tokens.
 - **Cache:** whether this session is on a plan or an API key, its prompt cache's lifetime (1 hour on a plan, 5 minutes on an API key), and the time left before it goes cold, for example `plan · 1h · warm 42m left` or `API · 5m · cold 12m`. A turn after the cache has gone cold sends the whole history again, about 10x a warm one on a 100k-token session. Each main-loop request renews it. It shows `—` before the first request and under Grok.
 - **Connectors:** your MCP servers and whether they're connected
 
@@ -334,7 +335,7 @@ If macOS asks whether to allow controlling iTerm2, allow it. That's how the pane
 - `/rail` hides or shows the rail, and `/desk` the desk.
 - They close when you quit Claude.
 - Keys: `↑` `↓` to move, `Enter` to open, `Esc` to go back, `c` to change creature, `q` to close the rail.
-- **⚙ settings**, in the rail's bottom-right corner, opens the rows under the creature: `←` `→` on **Font size** makes the Claude pane, the desk and the rail bigger or smaller together (`Enter` for Reset), `←` `→` on **Pet** picks the creature, `←` `→` on **Auto-compact** turns auto-compaction after a merged branch off or on, `←` `→` on **Wide review** turns the optional wide-diff review off or on (off unless you turn it on), and and `←` `→` on **Before cache cold** does the same for the warm compact (not shown under Grok). `←` `→` on **Chores** turns the CI chore on or off. It ships off. The font size is remembered and comes back with the next session. It works by switching the panes to iTerm profiles it generates (`session-rail 15pt` and so on), which show up in iTerm's Profiles menu.
+- **settings**, in the rail's bottom-right corner, opens the rows under the creature: `←` `→` on **Font size** makes the Claude pane, the desk and the rail bigger or smaller together (`Enter` for Reset), `←` `→` on **Pet** picks the creature, `←` `→` on **Auto-compact** turns auto-compaction after a merged branch off or on, `←` `→` on **Wide review** turns the optional wide-diff review off or on (off unless you turn it on), and and `←` `→` on **Before cache cold** does the same for the warm compact (not shown under Grok). `←` `→` on **Chores** turns the CI chore on or off. It ships off. The font size is remembered and comes back with the next session. It works by switching the panes to iTerm profiles it generates (`session-rail 15pt` and so on), which show up in iTerm's Profiles menu.
 - A little pixel creature wanders along the bottom: a snail, a turtle (with a bright green shell, warm amber when heavy) or a crab. It walks through its own habitat (woodland for the snail, a pond for the turtle, a beach for the crab) on speckled ground (soil, mud or sand), with plants swaying gently behind it in iTerm2. Sand puffs under the crab, and the reeds bend when the turtle hops. It hurries while the agent is busy, looks left and fidgets while it is waiting for you, and falls asleep only after a real lull. Your pick is remembered.
 - The strip is the branch's road, left to right: the creature paces around a spot that moves right as the brief's chunks get Done, from the left edge before approval to the right edge when all of them are, and walks briskly to its new spot after each one. Each Done chunk leaves a marker behind it (a mushroom, a lily pad or a shell) and the creature hops with a gold sparkle. With no brief, that spot is how full the context window is. Until the window's size is known, it wanders the whole strip.
 - Each running subagent brings a visitor, a bee, butterfly, dragonfly or ladybird in turn, tinted with that subagent's colour (up to 4, and a `+n` when more are running). They flutter around the creature, settle when things are quiet, scatter when a tool fails, and fly off when their subagent finishes.

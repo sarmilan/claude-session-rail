@@ -55,13 +55,15 @@ export function formatUsd(n) {
 }
 
 /**
- * The Cost row. `—` when the host gave no figure. `session` is the host's own window
- * (Claude's ledger until /clear, Grok's session total), so it is not read as a plan-quota percent.
+ * The Cost row. `—` when the host gave no figure.
+ * The number is the host's own window (Claude's ledger until /clear, Grok's session total),
+ * not a 5-hour or 7-day plan percent — those stay on the rows under it. The word "session"
+ * is not printed, so the row matches the rail mock (`$1.87 · API 24m`).
  */
 export function costText(stats) {
   const usd = stats?.costUsd;
   if (typeof usd !== 'number' || !Number.isFinite(usd) || usd < 0) return '—';
-  let text = `${formatUsd(usd)} session`;
+  let text = formatUsd(usd);
   const turn = stats.turnUsd;
   if (typeof turn === 'number' && Number.isFinite(turn) && turn > 0) text += ` · turn ${formatUsd(turn)}`;
   const api = stats.apiMs;

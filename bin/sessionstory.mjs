@@ -219,7 +219,8 @@ export function chaptersFrom(events, agents) {
     if (h.what) usedWhat.add(h.what);
   }
   const left = pool.filter((a) => !a.used && a.id && !usedId.has(a.id) && !(a.what && usedWhat.has(a.what)));
-  const live = left.filter((a) => !a.endedAt);
+  // A background agent that no turn asked for stays in the Now tree, not under the newest you.
+  const live = left.filter((a) => !a.endedAt && !a.background);
   const old = left.filter((a) => a.endedAt);
   const asHandoff = (a) => ({ id: a.id, name: a.name || '', what: a.what || '', prompt: a.prompt || '', reply: a.reply || '', colour: a.colour ?? null });
   if (live.length) {
@@ -302,11 +303,51 @@ function agentCall(agent, running) {
 function agentDoing(agent, running) {
   return doingText(agentCall(agent, running));
 }
-// The collapsed row's lamp is the verb. The file it is touching shows once the row is open.
-function agentLamp(agent, running) {
+// The collapsed lamp is how long the agent has been going. A shell in flight reads `running`
+// (the rail paints that yellow). Reading and searching stay on the open row, as `doing`.
+function lampFor(agent, running, now) {
   const call = agentCall(agent, running);
-  if (!call) return '';
-  return VERB[call.tool] || call.tool;
+  if (call && VERB[call.tool] === 'running') return part('running', 'yellow');
+  const time = ago(agent.since, now);
+  return time ? part(time, 'dim') : null;
+}
+
+// Names for the banner. A background agent is left out while someone in the foreground is
+// working, so Rue does not turn "Wren and Otto" into a three-name list. A cast that is only
+// background still names those agents.
+function namedLive(nodes, skipBackground) {
+  const out = [];
+  const walk = (n) => {
+    if (skipBackground && n.background) {
+      for (const c of n.children || []) walk(c);
+      return;
+    }
+    out.push(n);
+    for (const c of n.children || []) walk(c);
+  };
+  for (const n of nodes || []) walk(n);
+  return out;
+}
+function bannerCast(cast) {
+  const fg = namedLive(cast, true);
+  return fg.length ? fg : namedLive(cast, false);
+}
+
+// Background agents leave the tree under the host and sit level with it. Their foreground
+// children stay nested under them.
+function splitCast(nodes) {
+  const fg = [];
+  const bg = [];
+  for (const n of nodes || []) {
+    const below = splitCast(n.children || []);
+    const copy = { ...n, children: below.fg };
+    if (n.background) bg.push(copy, ...below.bg);
+    else {
+      fg.push(copy);
+      bg.push(...below.bg);
+    }
+  }
+  return { fg, bg };
 }
 
 /**
@@ -321,15 +362,15 @@ export function buildStory({
   const cast = link(everyone.filter((a) => !a.endedAt));
   const chapters = chaptersFrom(mergeEvents(events, turns), everyone);
   let banner;
+  const named = bannerCast(cast);
   if (gate && now - gate.at < GATE_HOLD) {
     const file = show(gate.file || '').split('/').pop();
     banner = { kind: 'held', tone: 'yellow', text: show(`brief stopped ${gate.tool || 'an edit'}${file ? ` ${file}` : ''}`) };
-  } else if (cast.length === 1 && !cast[0].children.length) {
-    banner = { kind: 'now', tone: 'accent', text: show(`${cast[0].name || 'agent'}${cast[0].what ? ` · ${cast[0].what}` : ''}`) };
-  } else if (cast.length > 1 || cast[0]?.children?.length) {
-    const names = [];
-    const walk = (n) => { names.push(n.name || 'agent'); n.children.forEach(walk); };
-    cast.forEach(walk);
+  } else if (named.length === 1) {
+    const a = named[0];
+    banner = { kind: 'now', tone: 'accent', text: show(`${a.name || 'agent'}${a.what ? ` · ${a.what}` : ''}`) };
+  } else if (named.length > 1) {
+    const names = named.map((n) => n.name || 'agent');
     const shown = names.slice(0, 3);
     const more = names.length - shown.length;
     let text = shown.length === 2 ? `${shown[0]} and ${shown[1]}` : shown.join(', ');
@@ -419,61 +460,80 @@ export function layoutStory(story, { inner = 40, open = {} } = {}) {
       });
     }
   }
+  const { fg, bg } = splitCast(story.cast);
+  // One named agent: the banner already has the ask, so that row is the name and the lamp.
+  const named = bannerCast(story.cast);
+  const sole = named.length === 1 ? named[0].id : null;
+  const emitDetails = (node, lead, name, key) => {
+    if (node.what) push(rows, inner, { left: [...lead, ...field('asked', node.what)] });
+    const prompt = node.prompt || '';
+    if (prompt && oneLine(prompt) !== oneLine(node.what)) {
+      push(rows, inner, {
+        id: `read:${node.id}:prompt`, key, activate: 'read', title: `${name} · prompt`, body: prompt,
+        left: [...lead, ...field('prompt', preview(prompt))],
+      });
+    }
+    const live = agentDoing(node, story.running);
+    if (live) push(rows, inner, { left: [...lead, ...field('doing', live)] });
+    if (node.reply) {
+      push(rows, inner, {
+        id: `read:${node.id}:said`, key, activate: 'read', title: `${name} · said`, body: node.reply,
+        left: [...lead, ...field('said', preview(node.reply))],
+      });
+    }
+    const done = (story.recent || []).filter((r) => r?.agent === node.id).slice(0, 4);
+    for (const r of done) {
+      push(rows, inner, {
+        left: [...lead, part(r.ok === false ? '✗ ' : '✔ ', r.ok === false ? 'red' : 'green'), part(show(`${r.tool} ${shortArg(r.arg)}`), 'dim')],
+      });
+    }
+  };
+  // Foreground agents are a ├/└ tree under the host: a purple name, no extra caret, no ◆.
   const emit = (list, prefix) => {
     list.forEach((node, i) => {
       const last = i === list.length - 1;
       const key = `who:${node.id}`;
       const isOpen = Boolean(open[key]);
-      const limb = [part(last ? '└' : '├', 'dim'), part(isOpen ? '▾' : '▸', 'dim'), part(' ◆ ', 'plain', node.colour)];
       const name = node.name || 'agent';
-      // One live agent: the banner already says the ask, so the row is the name and the lamp.
-      const sole = story.cast.length === 1 && !story.cast[0].children?.length && node === story.cast[0];
-      const what = node.what && !sole ? node.what : '';
-      const rightText = agentLamp(node, story.running) || ago(node.since, now);
+      const what = node.what && node.id !== sole ? node.what : '';
+      const lamp = lampFor(node, story.running, now);
       push(rows, inner, {
         id: key, key, activate: 'toggle',
-        left: [...prefix, ...limb, part(name, 'bold', node.colour), part(what ? `  ${what}` : '', 'plain')],
-        right: rightText ? [part(rightText, 'dim')] : [],
+        left: [...prefix, part(last ? '└ ' : '├ ', 'dim'), part(name, 'purple'), part(what ? `  ${what}` : '', 'plain')],
+        right: lamp ? [lamp] : [],
       });
       const nest = [...prefix, part(last ? '  ' : '│ ', 'dim')];
-      if (isOpen) {
-        const lead = [...nest, part('   ', 'plain')];
-        if (node.what) push(rows, inner, { left: [...lead, ...field('asked', node.what)] });
-        const prompt = node.prompt || '';
-        if (prompt && oneLine(prompt) !== oneLine(node.what)) {
-          push(rows, inner, {
-            id: `read:${node.id}:prompt`, key, activate: 'read', title: `${name} · prompt`, body: prompt,
-            left: [...lead, ...field('prompt', preview(prompt))],
-          });
-        }
-        const live = agentDoing(node, story.running);
-        if (live) push(rows, inner, { left: [...lead, ...field('doing', live)] });
-        if (node.reply) {
-          push(rows, inner, {
-            id: `read:${node.id}:said`, key, activate: 'read', title: `${name} · said`, body: node.reply,
-            left: [...lead, ...field('said', preview(node.reply))],
-          });
-        }
-        const done = (story.recent || []).filter((r) => r?.agent === node.id).slice(0, 4);
-        for (const r of done) {
-          push(rows, inner, {
-            left: [...lead, part(r.ok === false ? '✗ ' : '✔ ', r.ok === false ? 'red' : 'green'), part(show(`${r.tool} ${shortArg(r.arg)}`), 'dim')],
-          });
-        }
-      }
+      if (isOpen) emitDetails(node, nest, name, key);
       emit(node.children, nest);
     });
   };
-  emit(story.cast, [part('  ', 'plain')]);
-  for (const t of story.tasks || []) {
-    if (!t?.id || t.kind === 'agent') continue;
-    if (story.cast.some((n) => n.id === t.id)) continue;
+  emit(fg, [part('  ', 'plain')]);
+  // Background agents sit on the host's row, as siblings, with the same caret the host uses.
+  for (const node of bg) {
+    const key = `who:${node.id}`;
+    const isOpen = Boolean(open[key]);
+    const name = node.name || 'agent';
+    const what = node.what && node.id !== sole ? node.what : '';
+    const lamp = lampFor(node, story.running, now);
+    push(rows, inner, {
+      id: key, key, activate: 'toggle',
+      left: [part(isOpen ? '▾ ' : '▸ ', 'dim'), part(name, 'purple'), part(what ? `  ${what}` : '', 'plain')],
+      right: lamp ? [lamp] : [],
+    });
+    if (isOpen) emitDetails(node, [part('│ ', 'dim')], name, key);
+    if (node.children?.length) emit(node.children, [part('  ', 'plain')]);
+  }
+  const tasks = (story.tasks || []).filter((t) => t?.id && t.kind !== 'agent' && !story.cast.some((n) => n.id === t.id));
+  // A shell is one ◇ on the caret column. It is not a second └ under the last agent.
+  // When another shell follows, the gutter stays open with │.
+  tasks.forEach((t, i) => {
+    const last = i === tasks.length - 1;
     push(rows, inner, {
       id: `task:${t.id}`, key: `task:${t.id}`, activate: 'log', taskId: t.id,
-      left: [part('  └▸ ◇ ', 'dim'), part(show(t.label || t.kind), 'plain')],
+      left: [part(last ? '◇ ' : '│ ◇ ', 'dim'), part(show(t.label || t.kind), 'plain')],
       right: [part(ago(t.startedAt, now), 'dim')],
     });
-  }
+  });
   if (story.desk) {
     push(rows, inner, {
       left: [part('  ◆ ', 'accent'), part('Desk', 'bold'), part(`  ${show(story.desk.kind || 'running')}`, 'plain')],
@@ -507,15 +567,26 @@ export function layoutStory(story, { inner = 40, open = {} } = {}) {
         right: [part(ago(chapter.at, now), 'dim')],
       });
       if (!isOpen) continue;
-      const lead = [part('│    ', 'dim')];
-      if (chapter.why && chapter.why !== chapter.reply) push(rows, inner, { left: [...lead, ...field('why', chapter.why)] });
+      // The gutter is a │ on the caret column. `why` keeps two spaces, not a 7-column field.
+      if (chapter.why && chapter.why !== chapter.reply) {
+        push(rows, inner, { left: [part('│   ', 'dim'), part('why  ', 'dim'), part(show(chapter.why), 'plain')] });
+      }
       // The newest reply is already under Now. A chapter prints a reply only when it is a different one.
       if (chapter.reply && oneLine(chapter.reply) !== oneLine(story.said)) {
         push(rows, inner, {
           id: `read:${chapter.key}:reply`, key: chapter.key, activate: 'read', title: `${story.host} · said`, body: chapter.reply,
-          left: [...lead, part(preview(chapter.reply), 'plain')],
+          left: [part('│   ', 'dim'), part(preview(chapter.reply), 'plain')],
         });
       }
+      const hands = (chapter.handoffs || []).filter((h) => h?.name || h?.what);
+      hands.forEach((h, i) => {
+        const name = h.name || '';
+        const what = h.what || '';
+        const left = [part('│ ', 'dim'), part(i === hands.length - 1 ? '└ ' : '├ ', 'dim')];
+        if (name) left.push(part(name, 'purple'), part(what ? `  ${what}` : '', 'plain'));
+        else left.push(part(what, 'plain'));
+        push(rows, inner, { left });
+      });
     }
   }
   return { banner: fit(bannerParts(story), inner), rows };
