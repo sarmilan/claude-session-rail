@@ -1,6 +1,7 @@
 // Runs the optional wide review and saves one run in the branch's review record (reviewer.mjs).
-// File reviewers each get a throwaway worktree so the fan-out is not a second checkout of the
-// person's tree. A skeptic then declines findings. Nothing here runs unless the setting is on.
+// File reviewers and the skeptic each get a throwaway worktree, so the fan-out is not a second
+// checkout of the person's tree. Both hosts are read-only and fail closed: a call that would
+// prompt is denied. A skeptic then declines findings. Nothing here runs unless the setting is on.
 // Every export resolves (never throws); a failed review comes back as { error }.
 import { readFile, rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
@@ -78,11 +79,27 @@ function ask(command, argv, { cwd, signal, timeoutMs, env, detached }) {
   });
 }
 
+// Credential reads the permissions starter denies, plus the tools a file review must not run.
+// deny wins over an allow rule in the user's settings. Read and Grep stay allowed.
+const GROK_DENY = [
+  'Bash', 'Edit', 'Write', 'WebFetch', 'WebSearch', 'mcp__*',
+  'Read(~/.ssh/**)', 'Read(~/.aws/**)', 'Read(**/.env)', 'Read(**/*.pem)',
+];
+
 function argvFor(host, prompt, schema, model) {
   const grok = host === 'grok';
+  // Same fail-closed mode on both hosts. Claude's dontAsk is already how the approach review
+  // runs. Grok's dontAsk is that mode: built-in reads still run, and a call that would prompt
+  // is denied. The tool list is read_file and grep only. Shell, edits, web, and MCP are denied
+  // as well, because dontAsk still runs built-in read-only shell and web search unless a deny
+  // matches, and an allowlist cannot drop MCP meta-tools. This run does not auto-approve.
   const argv = grok
-    ? ['-p', prompt, '--output-format', 'json', '--json-schema', schema, '--always-approve', '--max-turns', '4',
-      '--tools', 'read_file,grep', '--disallowed-tools', 'write,search_replace,run_terminal_command,web_search,web_fetch']
+    ? ['-p', prompt, '--output-format', 'json', '--json-schema', schema, '--max-turns', '4',
+      '--permission-mode', 'dontAsk', '--no-plan', '--no-subagents', '--disable-web-search',
+      '--tools', 'read_file,grep',
+      '--disallowed-tools', 'write,search_replace,run_terminal_command,web_search,web_fetch',
+      '--allow', 'Read', '--allow', 'Grep',
+      ...GROK_DENY.flatMap((rule) => ['--deny', rule])]
     : ['-p', prompt, '--output-format', 'json', '--json-schema', schema, '--max-turns', '4',
       '--no-session-persistence', '--strict-mcp-config', '--permission-mode', 'dontAsk',
       '--tools', 'Read,Grep', '--allowedTools', 'Read', 'Grep'];
@@ -217,11 +234,24 @@ export async function wideReviewAndSave(cwd, {
     people.push(skeptic);
     publish();
     const prompt = skepticPrompt({ findings: candidates, goal });
+    let skepticCwd = cwd;
+    if (!runSkeptic) {
+      if (signal?.aborted) return { error: 'Review cancelled' };
+      const dir = await addWorktree(cwd);
+      if (!dir) {
+        skeptic.endedAt = Date.now();
+        skeptic.reply = 'no worktree';
+        publish();
+        return await finishError('Couldn\'t add a worktree for the skeptic');
+      }
+      dirs.push(dir);
+      skepticCwd = dir;
+    }
     let verdict;
     try {
       verdict = runSkeptic
         ? await runSkeptic({ cwd, candidates, prompt, signal, host })
-        : await askModel(host, prompt, SKEPTIC_SCHEMA, { cwd, signal, model, command, env });
+        : await askModel(host, prompt, SKEPTIC_SCHEMA, { cwd: skepticCwd, signal, model, command, env });
     } catch (e) {
       verdict = { error: e?.name === 'AbortError' ? 'Review cancelled' : String(e?.message || e) };
     }

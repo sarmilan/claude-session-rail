@@ -267,13 +267,21 @@ test('a wide diff produces one report the skeptic did not kill, and a small diff
     assert.doesNotMatch(desk(bare, homeOn), /Wide review/);
 
     const names = [];
+    let skepticTrees = 0;
     const saved = await wideReviewAndSave(wide, {
       settings: { wideReview: true },
       command: [process.execPath, join(plugin, 'scripts/wide-fixture-model.mjs')],
       env: { ...process.env, WIDE_FIXTURE_MS: '0' },
-      onProgress: (list) => names.push(...list.map((r) => r.name)),
+      onProgress: (list) => {
+        names.push(...list.map((r) => r.name));
+        if (list.some((r) => r.role === 'skeptic' && r.endedAt)) {
+          skepticTrees = git(wide, ['worktree', 'list', '--porcelain']).split('\n').filter((l) => l.startsWith('worktree ')).length;
+        }
+      },
     });
     assert.equal(saved.error, undefined);
+    // Four file worktrees, the skeptic's worktree, and this checkout. The skeptic does not run here.
+    assert.equal(skepticTrees, 6);
     assert.equal(saved.type, 'wide');
     assert.equal(saved.findings.filter((f) => f.status === 'open').map((f) => f.title).join(''), 'The session token is ignored');
     const dropped = saved.findings.find((f) => f.status === 'declined');

@@ -93,4 +93,13 @@ test('plugin source does not enable dangerously-skip-permissions or bypass mode'
   assert.match(reviewer, /--permission-mode', 'dontAsk'/);
   assert.match(reviewer, /--always-approve/);
   assert.match(reviewer, /--disallowed-tools', 'write,search_replace,run_terminal_command,web_search,web_fetch'/);
+  const wide = read('bin/widereview.mjs');
+  assert.doesNotMatch(wide, /always-approve|\byolo\b|dangerously-skip-permissions|bypassPermissions/);
+  assert.match(wide, /--permission-mode', 'dontAsk'/);
+  assert.match(wide, /--allow', 'Read', '--allow', 'Grep'/);
+  assert.match(wide, /'Bash', 'Edit', 'Write', 'WebFetch', 'WebSearch', 'mcp__\*'/);
+  assert.match(wide, /\.\.\.GROK_DENY\.flatMap\(\(rule\) => \['--deny', rule\]\)/);
+  assert.match(wide, /Read\(~\/\.ssh\/\*\*\)/);
+  assert.match(wide, /--tools', 'read_file,grep'/);
+  assert.match(wide, /--disallowed-tools', 'write,search_replace,run_terminal_command,web_search,web_fetch'/);
 });

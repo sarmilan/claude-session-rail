@@ -133,7 +133,7 @@ Click a row, or use the arrow keys and Enter, to open it. On Session, Enter expa
 
 **+ new**, on the Sessions heading, starts another session without touching this one. Type the problem on the rail's bottom line and press Enter (Esc cancels). The rail adds a git worktree of the repo at the latest `main`, beside the repo in `<repo>.worktrees/<name>`, opens a new iTerm window there, at the same size and place as this one, and runs `claude "/start <your problem>"`, so `/start` files the issue and makes the branch inside that worktree. Each session has its own checkout, so two sessions never edit the same files, and each window gets its own Claude │ desk │ rail. With one tab per window iTerm shows no tab bar: the Sessions list is how you move between them.
 
-When that session is gone and the branch is merged, Sessions and Git both offer to remove the worktree. Enter, then Remove: one confirm runs `git worktree remove`. A dirty worktree is listed in that menu and left where it is. A branch that is not merged is not offered, and the checkout you are in is never removed. After the session compacts itself off a merged branch, the rail offers that worktree too, when it is still there and safe to remove.
+When that session is gone and the branch is merged, Sessions and Git both offer to remove the worktree. Enter, then Remove: one confirm runs `git worktree remove`. A dirty worktree is listed in that menu and left where it is. Unmerged work is not offered, and the checkout you are in is never removed. After the session compacts itself off a merged branch, the rail offers that worktree too, when it is still there and safe to remove.
 
 ## A scheduled chore
 
