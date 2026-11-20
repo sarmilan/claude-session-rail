@@ -73,6 +73,8 @@ Workbench does not change your permission mode and does not pass `--dangerously-
 
 The approach review is a separate headless process. Claude's review uses `--permission-mode dontAsk` with Read, Grep, Glob, and `Bash(git *)` only, so a call that would prompt is denied. Grok's review uses `--always-approve` with the write, shell, and web tools removed (`--disallowed-tools write,search_replace,run_terminal_command,web_search,web_fetch`). Neither process is your iTerm session.
 
+The wide review is separate headless processes too: one per file slice, then one skeptic. Each runs in its own throwaway worktree. Claude and Grok both use `--permission-mode dontAsk` with read tools only (`Read` and `Grep`; Grok's tool ids are `read_file` and `grep`). A call that would prompt is denied. Grok also denies shell, edit, write, web, and MCP, and denies reads of `~/.ssh`, `~/.aws`, `.env`, and `.pem`, the same paths as the starter. The write, shell, and web tools are removed. The wide review does not pass `--always-approve`.
+
 The review gate still refuses the agent's `gh pr merge` until the code review and the final approach review are in. You can merge yourself. The starter's ask rule for `gh pr merge` is a prompt in front of that gate.
 
 ## Check it
