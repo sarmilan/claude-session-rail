@@ -1,6 +1,9 @@
 // The rail's mascots. Each one draws itself facing right on a 34×16 pixel canvas for a pose
-//   { frame: 0 | 1, blink: boolean, sleep: boolean }
+//   { frame: 0 | 1, blink: boolean, sleep: boolean, fidget, lookUp, snap }
 // Frames 0 and 1 alternate as it moves; `advance[i]` says whether entering frame i moves it a column.
+// `lookUp` raises the snail's eye stalks toward a pushy ?. `snap` opens the crab's claws a step wider.
+// Building mood (a brow, a stomp, context-bulk) is an overlay on these drawings (`applyBuilding`), so a
+// stage never has to change just to scowl.
 // Palette letters map to xterm-256 colours ('.' is transparent). `zAt` is where sleeping z's float.
 // `sideways` creatures (the crab) never turn round, they just walk the other way. `speed` is ticks per
 // frame (a tick is ~200ms); busy creatures go at one frame a tick. `habitat` names the foliage it walks
@@ -50,20 +53,22 @@ const snail = {
   palette: { S: 71, D: 28, W: 157, B: 114, E: 231, P: 233 },
   advance: [true, false], // stretch forward, then the shell catches up
   zAt: [[20, 8], [26, 2]],
-  draw({ frame, blink, sleep, fidget }) {
+  draw({ frame, blink, sleep, fidget, lookUp }) {
     const { set, span, rows } = canvas();
     const s = !sleep && (fidget || frame) ? 2 : 0; // a fidget holds the long stretch
-    if (sleep) { span(12, 2, 16, 'B'); span(13, 1, 17, 'B'); span(14, 1, 17, 'B'); span(15, 2, 16, 'B'); }
+      const up = lookUp && !sleep; // stalks rise toward the ?; at rest they sit a couple of pixels lower
+      if (sleep) { span(12, 2, 16, 'B'); span(13, 1, 17, 'B'); span(14, 1, 17, 'B'); span(15, 2, 16, 'B'); }
     else {
       span(12, 2, 30 + s, 'B'); span(13, 1, 30 + s, 'B'); span(14, 0, 29 + s, 'B'); span(15, 1, 29 + s, 'B');
       span(6, 26 + s, 29 + s, 'B'); span(7, 25 + s, 30 + s, 'B');
       span(8, 24 + s, 31 + s, 'B'); span(9, 24 + s, 31 + s, 'B'); span(10, 23 + s, 31 + s, 'B'); span(11, 23 + s, 30 + s, 'B');
       set(4, 25 + s, 'B'); set(4, 30 + s, 'B'); span(5, 25 + s, 26 + s, 'B'); span(5, 29 + s, 30 + s, 'B');
+      const eyeTop = up ? 0 : 2;
       for (const ex of [24 + s, 30 + s]) for (let y = 0; y < 4; y++) {
         const c = !blink ? 'E' : y === 3 ? 'B' : '.';
-        set(y, ex, c); set(y, ex + 1, c);
+        set(eyeTop + y, ex, c); set(eyeTop + y, ex + 1, c);
       }
-      if (!blink) { set(1, 25 + s, 'P'); set(1, 31 + s, 'P'); }
+      if (!blink) { const py = eyeTop + (up ? 0 : 1); set(py, 25 + s, 'P'); set(py, 31 + s, 'P'); }
       set(10, 29 + s, 'P');
     }
     SHELL.forEach(([a, b], y) => span(y, a, b, 'S'));
@@ -87,15 +92,16 @@ const snailHatchling = {
   palette: { S: 114, D: 71, W: 194, B: 157, K: 71, E: 231, P: 233 },
   advance: [true, false],
   zAt: [[19, 4], [24, 0]],
-  draw({ frame, blink, sleep, fidget }) {
+  draw({ frame, blink, sleep, fidget, lookUp }) {
     const c = canvas(), { set, span, vline, ell, eye, rows } = c;
     const s = !sleep && fidget ? 2 : frame && !sleep ? 1 : 0;
+    const up = lookUp && !sleep ? 2 : 0; // stalks lift toward the ?
     if (sleep) { span(14, 10, 18, 'B'); span(15, 9, 19, 'B'); }
     else {
       span(14, 10, 24 + s, 'B'); span(15, 9, 24 + s, 'B');
       ell(23 + s, 11.6, 2.6, 2.3, 'B');
-      vline(22 + s, 8, 9, 'B'); vline(25 + s, 8, 9, 'B');
-      eye(21 + s, 6, blink, 'B'); eye(24 + s, 6, blink, 'B');
+      vline(22 + s, 8 - up, 9, 'B'); vline(25 + s, 8 - up, 9, 'B');
+      eye(21 + s, 6 - up, blink, 'B'); eye(24 + s, 6 - up, blink, 'B');
       set(12, 24 + s, 'P');
     }
     shellRings(c, 14, 10.6, 5, 4.4, [[7, 12], [8, 11]]);
@@ -109,16 +115,17 @@ const snailAdult = {
   palette: { S: 35, D: 22, W: 121, B: 78, K: 22, E: 231, P: 233 },
   advance: [true, false],
   zAt: [[21, 6], [26, 1]],
-  draw({ frame, blink, sleep, fidget }) {
+  draw({ frame, blink, sleep, fidget, lookUp }) {
     const c = canvas(), { span, vline, ell, eye, rows } = c;
     const s = !sleep && (fidget || frame) ? 2 : 0;
+    const up = lookUp && !sleep ? 1 : 0;
     if (sleep) { span(13, 2, 18, 'B'); span(14, 1, 19, 'B'); span(15, 1, 19, 'B'); }
     else {
       span(12, 8, 29 + s, 'B'); span(13, 1, 30 + s, 'B'); span(14, 0, 30 + s, 'B'); span(15, 1, 30 + s, 'B');
       ell(27.5 + s, 9.2, 3.8, 3.2, 'B');
-      vline(26 + s, 3, 6, 'B'); vline(30 + s, 3, 6, 'B');
-      eye(25 + s, 1, blink, 'B'); eye(30 + s, 1, blink, 'B');
-      span(0, 24 + s, 26 + s, 'K'); span(0, 30 + s, 32 + s, 'K');                  // brows
+      vline(26 + s, 3 - up, 6, 'B'); vline(30 + s, 3 - up, 6, 'B');
+      eye(25 + s, 1 - up, blink, 'B'); eye(30 + s, 1 - up, blink, 'B');
+      if (!up) { span(0, 24 + s, 26 + s, 'K'); span(0, 30 + s, 32 + s, 'K'); }     // brows; the raised eyes take this row
       span(10, 29 + s, 30 + s, 'K');
     }
     shellRings(c, 10, 7, 9.6, 7.2, [[2, 5], [2, 6], [3, 4], [4, 3]]);
@@ -133,16 +140,17 @@ const snailHeavy = {
   palette: { S: 29, D: 22, W: 72, B: 107, X: 223, K: 52, E: 231, P: 233 },
   advance: [true, false],
   zAt: [[22, 6], [27, 1]],
-  draw({ frame, blink, sleep, fidget }) {
+  draw({ frame, blink, sleep, fidget, lookUp }) {
     const c = canvas(), { set, span, vline, ell, eye, rows } = c;
     const s = !sleep && (fidget || frame) ? 2 : 0;
+    const up = lookUp && !sleep ? 1 : 0;
     if (sleep) { span(13, 1, 20, 'B'); span(14, 0, 21, 'B'); span(15, 0, 21, 'B'); }
     else {
       span(12, 8, 30 + s, 'B'); span(13, 1, 31 + s, 'B'); span(14, 0, 31 + s, 'B'); span(15, 0, 31 + s, 'B');
       ell(27.5 + s, 9.6, 4.2, 3.4, 'B');
-      vline(25 + s, 4, 7, 'B'); vline(26 + s, 4, 7, 'B'); vline(30 + s, 4, 7, 'B'); vline(31 + s, 4, 7, 'B');
-      eye(25 + s, 2, blink, 'B'); eye(30 + s, 2, blink, 'B');                         // red-eyed
-      span(1, 24 + s, 27 + s, 'K'); span(1, 29 + s, 32 + s, 'K'); set(2, 27 + s, 'K'); set(2, 29 + s, 'K'); // scowling brow
+      vline(25 + s, 4 - up, 7, 'B'); vline(26 + s, 4 - up, 7, 'B'); vline(30 + s, 4 - up, 7, 'B'); vline(31 + s, 4 - up, 7, 'B');
+      eye(25 + s, 2 - up, blink, 'B'); eye(30 + s, 2 - up, blink, 'B');
+      span(1 - up, 24 + s, 27 + s, 'K'); span(1 - up, 29 + s, 32 + s, 'K'); set(2 - up, 27 + s, 'K'); set(2 - up, 29 + s, 'K');
       span(11, 29 + s, 31 + s, 'K'); set(12, 28 + s, 'K'); set(12, 32 + s, 'K');     // frown
     }
     shellRings(c, 11, 9, 10.4, 6.8, [[4, 6], [4, 7], [5, 5], [6, 4]]);
@@ -295,7 +303,7 @@ const crab = {
   advance: [true, true],
   sideways: true,
   zAt: [[14, 3], [18, 0]],
-  draw({ frame, blink, sleep, fidget }) {
+  draw({ frame, blink, sleep, fidget, snap }) {
     const { set, span, vline, ell, rows } = canvas();
     // legs: three a side, tips stepping in and out
     const k = frame && !sleep ? 1 : 0;
@@ -309,14 +317,14 @@ const crab = {
     // arms and claws: open/closed with the step, tucked down asleep
     const cy = sleep ? 8 : 4; // claw centre row
     for (const side of [-1, 1]) {
-      // A fidget snaps the near claw and leaves the far one to the step.
-      const open = side < 0 ? fidget || (frame && !sleep) : frame && !sleep;
+      // A fidget snaps the near claw and leaves the far one to the step. A stomp or a hold snaps both, wider.
+      const open = side < 0 ? snap || fidget || (frame && !sleep) : snap || (frame && !sleep);
       const X = (x) => (side < 0 ? x : 33 - x); // draw the left claw, mirror for the right
       // arm: from the body's shoulder up to the claw
       set(10, X(9), 'C'); set(9, X(8), 'C'); set(9, X(7), 'C'); set(8, X(6), 'C'); if (!sleep) { set(7, X(6), 'C'); set(6, X(5), 'C'); }
       // claw: a fat lower pincer and a thinner upper one, gap between them
       for (const [dx, dy] of [[1, 0], [2, 0], [3, 0], [4, 0], [0, 1], [1, 1], [2, 1], [3, 1], [4, 1], [5, 1], [1, 2], [2, 2], [3, 2], [4, 2]]) set(cy + dy, X(dx), 'C');
-      const up = open ? -2 : -1;
+      const up = open ? (snap ? -3 : -2) : -1;
       for (const [dx, dy] of [[1, up], [2, up], [3, up], [4, up + (open ? 1 : 0)], [0, up + 1]]) set(cy + dy, X(dx), 'C');
       if (!open) span(cy, Math.min(X(2), X(4)), Math.max(X(2), X(4)), 'D');
       set(cy + 1, X(1), 'D');
@@ -342,10 +350,11 @@ const crabEyes = ({ span, set, vline }, xs, top, stalk, { blink, sleep }, lid) =
   }
 };
 // An inward-facing pincer: a round claw with a wedge cut from its inner side (wider while open).
-const pincer = ({ ell, set, span }, cx, cy, rx, ry, open, line = 'D') => {
+const pincer = ({ ell, set, span }, cx, cy, rx, ry, open, line = 'D', wide = false) => {
   ell(cx, cy, rx, ry, 'C');
   const gy = Math.round(cy - ry * 0.15);
-  for (let k = 0; k < (open ? 3 : 2); k++) for (let x = Math.round(cx) + (k ? 0 : 1); x <= cx + rx + 1; x++) set(gy - k, x, '.');
+  const gap = open ? (wide ? 4 : 3) : 2;
+  for (let k = 0; k < gap; k++) for (let x = Math.round(cx) + (k ? 0 : 1); x <= cx + rx + 1; x++) set(gy - k, x, '.');
   span(gy + 1, Math.round(cx) - 1, Math.round(cx + rx * 0.7), line);
 };
 
@@ -355,14 +364,14 @@ const crabHatchling = {
   advance: [true, true],
   sideways: true,
   zAt: [[20, 3], [25, 0]],
-  draw({ frame, blink, sleep }) {
+  draw({ frame, blink, sleep, snap }) {
     const c = canvas(sleep ? -1 : 0), { set, span, ell, mirror, rows } = c;
     const k = frame && !sleep ? 1 : 0;
     set(14, 12, 'D'); set(15, 11 - k, 'D'); set(14, 14, 'D'); set(15, 13 + k, 'D'); // two little legs a side
     ell(17, 12.6, 4.8, 2.4, 'C');
     span(11, 11, 12, 'C'); set(12, 13, 'C');                                        // nub arm
-    const cy = sleep ? 10 : 9 - k;                                                   // claws bob with the step
-    span(cy, 10, 11, 'C'); span(cy + 1, 10, 12, 'C'); set(cy, 12, k ? '.' : 'D');
+    const cy = sleep ? 10 : 9 - k - (snap ? 1 : 0);                                  // claws bob; a snap lifts them
+    span(cy, 10, 11, 'C'); span(cy + 1, 10, 12, 'C'); set(cy, 12, (k || snap) ? '.' : 'D');
     mirror();
     crabEyes(c, [14, 18], 7, 1, { blink, sleep }, 'C');
     span(13, 16, 17, 'K');
@@ -376,9 +385,10 @@ const crabAdult = {
   advance: [true, true],
   sideways: true,
   zAt: [[15, 4], [19, 0]],
-  draw({ frame, blink, sleep }) {
+  draw({ frame, blink, sleep, snap }) {
     const c = canvas(sleep ? -1 : 0), { set, span, ell, mirror, rows } = c;
     const k = frame && !sleep ? 1 : 0;
+    const claw = (k || snap) && !sleep ? 1 : 0;
     for (const [i, x] of [[0, 9], [1, 11], [2, 13], [3, 15]]) {                     // four jointed legs a side
       const tip = x - 5 - (i + k) % 2, y = 12 + (i > 1 ? 1 : 0);
       span(y, tip + 1, x, 'D'); set(y + 1, tip, 'D'); set(Math.min(15, y + 2), tip, 'D'); set(15, tip - 1 + (i % 2), 'D');
@@ -387,7 +397,7 @@ const crabAdult = {
     span(13, 10, 16, 'D');
     set(7, 12, 'S'); set(8, 9, 'S'); set(6, 16, 'S'); set(9, 14, 'S');              // shell spots
     if (sleep) { set(10, 8, 'C'); set(9, 7, 'C'); pincer(c, 4.6, 7.6, 3.4, 2.6, false); }
-    else { set(10, 8, 'C'); set(9, 7, 'C'); set(8, 6, 'C'); set(7, 5, 'C'); set(7, 6, 'C'); set(6, 4, 'C'); pincer(c, 3.6, 3.4 - k, 3.6, 2.9, k); }
+    else { set(10, 8, 'C'); set(9, 7, 'C'); set(8, 6, 'C'); set(7, 5, 'C'); set(7, 6, 'C'); set(6, 4, 'C'); pincer(c, 3.6, 3.4 - claw, 3.6, 2.9, claw, 'D', Boolean(snap)); }
     mirror();
     crabEyes(c, [13, 19], 1, 3, { blink, sleep }, 'C');
     if (!sleep) { span(0, 12, 14, 'D'); span(0, 19, 21, 'D'); }                    // brows
@@ -403,9 +413,10 @@ const crabHeavy = {
   advance: [true, true],
   sideways: true,
   zAt: [[15, 6], [19, 1]],
-  draw({ frame, blink, sleep }) {
+  draw({ frame, blink, sleep, snap }) {
     const c = canvas(sleep ? -1 : 0), { set, span, vline, ell, mirror, rows } = c;
     const k = frame && !sleep ? 1 : 0;
+    const claw = (k || snap) && !sleep ? 1 : 0;
     for (const [i, x] of [[0, 8], [1, 10], [2, 12], [3, 14]]) {                     // thick legs
       const tip = x - 5 - (i + k) % 2, y = 12 + (i > 1 ? 1 : 0);
       span(y, tip + 1, x, 'D'); span(y + 1, tip, tip + 1, 'D'); set(Math.min(15, y + 2), tip, 'D'); set(15, tip - 1 + (i % 2), 'D');
@@ -417,7 +428,7 @@ const crabHeavy = {
     if (sleep) { span(10, 5, 6, 'C'); span(9, 4, 5, 'C'); pincer(c, 4.4, 7, 4, 3, false, 'K'); }
     else {
       span(10, 5, 6, 'C'); span(9, 4, 5, 'C'); span(8, 4, 5, 'C'); span(7, 3, 4, 'C');
-      pincer(c, 4.2, 3.4 - k, 4.4, 3.7, k, 'K'); set(4 - k, 2, 'S'); set(3 - k, 3, 'S');
+      pincer(c, 4.2, 3.4 - claw, 4.4, 3.7, claw, 'K', Boolean(snap)); set(4 - claw, 2, 'S'); set(3 - claw, 3, 'S');
     }
     mirror();
     crabEyes(c, [12, 20], 1, 4, { blink, sleep }, 'C');
@@ -431,3 +442,52 @@ const crabHeavy = {
 crab.stages = [crabHatchling, crab, crabAdult, crabHeavy];
 
 export const CREATURES = [snail, turtle, crab];
+
+// A brow, a heavier scowl, or context-bulk, painted on whatever stage is already showing.
+// Bulk never adds the crab's gold crown or the heavy stage's gold READY mark; those stay stage 3.
+export function applyBuilding(rows, mood, kind = '') {
+  if (!mood || mood === 'none') return rows;
+  const g = rows.map((r) => [...r]);
+  const H = g.length, W = g[0].length;
+  const body = new Set(['.', 'B', 'L', 'C', 'D', 'l']);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    if (g[y][x] !== 'E' && g[y][x] !== 'P') continue;
+    const above = y - 1;
+    if (above >= 0 && body.has(g[above][x])) {
+      if (mood === 'brow' && g[above][x] !== '.') continue;
+      g[above][x] = 'K';
+      if (mood !== 'brow' && x + 1 < W && g[above][x + 1] === '.') g[above][x + 1] = 'K';
+    } else if (g[y][x] === 'E' && (y === 0 || (g[y - 1][x] !== 'E' && g[y - 1][x] !== 'P'))) {
+      if (mood === 'brow' ? x % 2 === 0 : true) g[y][x] = 'K';
+    }
+  }
+  if (mood === 'bulk' && kind === 'snail') {
+    const add = [];
+    for (let y = 1; y < H - 1; y++) for (let x = 1; x < Math.floor(W * 0.55); x++) {
+      if (g[y][x] !== '.') continue;
+      let n = 0;
+      for (const [dy, dx] of [[0, 1], [0, -1], [1, 0], [-1, 0]]) if (g[y + dy]?.[x + dx] === 'S') n++;
+      if (n >= 3) add.push([y, x]);
+    }
+    for (const [y, x] of add.slice(0, 8)) g[y][x] = 'S';
+    let spikes = 0;
+    for (let y = 1; y < H && spikes < 3; y++) for (let x = 2; x < Math.floor(W * 0.5) && spikes < 3; x += 5) {
+      if (g[y][x] === 'S' && g[y - 1][x] === '.') { g[y - 1][x] = 'K'; spikes++; }
+    }
+  }
+  if (mood === 'bulk' && kind === 'turtle') {
+    let spikes = 0;
+    for (let y = 1; y < H && spikes < 4; y++) for (let x = 4; x < W - 4 && spikes < 4; x += 5) {
+      if (g[y][x] === 'S' && g[y - 1][x] === '.') { g[y - 1][x] = 'K'; spikes++; }
+    }
+    let flushed = 0;
+    for (let y = 0; y < H && flushed < 6; y++) for (let x = Math.floor(W * 0.72); x < W && flushed < 6; x++) {
+      if (g[y][x] === 'L') { g[y][x] = 'F'; flushed++; }
+    }
+  }
+  if ((mood === 'stomp' || mood === 'bulk') && kind === 'crab') {
+    const mid = Math.floor(W / 2);
+    for (let y = 0; y < 4; y++) if (g[y][mid] === '.') { g[y][mid] = 'K'; break; }
+  }
+  return g.map((r) => r.join(''));
+}

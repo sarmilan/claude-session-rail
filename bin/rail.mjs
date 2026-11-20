@@ -14,8 +14,7 @@ import { buildTree, layoutTree } from './branchmap.mjs';
 import { compactOffer, mainCheckout, planWorktrees, pruneLabel } from './prune.mjs';
 import { buildStory, layoutStory } from './sessionstory.mjs';
 import { ESC, fg, dim, bold, C, bgOpen, charWidth, width, trunc, wrap, clean, tabBar, usePalette, paneBgOn, paneBgOff } from './term.mjs';
-import { createMascot, creatureNames, stageFor, progressFor, doneFor, attentionFor, visitorsFor, droopFor, flinchAt } from './mascot.mjs';
-import { isApproved } from './brief.mjs';
+import { createMascot, creatureNames, stageFor, progressFor, doneFor, attentionFor, visitorsFor, droopFor, flinchAt, briefHolds, heldAnchor, reactionHint } from './mascot.mjs';
 import { cacheView } from './cache.mjs';
 import { applyRecordedCost, costText } from './cost.mjs';
 import { placeChores } from './chore.mjs';
@@ -222,10 +221,12 @@ const saveCreature = (name) => {
 };
 const nextCreature = (d = 1) => saveCreature(mascot.next(d));
 // The pet grows with the branch's brief. With no brief, it grows with how full the context window is
-// (--pet-stage N pins a stage for --frame).
+// (--pet-stage N pins a stage for --frame). A brief still wins for the stage and the road. Context for
+// the brow, the stomp and [!!!] is separate, and it is fed whether or not a brief exists.
 const stageFlag = flag('--pet-stage');
 const pinned = stageFlag != null && /^[0-3]$/.test(stageFlag) ? +stageFlag : null;
 const petContext = () => (data.brief?.status ? null : data.stats?.contextPct);
+const moodContext = () => (Number.isFinite(data.stats?.contextPct) ? data.stats.contextPct : null);
 const petStage = () => pinned ?? stageFor(data.brief, petContext());
 // And walks the branch's road, left to right as chunks get Done. With no brief, the spot is the context fill
 // (--pet-progress F pins it for --frame).
@@ -242,7 +243,15 @@ const companionsFlag = numFlag('--companions');
 const backgroundTasks = () => companionsFlag ?? data.tasks.running.filter((t) => t.kind === 'shell').length;
 // It stands still with a ? the whole time this branch has a brief that isn't approved yet (--held forces it).
 // An approval, including one kept after an edit, lets it walk.
-const petHeld = () => args.includes('--held') || Boolean(data.brief?.status && !isApproved(data.brief.status));
+const petHeld = () => args.includes('--held') || briefHolds(data.brief?.status);
+// The ? clock starts the first time this sitting sees the brief unapproved, or at the gate's refusal
+// when that is earlier. Approving, including an edit that keeps the approval, clears it.
+let heldNoticed = null;
+const syncHeld = (t = Date.now()) => {
+  if (!petHeld()) { heldNoticed = null; mascot.setHeld(false, t); return; }
+  if (heldNoticed == null) heldNoticed = t;
+  mascot.setHeld(true, heldAnchor(heldNoticed, data.activity?.gate?.at));
+};
 // It flinches once at each new failed tool call; failures from before the rail started don't count, nor
 // the gate's refusals (they count as failed calls), which show the ? instead. Other failures while the gate
 // holds (a Bash command, say) still do.
@@ -273,6 +282,8 @@ const checkWarmCompact = () => {
 };
 let seenDone = null;
 const feedPet = (W) => {
+  // Context first, so a compact drops [!!!] before the shrink starts. The warm swirl is last, and waits.
+  mascot.setContextPct(moodContext());
   mascot.setStage(petStage()); mascot.setProgress(petProgress());
   const trail = doneFor(data.brief);
   // The first time a brief shows up is not a chunk finishing. A later increase is.
@@ -280,7 +291,7 @@ const feedPet = (W) => {
   seenDone = data.brief?.status ? trail.done : null;
   mascot.setTrail(trail.done, trail.total);
   mascot.setVisitors(visitorEntries(), W);
-  mascot.setCompanions(backgroundTasks()); mascot.setHeld(petHeld()); mascot.setDroop(petDroop()); checkFailure();
+  mascot.setCompanions(backgroundTasks()); syncHeld(); mascot.setDroop(petDroop()); checkFailure();
   mascot.setCache(petCache()); checkWarmCompact();
 };
 
@@ -747,6 +758,8 @@ function buildMain(W) {
   pair(`Context ${caret(ui.open.context)}`, pct != null ? `${pct}% ${'▰'.repeat(8)}` : '—',
     item('context', () => { ui.open.context = !ui.open.context; }),
     { leftStyle: bold, rightStyle: (s) => (pct != null ? dim(`${pct}% `) + bar(pct) : dim(s)) });
+  const petHint = reactionHint({ held: mascot.state.held, bang: mascot.state.bang, building: mascot.state.building, pct: mascot.state.context ?? pct });
+  if (petHint) line(dim(trunc(`  ${petHint}`, inner)));
   if (ui.open.context) {
     const kv = (k, v) => {
       const gap = k.length >= 9 ? ' ' : '';
@@ -1003,7 +1016,7 @@ if (args.includes('--frame')) {
   // let it walk to its spot on the road (at a past time, so no blink is left on the frame), then hold it there
   const pinnedAttention = args.includes('--busy') ? 'busy' : args.includes('--waiting') ? 'waiting' : false;
   for (let n = 0, t = Date.now() - 1000; n < W * 2; n++) mascot.step(W, pinnedAttention, t);
-  mascot.setHeld(petHeld());
+  syncHeld();
   if (args.includes('--flinch')) mascot.flinch();
   if (cacheFlag === 'swirl') mascot.swirl();
   // e.g. --activate pr:8  or  --activate finished,opt:0  (a chain of clicks)

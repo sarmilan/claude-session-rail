@@ -5,15 +5,25 @@
 // adult on, and shaking with a gold mark when heavy, which means the branch is ready to merge. With no
 // brief, the session's context fill grows it instead, and heavy stays out of reach.
 //
+// Context is a second channel (`setContextPct`), even when a brief owns the stage. It builds a brow,
+// then a stomp, then a bulk body and a red [!!!]. None of that is the gold READY mark. An unapproved
+// brief holds a ? that grows pushier. A stage-up pops a ring; a compact shrinks, then a warm swirl.
+//
 // Sprites are 34×16 pixel maps. In iTerm2 the creature and its floor are one inline PNG strip, three rows
 // tall (four for a stage drawn bigger) and as wide as the rail, so each sprite pixel is a ~2pt square and
 // the floor is a ~1pt line through the middle of the last row. Elsewhere (and in --frame output) it falls back to Unicode octants: 2×4 pixels per
 // character, 17×4 characters, over a text floor.
 import { deflateSync } from 'node:zlib';
-import { CREATURES, SPR_W, SPR_H } from './creatures.mjs';
+import { CREATURES, SPR_W, SPR_H, applyBuilding } from './creatures.mjs';
 import { foliage, trail, dust } from './habitats.mjs';
 import { createVisitors } from './visitors.mjs';
 import { isApproved } from './brief.mjs';
+import {
+  GROW_TICKS, RELEASE_TICKS, FACE, RING_AT, briefHolds, buildingOf, bangBright, heldAnchor, heldPhase,
+  latchContext, markAnchor, markKind, octantMark, queryMotion, reactionHint, ringDots, steamPuffs, stompArc,
+} from './petreact.mjs';
+
+export { briefHolds, heldAnchor, reactionHint };
 
 const ESC = '\x1b[';
 const IDLE_MS = 60_000;  // nothing busy for this long → sleep
@@ -38,12 +48,13 @@ function pixels(c, pose) {
   }
   return rows;
 }
-// The marks over the pet keep their own letters. A is red and only means a failed tool. U is the puff's
-// orange. Q is the gate's yellow question mark. G is gold: the heavy stage's ready mark, and a Done sparkle.
-// I (ice) is blue and only means the prompt cache: the hourglass, the snowflake, and the swirl of a warm compact.
+// The marks over the pet keep their own letters. A is red and means a failed tool. U is the puff's
+// orange. Q is the gate's yellow question mark; q is that mark dimmed. G is gold: the heavy stage's ready
+// mark, a Done sparkle, and the stage-up ring. I (ice) is blue and only means the prompt cache.
+// ! is the context [!!!], red, and : is that badge dimmed. Neither is the gold READY mark.
 // A mark's letter must be one no creature's palette uses: MARK_COLORS wins over the palette.
 const CACHE_BLUE = 75;
-const MARK_COLORS = { Z: ZED_COLOR, A: 196, U: 208, Q: 220, G: 220, I: CACHE_BLUE };
+const MARK_COLORS = { Z: ZED_COLOR, A: 196, U: 208, Q: 220, q: 178, G: 220, I: CACHE_BLUE, '!': 196, ':': 124 };
 const colorOf = (c, key) => MARK_COLORS[key] ?? c.palette[key];
 
 // How each growth stage behaves: `dSpeed` adjusts ticks per frame for creatures without their own stage
@@ -149,6 +160,30 @@ const READY = ['.G.G.', 'GG.GG', '.....', 'GG.GG', '.G.G.']; // heavy: ready to 
 const PUFF = ['U.A.U', '.AUA.', 'AUUUA', '.AUA.', 'U.A.U']; // a failed tool call
 const DROOP = ['.....', '.....', '..A..', '.A.A.', '.....']; // the failure, kept until the next success
 const QUERY = ['.QQQ.', 'Q...Q', '..QQ.', '.....', '..Q..']; // the brief is not approved yet
+const QUERY_DIM = QUERY.map((row) => row.replaceAll('Q', 'q'));
+// [!!!] with gaps, so it stays three strokes inside brackets. 11×6 at scale 4 is 44×24,
+// which fits the fourth-row sky. The same badge at scale 5 is the one that clips.
+const BANG = [
+  '!!.......!!',
+  '!!.!.!.!.!!',
+  '!!.!.!.!.!!',
+  '!!.!.!.!.!!',
+  '!!.!.!.!.!!',
+  '!!.......!!',
+];
+const BANG_DIM = BANG.map((row) => row.replaceAll('!', ':'));
+// Context-bulk recolour for the stage that is already showing. Stage 3 keeps its own heavy drawing,
+// including the crab's crown. F is a flushed face on the turtle and is not a mark letter.
+const STOMP_PALETTE = {
+  snail: { S: 28, D: 22, B: 65 },
+  turtle: { S: 100, L: 137, R: 131 },
+  crab: { C: 203, D: 167 },
+};
+const BULK_PALETTE = {
+  snail: { S: 22, D: 16, B: 58, W: 65 },
+  turtle: { S: 172, H: 94, R: 166, L: 174, l: 131, W: 221, F: 210 },
+  crab: { C: 160, D: 88, K: 52 },
+};
 const HOURGLASS = ['IIIII', '.I.I.', '..I..', '.I.I.', 'IIIII']; // the cache's last stretch, a big context in it
 const FROST = ['I.I.I', '.III.', 'II.II', '.III.', 'I.I.I']; // the cache went cold with a big context in it
 const SPARK = [
@@ -209,7 +244,7 @@ const pngEncode = (w, h, raw) => {
 // `colPx` is image pixels per terminal column; `x` is the creature's left edge.
 const SCALE = 4, STRIP_ROWS = 3, ROW_PX = 34, FLOOR_RGB = xtermRgb(240);
 const SWAY = [0, 1, 0, -1]; // the foliage's lean, a step a second (5 ticks)
-function stripImage(c, rows, cols, colPx, x, { scale = SCALE, stripRows = STRIP_ROWS, lift = 0, mark = null, flip = false, ground = [], sprites = [] } = {}) {
+function stripImage(c, rows, cols, colPx, x, { scale = SCALE, stripRows = STRIP_ROWS, lift = 0, mark = null, flip = false, ground = [], sprites = [], fx = [], markPx = 0, markBob = 0, anchor = 0.72, glow = 0, glowPx = 0 } = {}) {
   const h = stripRows * ROW_PX, floorY = h - ROW_PX / 2 - 1, top = floorY - (SPR_H + lift) * scale;
   const w = Math.max(1, Math.round(cols * colPx)), stride = w * 4 + 1;
   const raw = Buffer.alloc(h * stride);
@@ -220,10 +255,14 @@ function stripImage(c, rows, cols, colPx, x, { scale = SCALE, stripRows = STRIP_
     for (let dy = 0; dy < SCALE; dy++) for (let dx = 0; dx < SCALE; dx++) putRgb(gx * SCALE + dx, gy + dy, rgb);
   }
   // A small drawing at (x0, y0), `sc` image pixels a dot, coloured by `rgbOf(key)`; '.' is transparent.
-  const blit = (rows, x0, y0, sc, rgbOf) => rows.forEach((row, ry) => [...row].forEach((k, rx) => {
+  const putRgba = (px, py, rgb, a) => { if (px >= 0 && px < w && py >= 0 && py < h) raw.set([...rgb, a], py * stride + 1 + px * 4); };
+  const blit = (rows, x0, y0, sc, rgbOf, alpha = 255) => rows.forEach((row, ry) => [...row].forEach((k, rx) => {
     if (k === '.') return;
     const rgb = rgbOf(k);
-    for (let dy = 0; dy < sc; dy++) for (let dx = 0; dx < sc; dx++) putRgb(x0 + rx * sc + dx, y0 + ry * sc + dy, rgb);
+    for (let dy = 0; dy < sc; dy++) for (let dx = 0; dx < sc; dx++) {
+      const px = x0 + rx * sc + dx, py = y0 + ry * sc + dy;
+      if (alpha >= 255) putRgb(px, py, rgb); else putRgba(px, py, rgb, alpha);
+    }
   }));
   for (const v of sprites) // visitors and companions: over the foliage, behind the creature, `up` pixels up
     blit(v.rows, v.px, floorY - (v.up + v.rows.length) * SCALE, SCALE, (k) => xtermRgb(v.palette[k]));
@@ -231,9 +270,24 @@ function stripImage(c, rows, cols, colPx, x, { scale = SCALE, stripRows = STRIP_
     const key = rows[Math.floor(y / scale)][Math.floor(px / scale)];
     if (key !== '.') put(x + px, top + y, key);
   }
-  if (mark) { // ready, a puff, a droop or a ?, a sprite pixel a dot, above the front (the right claw, or the head turned left)
-    const ax = x + Math.round(SPR_W * scale * (flip ? 0.2 : 0.8)) - (flip ? mark[0].length * scale : 0), ay = Math.max(0, top - mark.length * scale - 2);
-    blit(mark, ax, ay, scale, (k) => xtermRgb(colorOf(c, k)));
+  for (const d of fx) { // a grow ring, shrink motes, or steam: one sprite pixel a square, clipped to the strip
+    const sc = scale, rgb = xtermRgb(d.color);
+    const px0 = Math.round(x + d.sx * scale), py0 = Math.round(top + d.sy * scale);
+    for (let dy = 0; dy < sc; dy++) for (let dx = 0; dx < sc; dx++) putRgb(px0 + dx, py0 + dy, rgb);
+  }
+  if (mark) { // over the head (or the crab's carapace). A large ? or [!!!] is asked for a 4-row strip.
+    const sc = markPx > 0 ? markPx : scale;
+    const mw = mark[0].length * sc, mh = mark.length * sc;
+    const ax = x + Math.round(SPR_W * scale * anchor) - Math.round(mw / 2);
+    const ay = Math.max(0, top - mh - 2 - Math.round(markBob * scale));
+    if (glow && glowPx > 0) {
+      const rgb = xtermRgb(glow);
+      for (let dy = -glowPx; dy <= glowPx; dy++) for (let dx = -glowPx; dx <= glowPx; dx++) {
+        if (!dx && !dy) continue;
+        blit(mark, ax + dx, ay + dy, sc, () => rgb, 110);
+      }
+    }
+    blit(mark, ax, ay, sc, (k) => xtermRgb(colorOf(c, k)));
   }
   for (let y = floorY; y < floorY + 2; y++) for (let px = 0; px < w; px++) raw.set([...FLOOR_RGB, 255], y * stride + 1 + px * 4);
   // Stretched to exactly `cols` × `stripRows` cells; with the right cell aspect the pixels come out square.
@@ -276,8 +330,56 @@ export function createMascot({ images = false, creature = 0, now = Date.now() } 
   let held = false, drooping = false, puffUntil = 0, sparkUntil = 0, swirlUntil = 0, doneN = 0, chunkN = 0, extraShells = 0;
   let cacheMark = null; // the prompt cache, when it matters: 'low' (an hourglass) or 'cold' (a snowflake)
   let lastStrip = { key: '', data: '' }; // the last strip drawn with visitors
-  // The drawing for this stage: the creature's own stage form, or the creature itself.
-  const form = () => CREATURES[index].stages?.[stage] ?? CREATURES[index];
+  let ctx = { bang: false, brow: false, pct: null };
+  let grow = null; // { dir: 'up'|'down', tick, to, seen } — a pop swaps immediately; a shrink swaps at the end
+  let heldSince = 0, releasing = false, releaseTick = 0, releaseSeen = false, queuedSwirl = false;
+  let nowT = now;
+  const pet = () => CREATURES[index];
+  const moodName = () => buildingOf(ctx);
+  const flags = (t) => ({
+    sleep: s.mode === 'sleep',
+    cold: cacheMark === 'cold',
+    low: cacheMark === 'low',
+    puff: t < puffUntil,
+    grow: grow?.dir === 'up',
+    shrink: grow?.dir === 'down',
+    held,
+    droop: drooping,
+    spark: t < sparkUntil,
+    swirl: t < swirlUntil,
+    bang: ctx.bang,
+    ready: Boolean(MOOD[stage].rage && s.lift === 0 && Math.floor(s.tick / 3) % 2),
+  });
+  const kindAt = (t) => markKind(flags(t));
+  const elapsedHeld = (t) => Math.max(0, t - heldSince);
+  const phaseAt = (t) => (held ? heldPhase(elapsedHeld(t), releasing) : null);
+  // A big ?, a [!!!], or a grow ring needs the fourth row. Heavy is already that tall.
+  const needsSky = () => {
+    const k = kindAt(nowT);
+    if (k === 'bang' || k === 'grow' || k === 'shrink') return true;
+    if (k !== 'query') return false;
+    return queryMotion(phaseAt(nowT), elapsedHeld(nowT), s.tick, releaseTick).mul > 1.05;
+  };
+  // The drawing for this stage, plus a building-mood recolour that does not change the stage.
+  const form = () => {
+    const base = pet().stages?.[stage] ?? pet();
+    const mood = moodName();
+    const sky = (base.rows ?? STRIP_ROWS) < 4 && needsSky();
+    if (mood === 'none' && !sky) return base;
+    const name = pet().name;
+    const shift = stage < 3 ? (mood === 'bulk' ? BULK_PALETTE[name] : mood === 'stomp' ? STOMP_PALETTE[name] : null) : null;
+    const palette = { ...base.palette, ...(mood === 'none' ? null : { K: base.palette.K ?? base.palette.D ?? 22 }), ...shift };
+    return {
+      ...base,
+      palette,
+      rows: Math.max(base.rows ?? STRIP_ROWS, sky ? 4 : 0),
+      draw: (pose) => {
+        const drawn = base.draw(pose);
+        if (pose.sleep || mood === 'none') return drawn;
+        return applyBuilding(drawn, mood, name);
+      },
+    };
+  };
   const width = () => (images ? Math.ceil((SPR_W * (form().scale ?? SCALE)) / colPx()) : SPR_W / 2); // columns it occupies
   const s = { x: 2, dir: 1, phase: 0, tick: 0, mode: 'walk', lastActive: now, blinkUntil: 0, hopI: -1, lift: 0, shake: 0, fidget: false, wake: 0, fidgetUntil: 0, party: null };
   const cache = new Map();
@@ -286,17 +388,61 @@ export function createMascot({ images = false, creature = 0, now = Date.now() } 
     return cache.get(key);
   };
   const bounds = (W) => [1, W - 1 - width()];
-  // The mark over its head. Red is only a failure. Gold is "ready" or a chunk just finished. Blue is the cache.
-  // Asleep, a cold cache's snowflake takes the place of the Zs.
-  const markFor = (t) => {
-    if (s.mode === 'sleep') return cacheMark === 'cold' ? FROST : null;
-    if (t < puffUntil) return PUFF;
-    if (held) return QUERY;
-    if (drooping) return DROOP;
-    if (t < sparkUntil) return SPARK[Math.floor(s.tick / 2) % 2];
-    if (cacheMark === 'cold') return FROST;
-    if (cacheMark === 'low') return HOURGLASS;
-    return MOOD[stage].rage && s.lift === 0 && Math.floor(s.tick / 3) % 2 ? READY : null;
+  const mirrorDot = (d) => (s.dir < 0 && !pet().sideways ? { ...d, sx: SPR_W - 1 - d.sx } : d);
+  // The mark over its head, plus the ring, steam and glow that aren't a letter grid.
+  const visuals = (t) => {
+    const kind = kindAt(t);
+    const scale = form().scale ?? SCALE;
+    const anchor = markAnchor(pet().sideways, s.dir);
+    let bitmap = null, markPx = scale, bob = 0, glow = 0, glowPx = 0;
+    const fx = [];
+    const phase = phaseAt(t);
+    if (kind === 'puff') bitmap = PUFF;
+    else if (kind === 'query') {
+      const motion = queryMotion(phase, elapsedHeld(t), s.tick, releaseTick);
+      bitmap = motion.dim ? QUERY_DIM : QUERY;
+      markPx = Math.max(1, Math.round(scale * motion.mul));
+      bob = motion.bob;
+      if (motion.glow) { glow = 220; glowPx = motion.mul > 1.5 ? 2 : 1; }
+      if (phase === 'annoy' && s.mode !== 'sleep') fx.push(...steamPuffs(elapsedHeld(t), FACE[pet().name]).map(mirrorDot));
+    } else if (kind === 'droop') bitmap = DROOP;
+    else if (kind === 'spark') bitmap = SPARK[Math.floor(s.tick / 2) % 2];
+    else if (kind === 'frost') bitmap = FROST;
+    else if (kind === 'hourglass') bitmap = HOURGLASS;
+    else if (kind === 'bang') {
+      const bright = bangBright(s.tick, ctx.pct ?? 0);
+      bitmap = bright ? BANG : BANG_DIM;
+      markPx = bright ? scale : Math.max(1, scale - 1);
+      if (bright) { glow = 196; glowPx = 1; }
+    } else if (kind === 'ready') bitmap = READY;
+    if ((kind === 'grow' || kind === 'shrink') && grow && s.mode !== 'sleep') {
+      const [cx, cy] = RING_AT[pet().name];
+      fx.push(...ringDots(grow.tick, grow.dir, cx, cy).map(mirrorDot));
+    }
+    return { kind, bitmap, markPx, bob, glow, glowPx, anchor, fx, phase };
+  };
+  const beginSwirl = (t) => {
+    swirlUntil = t + SPARK_MS; s.party = [1, 2, 3, 3, 2, 1]; s.hopI = 0;
+    if (s.mode === 'sleep') { s.mode = 'walk'; s.lastActive = t; }
+  };
+  // A pop or a shrink advances even while the body is held or asleep, so a compact still finishes.
+  const tickTransient = (t) => {
+    if (grow) {
+      if (grow.seen) {
+        grow.tick++;
+        if (grow.tick >= GROW_TICKS) {
+          if (grow.dir === 'down') { stage = grow.to; s.hopI = -1; s.lift = 0; s.shake = 0; }
+          grow = null;
+          if (queuedSwirl) { queuedSwirl = false; beginSwirl(t); }
+        }
+      } else grow.seen = true;
+    }
+    if (releasing) {
+      if (releaseSeen) {
+        releaseTick++;
+        if (releaseTick >= RELEASE_TICKS) { held = false; releasing = false; releaseTick = 0; releaseSeen = false; heldSince = 0; }
+      } else releaseSeen = true;
+    }
   };
   const companionWidth = () => (images ? Math.ceil((6 * SCALE) / colPx()) : 3); // columns a little one takes
   // Babies copy the parent: tucked asleep, piled up when the gate holds, hidden behind it on a flinch.
@@ -334,8 +480,25 @@ export function createMascot({ images = false, creature = 0, now = Date.now() } 
     // the strip (image, its own space above built in) or a blank spacer, the sprite and a floor row (text)
     get rows() { return images ? form().rows ?? STRIP_ROWS : SPR_H / 4 + 2; },
     get stage() { return stage; },
-    // Grow or shrink to a stage (0 hatchling … 3 heavy); a hop in progress lands.
-    setStage(n) { if (n !== stage && n >= 0 && n < MOOD.length) { stage = n; s.hopI = -1; s.lift = 0; s.shake = 0; } },
+    // Up swaps on this call and plays one ring. Down plays the shrink, then swaps. Two ups in the same
+    // second retarget the one ring at the final stage. Asleep, the drawing just swaps.
+    setStage(n) {
+      if (n !== n || n < 0 || n >= MOOD.length) return;
+      if (grow?.to === n) return;
+      if (n === stage && !grow) return;
+      if (s.mode === 'sleep') { stage = n; grow = null; s.hopI = -1; s.lift = 0; s.shake = 0; return; }
+      if (n > stage) {
+        stage = n;
+        grow = { dir: 'up', tick: 0, to: n, seen: false };
+        s.hopI = -1; s.lift = 0; s.shake = 0;
+        sparkUntil = 0; // a stage pop takes the place of a Done sparkle when they coincide
+        return;
+      }
+      grow = { dir: 'down', tick: 0, to: n, seen: false };
+      s.hopI = -1;
+    },
+    // Context for building mood and [!!!] only. Stage and the road stay on stageFor / progressFor.
+    setContextPct(pct) { ctx = latchContext(ctx, pct); },
     // Its spot on the road, 0 … 1 (progressFor), or null to pace the whole strip.
     setProgress(f) { progress = f == null ? null : Math.max(0, Math.min(1, f)); },
     // Its Done chunks, drawn as a trail of markers along the road.
@@ -355,14 +518,19 @@ export function createMascot({ images = false, creature = 0, now = Date.now() } 
     // The droop stays until a later tool call succeeds. The rail clears it.
     setDroop(on) { drooping = Boolean(on); },
     // A chunk was just marked Done: a hop and a short gold sparkle, then it walks to the new spot.
+    // A stage-up in the same moment keeps the pop and skips this sparkle.
     celebrate(t = Date.now()) {
+      nowT = t;
+      if (grow?.dir === 'up') { s.lastActive = t; if (s.mode === 'sleep') s.mode = 'walk'; return; }
       sparkUntil = t + SPARK_MS; s.party = [1, 2, 3, 3, 2, 1]; s.hopI = 0; s.lastActive = t;
       if (s.mode === 'sleep') s.mode = 'walk';
     },
     // The session was compacted while its cache was warm: a hop and a short blue swirl.
+    // A shrink still playing keeps the swirl queued, so [!!!] is already gone before the swirls show.
     swirl(t = Date.now()) {
-      swirlUntil = t + SPARK_MS; s.party = [1, 2, 3, 3, 2, 1]; s.hopI = 0;
-      if (s.mode === 'sleep') { s.mode = 'walk'; s.lastActive = t; }
+      nowT = t;
+      if (grow?.dir === 'down') { queuedSwirl = true; return; }
+      beginSwirl(t);
     },
     // Finished work was cleared: the same hop, with no mark. Gold stays "a chunk just finished".
     tidy(t = Date.now()) {
@@ -375,8 +543,19 @@ export function createMascot({ images = false, creature = 0, now = Date.now() } 
       if (next === 'cold' && cacheMark !== 'cold') s.shake = 4;
       cacheMark = next;
     },
-    // The brief is not approved: it stands still, awake, with a ? over its head.
-    setHeld(on) { held = Boolean(on); },
+    // The brief is not approved: it stands still, awake, with a ? that grows the longer it waits.
+    // `since` is when this sitting's hold started (or an earlier gate refusal). Turning it off plays
+    // the 3-tick vanish, then the body goes back to busy or waiting.
+    setHeld(on, since = Date.now()) {
+      if (on) {
+        const at = Number.isFinite(since) ? since : Date.now();
+        if (!held) heldSince = at;
+        else if (at < heldSince) heldSince = at;
+        held = true; releasing = false; releaseSeen = false; releaseTick = 0;
+        return;
+      }
+      if (held && !releasing) { releasing = true; releaseSeen = false; releaseTick = 0; }
+    },
     get index() { return index; },
     get name() { return CREATURES[index].name; },
 
@@ -391,8 +570,8 @@ export function createMascot({ images = false, creature = 0, now = Date.now() } 
     // Advance one animation tick (the rail calls this ~5×/s).
     // `attention` is 'busy', 'waiting' or 'idle' (a boolean still means busy or idle).
     step(W, attention, t = Date.now()) {
+      nowT = t;
       const want = attention === true || attention === 'busy' ? 'busy' : attention === 'waiting' ? 'wait' : 'idle';
-      const c = form(), mood = MOOD[stage];
       const wasSleep = s.mode === 'sleep';
       s.tick++;
       if (want === 'busy' || want === 'wait' || held) s.lastActive = t;
@@ -425,30 +604,41 @@ export function createMascot({ images = false, creature = 0, now = Date.now() } 
           companions[i] = x + Math.sign(target - x);
         });
       }
-      if (s.mode === 'sleep') { s.phase = 0; s.hopI = -1; s.lift = 0; s.shake = 0; s.fidget = false; s.party = null; return; }
+      tickTransient(t);
+      const c = form(), mood = MOOD[stage];
+      const build = moodName();
+      const cranky = (build === 'stomp' || build === 'bulk') && !held && grow?.dir !== 'down';
+      if (s.mode === 'sleep') { s.phase = 0; s.hopI = -1; s.lift = 0; s.shake = 0; s.fidget = false; if (!(t < swirlUntil)) s.party = null; return; }
       if (s.blinkUntil < t && Math.random() < 0.04) s.blinkUntil = t + 250;
       let a = lo, b = hi, heading = false;
       if (home != null) {
         a = Math.max(lo, home - PACE); b = Math.min(hi, home + PACE);
         if (s.x < a || s.x > b) { heading = true; s.dir = s.x < a ? 1 : -1; }
       }
+      const crankyWait = cranky && s.mode === 'wait';
       if (!held && s.mode === 'walk' && !heading && s.tick >= s.fidgetUntil && s.tick % 28 === 0) s.fidgetUntil = s.tick + 8;
-      s.fidget = !held && (s.mode === 'wait' || s.wake > 0 || (s.mode === 'walk' && !heading && s.tick < s.fidgetUntil));
+      s.fidget = !held && !crankyWait && (s.mode === 'wait' || s.wake > 0 || (s.mode === 'walk' && !heading && s.tick < s.fidgetUntil));
       if (held) { s.phase = 0; s.hopI = -1; s.lift = 0; s.fidget = false; if (s.shake > 0) s.shake--; return; }
       // Waiting looks toward the agent pane, which sits to the left of the rail. A crab has no face to turn.
-      if (s.mode === 'wait' && !heading && !c.sideways) s.dir = -1;
-      if (s.party) {
+      if (s.mode === 'wait' && !heading && !pet().sideways) s.dir = -1;
+      if (grow?.dir === 'down') { s.hopI = -1; s.lift = -1; } // the compact exhale, before the smaller drawing
+      else if (s.party) {
         if (s.hopI < 0) s.hopI = 0;
         s.lift = s.party[s.hopI++] ?? 0;
         if (s.hopI > s.party.length) { s.hopI = -1; s.party = null; }
+      } else if (cranky) {
+        const arc = stompArc(pet().name, ctx.pct);
+        if (s.hopI < 0 && s.tick % 8 === 0) s.hopI = 0;
+        if (s.hopI >= 0) { s.lift = arc[s.hopI++] ?? 0; if (s.hopI > arc.length) s.hopI = -1; }
       } else if (mood.hop) {
         if (s.hopI < 0 && s.tick % mood.hopEvery === 0) s.hopI = 0;
         if (s.hopI >= 0) { s.lift = mood.hop[s.hopI++] ?? 0; if (s.hopI > mood.hop.length) s.hopI = -1; }
       } else if (s.fidget) s.lift = [0, 1, 1, 0][s.tick % 4];
       else s.lift = 0;
       if (s.shake > 0) s.shake--;
-      else if (mood.shake && s.hopI < 0 && Math.random() < mood.shake) s.shake = 4;
-      if (s.fidget && !heading) { s.phase = 1 - s.phase; return; } // stretch, peek or snap, staying put
+      else if (mood.shake && !cranky && s.hopI < 0 && Math.random() < mood.shake) s.shake = 4;
+      // A high-context wait stomps in place instead of the calm fidget. The crab snaps; it does not face left.
+      if ((s.fidget || crankyWait) && !heading) { if (s.fidget) s.phase = 1 - s.phase; return; }
       const speed = Math.max(1, CREATURES[index].stages ? c.speed : c.speed + mood.dSpeed);
       const hurry = want === 'busy' || heading; // a frame a tick, and a column every frame
       if (s.tick % (hurry ? 1 : speed)) return;
@@ -464,20 +654,25 @@ export function createMascot({ images = false, creature = 0, now = Date.now() } 
     // to write with the cursor at (image.row within these lines, image.col), after the lines; it covers
     // `image.rows` lines, which are left blank.
     render(W, t = Date.now()) {
+      nowT = t;
+      const look = visuals(t);
       const rowsOut = this.rows, blankLine = ' '.repeat(W);
       const [lo, hi] = bounds(W);
       if (hi < lo) return { lines: Array(rowsOut).fill(blankLine), image: null };
       const c = form();
       const sleep = s.mode === 'sleep';
+      const build = moodName();
+      const snapping = pet().sideways && !sleep && (held || build === 'stomp' || build === 'bulk') && s.tick % 2 === 1;
       const pose = { frame: sleep ? 0 : s.phase, blink: !sleep && s.blinkUntil > t, sleep, dir: s.dir,
-        z: sleep && cacheMark !== 'cold' ? Math.floor(s.tick / 5) % 3 : 0, fidget: !sleep && s.fidget };
+        z: sleep && cacheMark !== 'cold' ? Math.floor(s.tick / 5) % 3 : 0, fidget: !sleep && s.fidget,
+        lookUp: Boolean(held && !sleep && !pet().sideways && (look.phase === 'annoy' || look.phase === 'pushy')),
+        snap: snapping, mood: build };
       const poseKey = `${index}:${stage}:${JSON.stringify(pose)}`;
       const habitat = CREATURES[index].habitat;
-      const dustKind = sleep || held ? 'still' : s.lift > 0 ? 'hop' : (s.mode === 'busy' || s.mode === 'walk') && s.phase === 1 ? 'step' : 'still';
+      const dustKind = sleep || held ? 'still' : s.lift !== 0 ? 'hop' : (s.mode === 'busy' || s.mode === 'walk') && s.phase === 1 ? 'step' : 'still';
       if (images) {
         const scale = c.scale ?? SCALE, stripRows = c.rows ?? STRIP_ROWS;
         const jitter = s.shake ? (s.tick % 2 ? scale : -scale) : 0;
-        const mark = markFor(t);
         const cols = W - 2, x = Math.round((s.x - 1) * colPx()) + jitter;
         const sway = SWAY[Math.floor(s.tick / 5) % SWAY.length] * (habitat === 'pond' && s.lift > 0 ? 2 : 1);
         const lift = s.lift - (drooping && s.lift <= 0 ? 1 : 0); // a failure sinks it until the next success
@@ -487,16 +682,21 @@ export function createMascot({ images = false, creature = 0, now = Date.now() } 
           ...sparks(t).map((v) => ({ ...v, px: columnPx(v.x) })),
           ...badges(W).map((v) => ({ ...v, px: columnPx(v.x) })),
         ];
+        const fxKey = look.fx.map((d) => `${Math.round(d.sx)},${Math.round(d.sy)},${d.color}`).join(';');
         const extras = sprites.map((v) => `${v.px},${v.up},${v.rows.join('')}`).join(';');
         const make = () => {
           const groundW = Math.ceil((cols * colPx()) / SCALE);
           const foot = Math.round(x / SCALE + (SPR_W * scale) / (2 * SCALE));
           const ground = [...foliage(habitat, groundW, sway), ...trail(habitat, doneN, chunkN, groundW), ...dust(habitat, foot, s.tick, dustKind)];
-          return stripImage(c, pixels(c, pose), cols, colPx(), x, { scale, stripRows, lift, mark, flip: s.dir < 0 && !c.sideways, ground, sprites });
+          return stripImage(c, pixels(c, pose), cols, colPx(), x, {
+            scale, stripRows, lift, mark: look.bitmap, flip: s.dir < 0 && !pet().sideways, ground, sprites, fx: look.fx,
+            markPx: look.markPx, markBob: look.bob, anchor: look.anchor, glow: look.glow, glowPx: look.glowPx,
+          });
         };
         // Anything that moves every tick stays out of the long cache, so it isn't evicted by the walk.
-        const key = `${poseKey}|${cols}|${x}|${aspect}|${lift}|${mark?.[0] ?? ''}|${sway}|${doneN}|${dustKind}|${extras}`;
-        const live = flock.size || dustKind !== 'still' || t < sparkUntil || t < swirlUntil || flock.overflow || extraShells;
+        const key = `${poseKey}|${cols}|${x}|${aspect}|${lift}|${look.kind}|${look.markPx}|${look.bob}|${sway}|${doneN}|${dustKind}|${extras}|${fxKey}`;
+        const live = flock.size || dustKind !== 'still' || t < sparkUntil || t < swirlUntil || flock.overflow || extraShells
+          || look.kind === 'bang' || look.kind === 'query' || look.kind === 'grow' || look.kind === 'shrink' || look.fx.length > 0;
         if (live && lastStrip.key !== key) lastStrip = { key, data: make() };
         const data = live ? lastStrip.data : cached(key, make);
         return { lines: Array(rowsOut).fill(blankLine), image: { row: 0, rows: stripRows, col: 1, data } };
@@ -522,19 +722,35 @@ export function createMascot({ images = false, creature = 0, now = Date.now() } 
       for (const v of littleOnes(sleep, t)) paint(v, v.x, SPR_H / 4 - 1 - (v.stack > 2 ? 1 : 0));
       for (const v of sparks(t)) paint(v, v.x, -1);
       for (const v of badges(W)) paint(v, v.x, -1);
-      // the mark before the creature, so its lower edge never blanks the creature's top cells
-      const mark = markFor(t), flip = s.dir < 0 && !c.sideways;
-      if (mark) paint({ rows: mark, palette: {} }, s.x + Math.round(width() * (flip ? 0.2 : 0.8)) - (flip ? 3 : 0), -1);
+      // Bitmap marks go down before the creature so a puff's lower edge does not blank its head.
+      // The four reactions are 1-cell glyphs, painted after, so a stomp's 1-row lift cannot cover them.
+      const glyphTick = look.kind === 'grow' || look.kind === 'shrink' ? (grow?.tick ?? 0) : s.tick;
+      const glyph = octantMark(look.kind, { tick: glyphTick, phase: look.phase, pct: ctx.pct ?? 0, width: W, releaseTick });
+      const flip = s.dir < 0 && !pet().sideways;
+      if (!glyph && look.bitmap) paint({ rows: look.bitmap, palette: {} }, s.x + Math.round(width() * (flip ? 0.28 : 0.72)) - (flip ? 3 : 0), -1);
+      const dy = s.lift >= 2 ? -1 : 0; // a hop or a stomp lifts one text row; a crab's dip stays in the cell
       cached(poseKey, () => octantRows(c, pixels(c, pose))).forEach((cells, r) => cells.forEach((cell, col) => {
-        if (!cell) return;
+        const line = r + dy, target = line < 0 ? sky : grid[line];
+        if (!cell || !target) return;
         const bg = cell.bg != null ? `${ESC}48;5;${cell.bg}m` : '';
-        grid[r][s.x + col] = `${ESC}38;5;${cell.fg}m${bg}${cell.ch}${ESC}0m`;
+        target[s.x + col] = `${ESC}38;5;${cell.fg}m${bg}${cell.ch}${ESC}0m`;
       }));
+      if (glyph?.text) {
+        const anchor = markAnchor(pet().sideways, s.dir);
+        let col = s.x + Math.round(width() * anchor) - (pet().sideways ? Math.floor(glyph.text.length / 2) : 0);
+        col = Math.max(1, Math.min(W - 1 - glyph.text.length, col));
+        [...glyph.text].forEach((ch, i) => { sky[col + i] = `${ESC}38;5;${glyph.color}m${ch}${ESC}0m`; });
+      }
       return { lines: [sky.join(''), ...grid.map((row) => row.join(''))], image: null };
     },
 
     get state() {
-      return { ...s, stage, creature: CREATURES[index].name, droop: drooping, spark: sparkUntil, swirl: swirlUntil, cache: cacheMark, overflow: flock.overflow, shells: extraShells };
+      return {
+        ...s, stage, creature: pet().name, droop: drooping, spark: sparkUntil,
+        swirl: queuedSwirl ? 0 : swirlUntil, cache: cacheMark, overflow: flock.overflow, shells: extraShells,
+        context: ctx.pct, bang: ctx.bang, building: moodName(), held, heldPhase: phaseAt(nowT),
+        grow: grow?.dir ?? null, mark: kindAt(nowT),
+      };
     },
   };
 }
