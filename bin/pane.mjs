@@ -27,6 +27,14 @@ const done = (state, extra = {}) => { console.log(JSON.stringify({ state, ...ext
 
 const sh = (cmd, args) => { try { return execFileSync(cmd, args, { encoding: 'utf8', timeout: 10_000 }).trim(); } catch { return null; } };
 const osa = (script, ...argv) => sh('osascript', ['-e', script, ...argv]);
+// stdout and stderr, so a macOS -1743 is not mistaken for "iTerm is not running".
+const osaCaptured = (script, ...argv) => {
+  try {
+    return { out: execFileSync('osascript', ['-e', script, ...argv], { encoding: 'utf8', timeout: 10_000, stdio: ['ignore', 'pipe', 'pipe'] }).trim(), err: '' };
+  } catch (e) {
+    return { out: String(e.stdout || '').trim(), err: String(e.stderr || e.message || '') };
+  }
+};
 
 // Returns "<session id>,<window id>,<window left edge>".
 const FIND_BY_TTY = `on run argv
@@ -262,8 +270,9 @@ if (!claude?.tty) done('no-claude');
 // Never launch iTerm by accident: only talk to it if it's already running. (pgrep can't see it from
 // inside Claude's sandboxed shells, so read the process list instead.)
 if (!itermRunning()) done('not-iterm');
-const [claudePane, windowId, windowLeft] = (osa(FIND_BY_TTY, claude.tty) || '').split(',');
-if (!claudePane) done('not-iterm');
+const found = osaCaptured(FIND_BY_TTY, claude.tty);
+const [claudePane, windowId, windowLeft] = (found.out || '').split(',');
+if (!claudePane) done(/-1743|not authorized/i.test(found.err) ? 'not-authorized' : 'not-iterm');
 
 // Records of Claudes that have exited are left behind when a session isn't closed cleanly; drop them. When ps
 // fails, keep everything: an empty list would read as every Claude gone. This Claude's own record always stays.

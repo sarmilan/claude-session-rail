@@ -9,7 +9,7 @@ Plain Node 18+ ESM in `bin/`. Zero npm dependencies. `hooks/` has no Node APIs; 
 - `bin/rail.mjs` draws the rail. `bin/desk.mjs` draws Plan, Diff, and Review.
 - `bin/stop-hook.mjs` is the Stop test gate for Claude and Grok. The rules are in `bin/stopgate.mjs`.
 - `hooks/register.ts` is Claude's plugin. `bin/grok-hook.mjs` is Grok's.
-- `commands/schedule.md` is Grok's `/schedule`. Grok has no `/rail` or `/desk`. Leave `commands` out of `plugin.json`.
+- `commands/rail.md` and `commands/desk.md` are Grok's `/rail` and `/desk`. `commands/approve-brief.md` is `/approve-brief`. A chat message that is exactly `approved` does the same. `commands/schedule.md` is `/schedule`. Leave `commands` out of `plugin.json`.
 
 The rest of the file map is in CLAUDE.md.
 

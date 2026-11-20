@@ -1,7 +1,7 @@
 {
   "name": "session-rail",
   "version": "0.1.0",
-  "description": "Workbench: the rail and the desk beside Claude Code or Grok in iTerm2. The rail shows environment, context, connectors, pull requests, background tasks and every active session. The desk has tabs for the plan, the diff and a code review. Claude opens both on start; /rail and /desk toggle them there. Grok follows the brief instructions and does not open the panes.",
+  "description": "Workbench: the rail and the desk beside Claude Code or Grok in iTerm2. The rail shows environment, context, connectors, pull requests, background tasks and every active session. The desk has tabs for the plan, the diff and a code review. Claude opens both on start. /rail and /desk toggle them. Grok does not open them on start; /rail and /desk toggle them there too. A message that is exactly approved approves the brief.",
   "license": "MIT",
   "repository": "https://github.com/sarmilan/workbench",
   "author": {
