@@ -39,11 +39,11 @@ test('the row is the host total, the turn when it rose, or a dash', () => {
   assert.equal(costText({}), '—');
   assert.equal(costText({ costUsd: -1 }), '—');
   assert.equal(costText({ contextTokens: 66_000 }), '—');
-  assert.equal(costText({ costUsd: 0 }), '$0.00 session');
-  assert.equal(costText({ costUsd: 0.55, turnUsd: 0.04 }), '$0.55 session · turn $0.04');
-  assert.equal(costText({ costUsd: 0.0042 }), '$0.0042 session');
-  assert.equal(costText({ costUsd: 0.08, turnUsd: 0, apiMs: 1_000 }), '$0.08 session');
-  assert.equal(costText({ costUsd: 0.08, apiMs: 90_000 }), '$0.08 session · API 2m');
+  assert.equal(costText({ costUsd: 0 }), '$0.00');
+  assert.equal(costText({ costUsd: 0.55, turnUsd: 0.04 }), '$0.55 · turn $0.04');
+  assert.equal(costText({ costUsd: 0.0042 }), '$0.0042');
+  assert.equal(costText({ costUsd: 0.08, turnUsd: 0, apiMs: 1_000 }), '$0.08');
+  assert.equal(costText({ costUsd: 0.08, apiMs: 90_000 }), '$0.08 · API 2m');
 });
 
 test('a recorded ledger replaces a transcript total and does not keep the transcript turn', () => {
@@ -68,7 +68,7 @@ test('grok context uses the session ticks and the latest turn that has them', ()
   assert.equal(priced.costUsd, 0.08023);
   assert.equal(priced.turnUsd, 0.02);
   assert.equal(priced.apiMs, 90_000);
-  assert.equal(costText(priced), '$0.08 session · turn $0.02 · API 2m');
+  assert.equal(costText(priced), '$0.08 · turn $0.02 · API 2m');
 
   const bare = contextFrom({ contextWindowUsage: 27, contextTokensUsed: 70_000, contextWindowTokens: 256_000 }, {}, { session: { totalTokens: 70_000 }, turns: [{ usage: { costUsdTicks: 5_000_000_000 } }] });
   assert.equal(bare.costUsd, undefined);
@@ -77,7 +77,7 @@ test('grok context uses the session ticks and the latest turn that has them', ()
 
   const zero = contextFrom({ contextWindowUsage: 1 }, {}, { session: { costUsdTicks: 0 } });
   assert.equal(zero.costUsd, 0);
-  assert.equal(costText(zero), '$0.00 session');
+  assert.equal(costText(zero), '$0.00');
   const negative = contextFrom({ contextWindowUsage: 1 }, {}, { session: { costUsdTicks: -5 } });
   assert.equal(negative.costUsd, undefined);
 });
@@ -172,7 +172,8 @@ test('--frame shows a host cost beside tokens and cache, and a dash when the hos
   try {
     const shown = await frame(priced, ['--session', 'priced']);
     assert.match(row(shown, 'Tokens'), /66k \/ 200k/);
-    assert.match(row(shown, 'Cost'), /\$0\.55 session · turn \$0\.04/);
+    assert.match(row(shown, 'Cost'), /\$0\.55 · turn \$0\.04/);
+    assert.doesNotMatch(row(shown, 'Cost'), /session/);
     assert.match(row(shown, 'Cache'), /plan · 1h · warm/);
 
     const missing = await frame(bare, ['--session', 'bare']);
@@ -182,7 +183,8 @@ test('--frame shows a host cost beside tokens and cache, and a dash when the hos
     assert.match(row(missing, 'Cache'), /plan · 1h · warm/);
 
     const grokShown = await frame(grokPriced, ['--session', 'g-priced']);
-    assert.match(row(grokShown, 'Cost'), /\$0\.08 session · turn \$0\.02/);
+    assert.match(row(grokShown, 'Cost'), /\$0\.08 · turn \$0\.02/);
+    assert.doesNotMatch(row(grokShown, 'Cost'), /session/);
     assert.match(row(grokShown, 'Cache'), /—/);
 
     const grokMissing = await frame(grokBare, ['--session', 'g-bare']);

@@ -1,0 +1,107 @@
+{
+  "creature": "turtle",
+  "tick": 1,
+  "expanded": { "you:0": true },
+  "open": { "environment": true, "context": true, "connectors": false },
+  "data": {
+    "account": null,
+    "prune": { "remove": [], "keep": [] },
+    "brief": null,
+    "current": {
+      "host": "claude",
+      "status": "busy",
+      "statusSince": "$now-20000",
+      "sessionId": "marketing",
+      "pid": 1,
+      "cwd": "/src/fieldnotes",
+      "title": "Quick capture inbox"
+    },
+    "overview": [
+      {
+        "sessionId": "marketing",
+        "pid": 1,
+        "title": "Quick capture inbox",
+        "repo": "fieldnotes",
+        "branch": "48-quick-capture",
+        "state": "busy",
+        "doing": "",
+        "current": true
+      },
+      {
+        "sessionId": "export",
+        "pid": 2,
+        "title": "Export markdown",
+        "repo": "fieldnotes",
+        "branch": "51-export",
+        "state": "waiting",
+        "doing": "",
+        "current": false
+      },
+      {
+        "sessionId": "crash",
+        "pid": 3,
+        "title": "Fix crash on empty file",
+        "repo": "fieldnotes",
+        "branch": "44-empty-file",
+        "state": "idle",
+        "doing": "",
+        "current": false
+      }
+    ],
+    "env": {
+      "computer": "studio-1",
+      "repo": "fieldnotes",
+      "parent": "~/src/fieldnotes",
+      "branch": "feature/48-quick-capture",
+      "isGit": true,
+      "added": 86,
+      "removed": 12,
+      "dirty": 3
+    },
+    "stats": {
+      "model": "Opus 4.6",
+      "contextPct": 71,
+      "contextTokens": 142000,
+      "contextSize": 200000,
+      "costUsd": 1.87,
+      "apiMs": 1440000,
+      "linesAdded": 86,
+      "linesRemoved": 12
+    },
+    "usage": [
+      { "kind": "five_hour", "percentUsed": 62, "resetsAt": "$future-17:00" },
+      { "kind": "seven_day", "percentUsed": 39, "resetsAt": "$next-saturday" }
+    ],
+    "connectors": { "ok": true, "connected": 4, "items": [] },
+    "activity": {
+      "claude": { "state": "tool", "since": "$now-20000" },
+      "running": [
+        { "id": "b", "tool": "Bash", "arg": "bun test src/inbox", "since": "$now-2000", "agent": "otto" }
+      ],
+      "recent": [],
+      "agents": {
+        "rue": { "name": "Rue", "what": "scan capture shortcuts", "since": "$now-120000", "background": true, "colour": 141 },
+        "wren": { "name": "Wren", "what": "keybinding helpers", "since": "$now-38000", "background": false, "colour": 141 },
+        "otto": { "name": "Otto", "what": "inbox store tests", "since": "$now-20000", "background": false, "colour": 141 }
+      },
+      "cache": { "at": "$now-1080000", "ttl": "1h", "plan": true, "tokens": 142000 }
+    },
+    "chronicle": {
+      "agents": [],
+      "events": [
+        { "kind": "you", "text": "add a quick-capture inbox", "at": "$now-180000" },
+        { "kind": "main", "text": "start on chunk 2" },
+        { "kind": "handoff", "name": "Wren", "what": "keybinding helpers" },
+        { "kind": "handoff", "name": "Otto", "what": "inbox store tests" },
+        { "kind": "main", "text": "wiring the shortcut into the capture flow" }
+      ]
+    },
+    "tasks": {
+      "running": [
+        { "id": "sh", "kind": "shell", "label": "bun test src/inbox", "startedAt": "$now-12000" }
+      ],
+      "finished": 0,
+      "done": []
+    }
+  }
+}

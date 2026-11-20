@@ -719,20 +719,24 @@ function buildMain(W) {
   pair(`Environment ${caret(ui.open.environment)}`, '', item('environment', () => { ui.open.environment = !ui.open.environment; }),
     { leftStyle: bold });
   if (ui.open.environment) {
-    pair(`▭  ${env?.computer ?? '…'}`);
-    // Which login this Claude uses.
-    if (data.account?.email) pair(`@  ${data.account.email}`, '', undefined, { leftStyle: (s) => s.slice(0, 3) + dim(s.slice(3)) });
-    pair(`▢  ${env ? `${env.repo} · ${env.parent}` : '…'}`, '', env && item('repo', () => repoMenu(env)),
-      { leftStyle: (s) => s.replace(/ · (.*)$/, (m, p) => ' · ' + dim(p)) });
+    // Word labels, as in the rail mock: host, repo, git. The label is dim; the path after · is dim.
+    const word = (label, value, id, right = '', rightStyle = (s) => s) => pair(`${label} ${value}`, right, id, {
+      leftStyle: (s) => dim(s.slice(0, label.length)) + s.slice(label.length).replace(/ · (.*)$/, (m, p) => ' · ' + dim(p)),
+      rightStyle,
+    });
+    word('host', env?.computer ?? '…');
+    word('repo', env ? `${env.repo} · ${env.parent}` : '…', env && item('repo', () => repoMenu(env)));
     if (env?.isGit) {
       // +added −removed since the branch forked, then how many files are uncommitted.
       const diff = env.added || env.removed ? `+${env.added} −${env.removed}` : '';
-      pair(`⎇  ${env.branch ?? '(detached)'}`, [diff, env.dirty && `${env.dirty} changed`].filter(Boolean).join(' · '),
-        env.branch && item('branch', () => branchMenu(env)),
-        { rightStyle: (s) => s.replace(/^\+(\d+) −(\d+)/, (m, a, r) => fg(C.green, `+${a}`) + ' ' + fg(C.red, `−${r}`))
-          .replace(/( · )?(\d+ changed)$/, (m, sep = '', t) => dim(sep + t)) });
+      const right = [diff, env.dirty && `${env.dirty} changed`].filter(Boolean).join(' · ');
+      word('git', env.branch ?? '(detached)', env.branch && item('branch', () => branchMenu(env)), right,
+        (s) => s.replace(/^\+(\d+) −(\d+)/, (m, a, r) => fg(C.green, `+${a}`) + ' ' + fg(C.red, `−${r}`))
+          .replace(/( · )?(\d+ changed)$/, (m, sep = '', t) => dim(sep + t)));
     }
-    if (agentName() !== 'Grok') pair('◌  Remote Control', '/remote-control', item('remote', () => toast('Type /remote-control in your Claude session')),
+    // Account and Remote Control stay available, dim, so they don't crowd host / repo / git.
+    if (data.account?.email) pair(data.account.email, '', undefined, { leftStyle: dim });
+    if (agentName() !== 'Grok') pair('Remote Control', '/remote-control', item('remote', () => toast('Type /remote-control in your Claude session')),
       { leftStyle: dim, rightStyle: dim });
   }
   rule();
@@ -848,7 +852,7 @@ function buildSettings() {
     if (agentName() !== 'Grok') rows.push({ id: 'warm', activate: toggleCompact('warmCompact'), label: '◷ Before cache cold', value: `‹ ${compactOn.warmCompact ? 'on' : 'off'} ›` });
     rows.push({ id: 'chores', activate: toggleChores, label: '↻ Chores', value: `‹ ${choresEnabled ? 'on' : 'off'} ›` });
   }
-  const toggle = { id: 'settings', activate: () => { ui.open.settings = !ui.open.settings; }, label: '⚙ settings' };
+  const toggle = { id: 'settings', activate: () => { ui.open.settings = !ui.open.settings; }, label: 'settings' };
   return { rows, toggle };
 }
 
@@ -920,11 +924,51 @@ if (args.includes('--json')) {
 
 let draw = () => {};
 
+// `--frame --fixture file.json` paints a made-up session. Timestamps may be `$now-38000`
+// (milliseconds from now), `$future-17:00`, or `$next-saturday`. Used by the marketing frame.
+function applyFrameFixture(raw) {
+  const now = Date.now();
+  const resolve = (v) => {
+    if (typeof v === 'string') {
+      if (v.startsWith('$now')) {
+        const n = Number(v.slice(4));
+        return now + (Number.isFinite(n) ? n : 0);
+      }
+      if (v === '$future-17:00') {
+        const d = new Date();
+        d.setHours(17, 0, 0, 0);
+        if (d.getTime() <= now) d.setDate(d.getDate() + 1);
+        return d.toISOString();
+      }
+      if (v === '$next-saturday') {
+        const d = new Date();
+        d.setHours(12, 0, 0, 0);
+        const add = (6 - d.getDay() + 7) % 7 || 7;
+        d.setDate(d.getDate() + add);
+        return d.toISOString();
+      }
+    }
+    if (Array.isArray(v)) return v.map(resolve);
+    if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, resolve(x)]));
+    return v;
+  };
+  const fx = resolve(raw);
+  if (fx.data && typeof fx.data === 'object') Object.assign(data, fx.data);
+  if (fx.expanded && typeof fx.expanded === 'object') Object.assign(ui.expanded, fx.expanded);
+  if (fx.open && typeof fx.open === 'object') Object.assign(ui.open, fx.open);
+  if (typeof fx.creature === 'string') {
+    const at = creatureNames.indexOf(fx.creature);
+    if (at >= 0) mascot.pick(at);
+  }
+  if (Number.isFinite(fx.tick)) ui.tick = fx.tick;
+}
+
 if (args.includes('--frame')) {
   const i = args.indexOf('--frame');
   const W = +args[i + 1] || 42, H = +args[i + 2] || 60;
   for (const k of ['context', 'connectors', 'settings']) if (args.includes(`--open-${k}`)) ui.open[k] = true;
   await collect();
+  if (flag('--fixture')) applyFrameFixture(JSON.parse(readFileSync(flag('--fixture'), 'utf8')));
   // --agents N: N sample named subagents in Now (each with a call in flight), and a finished call from the first in Just now.
   const sampleAgents = numFlag('--agents');
   if (sampleAgents && data.current) {
