@@ -9,7 +9,7 @@ Plain Node 18+ ESM in `bin/`. Zero npm dependencies. `hooks/` has no Node APIs; 
 - `bin/rail.mjs` draws the rail. `bin/desk.mjs` draws Plan, Diff, and Review.
 - `bin/stop-hook.mjs` is the Stop test gate for Claude and Grok. The rules are in `bin/stopgate.mjs`.
 - `hooks/register.ts` is Claude's plugin. `bin/grok-hook.mjs` is Grok's.
-- `commands/rail.md` and `commands/desk.md` are Grok's `/rail` and `/desk`. Leave `commands` out of `plugin.json`.
+- `commands/schedule.md` is Grok's `/schedule`. Grok has no `/rail` or `/desk`. Leave `commands` out of `plugin.json`.
 
 The rest of the file map is in CLAUDE.md.
 
@@ -19,7 +19,7 @@ From this folder.
 
 Claude reads it in place: `claude plugin marketplace add <this folder>` then `claude plugin install session-rail@workbench`.
 
-Grok copies it: `grok plugin marketplace add <this folder>` then `grok plugin install <this folder> --trust`. Start a new `grok` in iTerm2. Refresh with `grok plugin uninstall session-rail --confirm` and the install again.
+Grok copies it: `grok plugin marketplace add <this folder>` then `grok plugin install <this folder> --trust`. Start a new `grok`. It does not open the panes. Refresh with `grok plugin uninstall session-rail --confirm` and the install again.
 
 ## Tests
 

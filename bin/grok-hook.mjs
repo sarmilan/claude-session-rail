@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // Grok's side of the session rail. One command hook for every event: Grok writes the event as JSON on
 // stdin and this process exits. Interactive `grok` only (a headless `grok -p` has no TTY and must not
-// open panes or gate an outer session). The Claude plugin stays in hooks/register.ts.
+// gate an outer session). The Claude plugin stays in hooks/register.ts.
 //
-// It opens the desk and the rail, keeps the Now feed, refuses code edits and a shell command that writes
-// a file until the brief is approved, refuses `gh pr merge` until the reviews are in, and records a
-// /review report. The go-ahead and auto-compact run in grok-watch.mjs, because a hook can't type into
-// the session on its own.
+// It keeps the Now feed, attaches the brief instructions on the first tool call of each turn, refuses
+// code edits and a shell command that writes a file until the brief is approved, refuses `gh pr merge`
+// until the reviews are in, and records a /review report. It does not open the desk or the rail, and it
+// does not type into the session. Claude opens both panes itself.
 import { execFileSync, spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -111,8 +111,8 @@ export function shellEdit(cwd, command) {
 
 export function slashCommand(text) {
   const t = String(text ?? '');
-  return t.trim().match(/^\/(?:[\w.-]+:)?(rail|desk|approve-brief)\b/)?.[1]
-    || t.match(/session-rail-command:\s*(rail|desk|approve-brief)/)?.[1]
+  return t.trim().match(/^\/(?:[\w.-]+:)?(approve-brief)\b/)?.[1]
+    || t.match(/session-rail-command:\s*(approve-brief)/)?.[1]
     || null;
 }
 
@@ -167,30 +167,6 @@ function resultId(result) {
   }
   const m = String(result ?? '').match(/subagent_id["']?\s*[:=]\s*["']([^"']+)/);
   return m?.[1] || null;
-}
-
-function panelMessage(state, panel) {
-  const name = panel === 'rail' ? 'Rail' : 'Desk';
-  const messages = {
-    opened: `${name} opened.`,
-    'already-open': `${name} is already open.`,
-    closed: `${name} closed.`,
-    'already-closed': `${name} is already closed.`,
-    'not-iterm': `The ${name.toLowerCase()} only opens when Grok runs in iTerm2.`,
-    'no-claude': "Couldn't find this Grok session's terminal.",
-  };
-  return messages[state] ?? `Couldn't open or close the ${name.toLowerCase()} (is node on your PATH?).`;
-}
-
-function runPane(action, panel, sessionId) {
-  const args = [join(ROOT, 'bin', 'pane.mjs'), action];
-  if (panel) args.push(panel);
-  try {
-    const out = execFileSync(process.execPath, args, {
-      encoding: 'utf8', timeout: 20_000, env: { ...process.env, SESSION_RAIL_SESSION: sessionId || '' },
-    });
-    return JSON.parse(out).state || 'error';
-  } catch { return 'error'; }
 }
 
 function approve(cwd) {
@@ -264,16 +240,6 @@ export function schedulePublish(cwd, spawnFn = spawn) {
   } catch { return false; }
 }
 
-function startWatch(pid, sessionId, state) {
-  if (!sessionId) return;
-  if (state.watchPid) { try { process.kill(state.watchPid, 0); return; } catch { /* gone */ } }
-  const child = spawn(process.execPath, [join(ROOT, 'bin', 'grok-watch.mjs'), String(pid), sessionId], {
-    detached: true, stdio: 'ignore', env: process.env,
-  });
-  child.unref();
-  state.watchPid = child.pid;
-}
-
 function modelOf(cwd, id) {
   return readJson(join(homedir(), '.grok', 'sessions', encodeURIComponent(cwd || ''), id, 'summary.json'))?.current_model_id || null;
 }
@@ -298,24 +264,16 @@ export function handle(event, agent) {
     writeJson(join(RAIL, 'host.json'), { pluginRoot: ROOT, host: 'grok' });
     const b = readBrief(cwd);
     if (b) writeProcedure(b);
-    runPane('layout', null, id);
-    if (process.env.SESSION_RAIL_STARTED) state.startRan = true;
     const model = modelOf(cwd, id) || activity.claude?.model;
     activity = act.turnEnded(activity, now);
     if (model) activity.claude.model = model;
-    startWatch(agent.pid, id, state);
     save();
     return null;
   }
 
   if (kind === 'end') {
-    if (state.watchPid) { try { process.kill(state.watchPid, 'SIGTERM'); } catch { /* already gone */ } }
     const reason = String(event.reason || event.endReason || '').toLowerCase();
     const ending = !['clear', 'new', 'resume', 'load', 'compact'].includes(reason);
-    if (ending) {
-      runPane('close', 'rail', id);
-      runPane('close', 'desk', id);
-    }
     save();
     // After the save, so the write does not put the file back. A clear or a compact keeps the session.
     if (ending) forgetActivity(id);
@@ -331,9 +289,10 @@ export function handle(event, agent) {
   if (kind === 'prompt') {
     armTurn(state);
     const cmd = slashCommand(promptOf(event));
-    if (cmd === 'approve-brief' || cmd === 'rail' || cmd === 'desk') save();
-    if (cmd === 'approve-brief') return { decision: 'block', reason: approve(cwd) };
-    if (cmd === 'rail' || cmd === 'desk') return { decision: 'block', reason: panelMessage(runPane('toggle', cmd, id), cmd) };
+    if (cmd === 'approve-brief') {
+      save();
+      return { decision: 'block', reason: approve(cwd) };
+    }
     if (/^\/(review|code-review)\b/.test(promptOf(event).trim())) state.codeReview = { at: now };
     const said = humanAsk(promptOf(event));
     if (said) activity = act.heard(activity, said, now);
