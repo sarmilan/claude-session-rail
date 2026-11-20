@@ -36,8 +36,11 @@ Each channel carries one fact. They stack: a heavy crab can be hurrying, trailed
 | Walking, hurrying, fidgeting, or asleep | Whether work is happening, or it is your move, or nothing is. |
 | Where it faces | Waiting for you: it looks left, toward the agent pane, and fidgets. |
 | A hop, a shake, a gold mark | The branch is far along. Heavy means ready to merge. |
-| Markers on the road, and a gold sparkle | Chunks that are Done. The sparkle is the one that just finished. |
-| A yellow `?`, standing still | This branch's brief is not approved yet. |
+| A brow, a heavier stomp, then a bulkier body | The context window filling, at any stage. 50% furrows, 80% stomps, 85% bulks up. |
+| A red `[!!!]` | The window is in the critical band (on at 85%, off below 80%). This is not the gold mark. |
+| A pale ring, then a smaller pet | A stage just went up, or a compact just shrank it back. |
+| Markers on the road, and a gold sparkle | Chunks that are Done. The sparkle is the one that just finished. A stage-up in the same moment plays the ring instead. |
+| A yellow `?`, standing still, growing pushier | This branch's brief is not approved yet. The longer it waits, the bigger the mark. |
 | A blue hourglass | The prompt cache is in its last stretch, with a big context in it: about to be compacted, or about to go cold. |
 | A blue snowflake and a shiver | The prompt cache went cold with a big context in it. The next turn sends the whole history again. |
 | Blue swirls and a hop | The session was just compacted while its cache was still warm. |
@@ -59,7 +62,7 @@ Position and the trail are the fine reading of progress. The stage is the coarse
 
 ## Stages
 
-The same four stages for every creature. A brief grows it toward the merge. A checkout with no brief grows it from the context window, and a compaction drops that window, so the pet hatches again. Heavy is only the finished brief. A full window does not put on the gold mark.
+The same four stages for every creature. A brief grows it toward the merge. A checkout with no brief grows it from the context window, and a compaction drops that window, so the pet hatches again. Heavy is only the finished brief. A full window does not put on the gold mark. It can still bulk up and flash `[!!!]`, on whatever stage the brief (or the window) already chose.
 
 ![with no brief, the turtle goes from hatchling to juvenile to adult as the context window fills](media/pets/turtle-grows-with-context.gif)
 
@@ -76,7 +79,7 @@ The same four stages for every creature. A brief grows it toward the merge. A ch
 | Adult | At least one chunk Done, not all of them. Or no brief, and the window is 20% full or more | Darker, with a brow. The turtle grows a ridge, the crab grows shell spots and a fourth pair of legs. | Faster, and a small hop now and then. |
 | Heavy | Every chunk Done | Bigger, a row taller. Spikes, a scowl. The turtle's shell goes amber, the crab wears a gold crown. | Bigger hops, the body shakes, and a gold mark pops over it. The prompt is: merge it and let the session compact. |
 
-A stage change is instant. The drawing swaps. There is no grow animation. From adult on, the hop is shared by every creature. The gold mark and the shake belong only to heavy.
+A stage-up swaps to the new drawing and pops a ring of sparks for about four ticks (a gold `*` in the text fallback). Two ups in the same moment are one pop, on the final stage. A compact, or any step down, dips and draws the sparks inward, then swaps to the smaller pet. If that compact was a warm cache, the blue swirl plays after the shrink, not on top of `[!!!]`. From adult on, the hop is shared by every creature. The gold mark and the shake belong only to heavy.
 
 ![every chunk done: the heavy amber turtle hops, rattles and flashes the gold mark, with its done chunks marked on the road behind it](media/reactions/heavy.gif)
 
@@ -102,11 +105,11 @@ A tick is about 200ms.
 
 **Hop and shake.** Adult hops a short arc about every three seconds. Heavy hops twice as often, higher, and sometimes rattles in place. A chunk just marked Done hops once, higher, whatever the stage. Clearing a finished worktree hops once the same way, with nothing new over its head.
 
-**Flinch.** A failed tool call shakes the body and pops a red-and-orange puff for a second and a half. The fliers scatter and the babies duck behind it. After the puff, a small red droop stays, and the body sits a little lower, until a later tool call succeeds. A refusal from the brief gate does not flinch. Red is only this. A failed test gate is the same flinch and the same droop. The rail's one line under Now names it (`tests failed`); there is no separate mark.
+**Flinch.** A failed tool call shakes the body and pops a red-and-orange puff for a second and a half. The fliers scatter and the babies duck behind it. After the puff, a small red droop stays, and the body sits a little lower, until a later tool call succeeds. A refusal from the brief gate does not flinch. Red on the puff is only a failure; the context `[!!!]` is the other red. A failed test gate is the same flinch and the same droop. The rail's one line under Now names it (`tests failed`); there is no separate mark.
 
 ![a tool call fails: the crab shakes, a red puff pops, the fliers scatter, the baby hides behind it, then a small red droop stays](media/reactions/flinch.gif)
 
-**The cache.** Only Claude's main conversation, and only while 50k tokens or more are in it, since a small context is cheap to send again. In the cache's last stretch (the last 10 minutes of a plan's hour, the last minute of an API key's 5 minutes) a blue hourglass hangs over it. The rail compacts a waiting session in that stretch, so the hourglass usually shows for the moment the compaction takes. It stays when **Before cache cold** is off. If the cache runs out anyway (that setting off, or a laptop that slept through it), the hourglass becomes a blue snowflake and the pet shivers once. Asleep, the snowflake takes the place of the Zs. The next request warms the cache and the snowflake goes. A warm compact pops blue swirls either side of it with a hop, like the Done sparkle in blue. With no brief the window drops too, so it hatches again. Under Grok none of this shows.
+**The cache.** Only Claude's main conversation, and only while 50k tokens or more are in it, since a small context is cheap to send again. In the cache's last stretch (the last 10 minutes of a plan's hour, the last minute of an API key's 5 minutes) a blue hourglass hangs over it. The rail compacts a waiting session in that stretch, so the hourglass usually shows for the moment the compaction takes. It stays when **Before cache cold** is off. If the cache runs out anyway (that setting off, or a laptop that slept through it), the hourglass becomes a blue snowflake and the pet shivers once. Asleep, the snowflake takes the place of the Zs. The next request warms the cache and the snowflake goes. A warm compact pops blue swirls either side of it with a hop, like the Done sparkle in blue, after the shrink if the pet is also hatching down. With no brief the window drops too, so it shrinks back to a hatchling. Under Grok none of the cache marks show. The context brow, stomp and `[!!!]` still do, from the same window reading.
 
 ![a waiting crab with a blue hourglass: the prompt cache is in its last stretch](media/reactions/cache-hourglass.gif)
 
@@ -114,7 +117,9 @@ A tick is about 200ms.
 
 ![a warm compact: the turtle hops with blue swirls either side](media/reactions/cache-warm-compact.gif)
 
-**Held.** While the branch has a brief that is not approved yet, the pet stands still, awake, with a yellow `?` over its head. Approving it, including an approval kept after an edit, lets it walk. A branch with no brief is not held.
+**Building.** Context is its own channel, whether or not a brief owns the stage. Under 50% the walk is ordinary. From 50% it wears a brow on the stage it already is (off again below 45%). From 80% it stomps: the turtle hops on the heavy arc, the snail bounces shell and all, the crab dips and snaps a claw. From 85% the body bulks — a darker snail shell, an amber turtle, a flushed crab — without the gold crown and without the gold READY mark. If the turn has ended, the turtle and the snail face left and stomp in place; the crab stays sideways and snaps.
+
+**Held.** While the branch has a brief that is not approved yet, the pet stands still, awake, with a yellow `?` over its head. For the first 8 seconds the mark bobs at its old size. From 8 to 12 seconds it grows to twice that (the strip's cap; the story GIF's close-up is larger than the rail) and puffs a little steam. After 12 seconds it holds that size and dims every few ticks. The snail's eye stalks look up at it. Approving it, including an approval kept after an edit (`changed` does not count as unapproved), plays a short vanish and lets it walk. A branch with no brief is not held, and neither is simply waiting for you.
 
 ![a hatchling snail standing still at the left edge with a yellow ? over its head, babies piled at its heel](media/reactions/held.gif)
 
@@ -134,16 +139,16 @@ These are true of the session and invisible on the strip.
 - **Which subagent is which, by name.** The flier's colour matches the Now list. The name itself stays in that list. Past four, the extras are only a count.
 - **How the middle of a stage feels.** Two chunks of eight and seven of eight are both "adult". The home spot and the trail of markers are what separate them. The pet still paces around its spot, so the trail is the clearer of the two.
 - **How long the cache has left.** The hourglass is only its last stretch. The minutes stay in Context's Cache row.
-- **The exact token count, reviews, checks, or rate limits.** The count stays in Context. With no brief, the pet's size and its place on the strip are that fill, and nothing finer. A brief's stages ignore the window. The pet never mentions reviews, checks, or rate limits.
+- **The exact token count, reviews, checks, or rate limits.** The count stays in Context. With no brief, the pet's size and its place on the strip are that fill, and nothing finer. A brief's stages ignore the window; the brow, the stomp and `[!!!]` do not. The pet never mentions reviews, checks, or rate limits. When a band is on, Context can carry one line (`brief waiting for approval`, `context 85%, compact or wrap up?`).
 
-Red is only a failed tool. Gold is only "ready to merge" and "a chunk just finished". Yellow is only the unapproved brief. Blue is only the prompt cache.
+Red is a failed tool, or the context `[!!!]`. Gold is "ready to merge", "a chunk just finished", and the stage-up ring. Yellow is only the unapproved brief. Blue is only the prompt cache.
 
-The marks take turns over its head, the first that applies: the red puff, the gate's `?`, the droop, the Done sparkle, the snowflake, the hourglass, then the gold ready mark.
+The marks take turns over its head, the first that applies: asleep, the cold-cache snowflake (otherwise the Zs); the red puff; the stage pop or the compact shrink; the gate's `?`; the droop; the Done sparkle; context `[!!!]` (hidden while a warm swirl is playing); the snowflake; the hourglass; then the gold ready mark. The ready mark is only brief-heavy. Context-bulk never wears it.
 
 ## Where this lives
 
 - `bin/creatures.mjs`: the three creatures, their four drawings, and their babies.
 - `bin/habitats.mjs`: woodland, pond, beach.
 - `bin/visitors.mjs`: the four fliers and how they flock.
-- `bin/mascot.mjs`: walking, sleep, stages, the road, marks, and the picture.
+- `bin/mascot.mjs`: walking, sleep, stages, the road, marks, and the picture. `bin/petreact.mjs` is the timing and the mark priority.
 - `bin/rail.mjs`: wires the pet to the brief, the session, subagents, shells, failures, the gate, and the cache (`bin/cache.mjs`).

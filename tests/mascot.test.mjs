@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { attentionFor, createMascot, doneFor, droopFor, flinchAt, progressFor, stageFor, visitorsFor } from '../bin/mascot.mjs';
+import { attentionFor, briefHolds, createMascot, doneFor, droopFor, flinchAt, heldAnchor, progressFor, stageFor, visitorsFor } from '../bin/mascot.mjs';
+import { bangBright, buildingOf, heldPhase, latchContext, markKind, queryMotion, reactionHint, stompArc } from '../bin/petreact.mjs';
+import { CREATURES, applyBuilding } from '../bin/creatures.mjs';
 
 const brief = (status, chunks) => ({ status, chunks });
 const chunk = (done) => ({ done: done ? 'built' : '' });
@@ -16,6 +18,14 @@ test('stage and progress follow the brief', () => {
   assert.equal(stageFor(null, 12), 1);
   assert.equal(stageFor(null, 33), 2);
   assert.equal(stageFor(brief('ready', [chunk(false)]), 90), 0);
+  assert.equal(stageFor(null, 100), 2); // a full window stays adult
+  assert.equal(stageFor(brief('approved', [chunk(true), chunk(false)]), 100), 2);
+  assert.equal(stageFor(brief('changed', [chunk(true), chunk(true)]), 40), 3);
+  assert.equal(briefHolds('changed'), false);
+  assert.equal(briefHolds('approved'), false);
+  assert.equal(briefHolds('draft'), true);
+  assert.equal(briefHolds('ready'), true);
+  assert.equal(briefHolds(undefined), false);
   assert.equal(progressFor(null, 33), 0.33);
   assert.equal(progressFor(brief('ready', [chunk(false)]), 90), 0);
   assert.equal(progressFor(brief('ready', [chunk(false)])), 0);
@@ -72,6 +82,8 @@ test('a failure droops and scatters visitors until it is cleared', () => {
 test('a finished chunk celebrates, and extra helpers are counted', () => {
   const pet = createMascot({ now: 0 });
   pet.setStage(2);
+  for (let i = 0; i < 6; i++) pet.step(40, 'idle', 800 + i); // the stage-up pop finishes first
+  assert.equal(pet.state.grow, null);
   pet.setTrail(2, 4);
   pet.celebrate(5_000);
   assert.ok(pet.state.spark > 5_000);
@@ -211,4 +223,257 @@ test('clearing a finished worktree hops without a new mark, and wakes a sleeper'
   assert.ok(pet.state.lift > 0);
   assert.equal(pet.state.spark, 0);
   assert.equal(pet.state.swirl, 0);
+});
+
+const settle = (pet, t0 = 1_000) => { for (let i = 0; i < 6; i++) pet.step(40, 'idle', t0 + i * 200); };
+const pngSize = (frame) => {
+  const b64 = frame.image.data.slice(frame.image.data.lastIndexOf(':') + 1).replace(/\x07$/, '');
+  const buf = Buffer.from(b64, 'base64');
+  return { w: buf.readUInt32BE(16), h: buf.readUInt32BE(20) };
+};
+
+test('context latch: [!!!] 84 off, 85 on, 82 still on, 79 off; brow 50/45', () => {
+  let s = { bang: false, brow: false, pct: null };
+  s = latchContext(s, 84);
+  assert.equal(s.bang, false);
+  assert.equal(buildingOf(s), 'stomp');
+  s = latchContext(s, 85);
+  assert.equal(s.bang, true);
+  assert.equal(buildingOf(s), 'bulk');
+  s = latchContext(s, 82);
+  assert.equal(s.bang, true);
+  assert.equal(buildingOf(s), 'stomp');
+  s = latchContext(s, 79);
+  assert.equal(s.bang, false);
+  assert.equal(buildingOf(s), 'brow');
+  s = latchContext(s, 46);
+  assert.equal(buildingOf(s), 'brow');
+  s = latchContext(s, 44);
+  assert.equal(buildingOf(s), 'none');
+  s = latchContext(s, 49);
+  assert.equal(buildingOf(s), 'none');
+  s = latchContext(s, 50);
+  assert.equal(buildingOf(s), 'brow');
+  const kept = latchContext(s, null);
+  assert.equal(kept.bang, s.bang);
+  assert.equal(kept.brow, true);
+});
+
+test('mark priority: sleep, puff, pop, ?, droop, spark, [!!!], cache, gold; swirl hides [!!!]', () => {
+  assert.equal(markKind({ sleep: true, cold: true, puff: true, bang: true }), 'frost');
+  assert.equal(markKind({ sleep: true, puff: true }), null);
+  assert.equal(markKind({ puff: true, grow: true, held: true, bang: true }), 'puff');
+  assert.equal(markKind({ grow: true, held: true, bang: true, ready: true }), 'grow');
+  assert.equal(markKind({ shrink: true, held: true, bang: true }), 'shrink');
+  assert.equal(markKind({ held: true, droop: true, bang: true, ready: true }), 'query');
+  assert.equal(markKind({ droop: true, bang: true, ready: true }), 'droop');
+  assert.equal(markKind({ spark: true, bang: true, ready: true }), 'spark');
+  assert.equal(markKind({ bang: true, swirl: true, ready: true }), 'swirl');
+  assert.equal(markKind({ bang: true, low: true, ready: true }), 'bang');
+  assert.equal(markKind({ low: true, ready: true }), 'hourglass');
+  assert.equal(markKind({ ready: true }), 'ready');
+  assert.equal(markKind({ swirl: true }), 'swirl');
+  assert.equal(markKind({}), null);
+});
+
+test('the held ? grows, then vanishes, and waiting with no brief never shows one', () => {
+  assert.equal(heldPhase(0, false), 'quiet');
+  assert.equal(heldPhase(7_999, false), 'quiet');
+  assert.equal(heldPhase(8_000, false), 'annoy');
+  assert.equal(heldPhase(11_999, false), 'annoy');
+  assert.equal(heldPhase(12_000, false), 'pushy');
+  assert.equal(heldPhase(1_000, true), 'release');
+  assert.equal(queryMotion('quiet', 1_000, 0, 0).mul, 1);
+  assert.ok(queryMotion('annoy', 10_000, 0, 0).mul > 1 && queryMotion('annoy', 10_000, 0, 0).mul < 2);
+  assert.equal(queryMotion('pushy', 13_000, 0, 0).mul, 2);
+  assert.equal(queryMotion('pushy', 13_000, 0, 0).glow, true);
+  assert.ok(queryMotion('release', 13_000, 0, 2).mul < 0.2);
+  assert.equal(heldAnchor(10_000, 2_000), 2_000);
+  assert.equal(heldAnchor(2_000, 10_000), 2_000);
+  assert.equal(reactionHint({ held: true, bang: true, pct: 90 }), 'brief waiting for approval');
+  assert.match(reactionHint({ bang: true, pct: 91 }), /91%/);
+  assert.equal(reactionHint({ building: 'brow', pct: 55 }), null);
+
+  const pet = createMascot({ now: 0 });
+  pet.step(40, 'waiting', 1_000);
+  assert.equal(pet.state.mark, null);
+  assert.equal(pet.render(40, 1_000).lines.join('').includes('?'), false);
+  pet.setHeld(true, 10_000);
+  pet.setHeld(true, 1_000); // a gate refusal earlier than we noticed
+  pet.step(40, 'busy', 10_000);
+  assert.equal(pet.state.heldPhase, 'annoy');
+  assert.equal(pet.state.mark, 'query');
+  pet.step(40, 'busy', 14_000);
+  assert.equal(pet.state.heldPhase, 'pushy');
+  const plain = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
+  const pushy = plain(pet.render(30, 14_000).lines.join(''));
+  assert.ok(pushy.includes('??'));
+  pet.setHeld(false, 15_000);
+  pet.step(40, 'waiting', 15_200);
+  assert.equal(pet.state.heldPhase, 'release');
+  assert.equal(pet.state.mark, 'query');
+  for (let i = 0; i < 3; i++) pet.step(40, 'waiting', 15_400 + i * 200);
+  assert.equal(pet.state.held, false);
+  assert.equal(pet.state.mark, null);
+  assert.equal(pet.state.mode, 'wait');
+});
+
+test('a stage-up pops once at the final stage and skips the Done sparkle; a compact shrinks, then swirls', () => {
+  const pet = createMascot({ now: 0 });
+  pet.setStage(1);
+  pet.setStage(2); // two ups in the same moment: one pop, on the adult
+  assert.equal(pet.stage, 2);
+  assert.equal(pet.state.grow, 'up');
+  pet.celebrate(2_000);
+  assert.equal(pet.state.spark, 0);
+  assert.equal(pet.state.mark, 'grow');
+  assert.ok(pet.render(30, 2_000).lines.join('').includes('*'));
+  settle(pet, 2_000);
+  assert.equal(pet.state.grow, null);
+  assert.equal(pet.stage, 2);
+  pet.setContextPct(92);
+  assert.equal(pet.state.bang, true);
+  pet.setContextPct(10); // the window dropped; [!!!] ends before the shrink
+  assert.equal(pet.state.bang, false);
+  pet.setStage(0);
+  assert.equal(pet.stage, 2);
+  assert.equal(pet.state.mark, 'shrink');
+  pet.swirl(8_000);
+  assert.equal(pet.state.swirl, 0);
+  for (let i = 0; i < 5; i++) pet.step(40, 'waiting', 8_000 + i * 200);
+  assert.equal(pet.stage, 0);
+  assert.ok(pet.state.swirl > 8_000);
+  assert.equal(pet.state.mark, 'swirl');
+});
+
+test('brief-heavy at 40% is gold READY; an adult at 90% is [!!!] and bulk, and stays adult', () => {
+  const heavy = createMascot({ now: 0 });
+  heavy.setStage(3);
+  settle(heavy);
+  heavy.setContextPct(40);
+  assert.equal(heavy.stage, 3);
+  assert.equal(heavy.state.bang, false);
+  let ready = false;
+  for (let i = 0; i < 24; i++) {
+    heavy.step(40, 'idle', 4_000 + i * 200);
+    if (heavy.state.mark === 'ready') ready = true;
+    assert.notEqual(heavy.state.mark, 'bang');
+  }
+  assert.equal(ready, true);
+
+  for (const creature of [0, 1, 2]) {
+    const pet = createMascot({ creature, now: 0 });
+    pet.setStage(2);
+    settle(pet);
+    pet.setContextPct(90);
+    assert.equal(pet.stage, 2);
+    assert.equal(pet.state.building, 'bulk');
+    assert.equal(pet.state.bang, true);
+    let bang = false, gold = false;
+    for (let i = 0; i < 6; i++) {
+      pet.step(26, 'waiting', 6_000 + i * 200);
+      const text = pet.render(26, 6_000 + i * 200).lines.join('');
+      assert.equal(text.includes('undefined'), false);
+      if (text.includes('!')) bang = true;
+      if (text.includes('38;5;220m')) gold = true;
+      assert.equal(pet.state.mark, 'bang');
+    }
+    assert.equal(bang, true);
+    assert.equal(gold, false);
+  }
+});
+
+test('each pet stomps in its own way, and a high-context wait stays in place', () => {
+  assert.deepEqual(stompArc('turtle', 82).slice(0, 4), [1, 2, 3, 3]);
+  assert.ok(Math.max(...stompArc('turtle', 92)) >= 4);
+  assert.ok(Math.max(...stompArc('snail', 92)) <= 2);
+  assert.ok(Math.min(...stompArc('crab', 82)) < 0);
+  const names = ['snail', 'turtle', 'crab'];
+  for (const creature of [0, 1, 2]) {
+    const pet = createMascot({ creature, now: 0 });
+    pet.setStage(2);
+    settle(pet);
+    pet.setContextPct(82);
+    pet.step(40, 'waiting', 5_000);
+    const x = pet.state.x;
+    let extreme = 0;
+    for (let i = 0; i < 24; i++) {
+      pet.step(40, 'waiting', 5_200 + i * 200);
+      extreme = creature === 2 ? Math.min(extreme, pet.state.lift) : Math.max(extreme, pet.state.lift);
+      assert.equal(pet.state.x, x);
+      assert.equal(pet.state.fidget, false);
+      if (creature === 2) assert.equal(pet.state.dir, 1);
+      else assert.equal(pet.state.dir, -1);
+    }
+    if (creature === 2) assert.ok(extreme < 0, names[creature]);
+    else assert.ok(extreme > 0, names[creature]);
+    if (creature === 0) assert.ok(extreme <= 2, 'snail bounce');
+    if (creature === 1) assert.ok(extreme >= 3, 'turtle hop');
+  }
+});
+
+test('snail stalks look up, and context-bulk is not a gold crown', () => {
+  const pose = { frame: 0, blink: false, sleep: false, fidget: false };
+  const hatch = CREATURES[0].stages[0];
+  assert.notEqual(hatch.draw(pose).join(''), hatch.draw({ ...pose, lookUp: true }).join(''));
+  const adult = CREATURES[0].stages[1];
+  assert.notEqual(adult.draw(pose).join(''), adult.draw({ ...pose, lookUp: true }).join(''));
+  for (const kind of ['snail', 'turtle', 'crab']) {
+    const drawn = CREATURES[kind === 'snail' ? 0 : kind === 'turtle' ? 1 : 2].stages[2]
+      .draw({ frame: 1, blink: false, sleep: false });
+    const bulk = applyBuilding(drawn, 'bulk', kind);
+    assert.notEqual(drawn.join(''), bulk.join(''));
+    assert.equal(bulk.some((row) => row.includes('G')), false);
+  }
+  const crab = CREATURES[2].stages[2].draw({ frame: 0, blink: false, sleep: false, snap: true });
+  const shut = CREATURES[2].stages[2].draw({ frame: 0, blink: false, sleep: false, snap: false });
+  assert.notEqual(crab.join(''), shut.join(''));
+});
+
+test('reactions fit a W=26 strip: image mode uses 3 or 4 rows, octant glyphs stay readable', () => {
+  assert.equal(bangBright(0, 90), true);
+  assert.equal(bangBright(2, 90), false);
+  assert.equal(bangBright(3, 85), false); // dim half of the 3-and-3 pulse
+  for (const creature of [0, 1, 2]) {
+    const text = createMascot({ creature, now: 0 });
+    text.setStage(2);
+    settle(text);
+    text.setHeld(true, 0);
+    const plain = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
+    let quiet = text.render(26, 1_000);
+    for (let i = 0; i < 8 && !plain(quiet.lines.join('')).includes('?'); i++) {
+      text.step(26, 'busy', 1_000 + i * 200);
+      quiet = text.render(26, 1_000 + i * 200);
+    }
+    const shown = plain(quiet.lines.join(''));
+    assert.equal(quiet.lines.length, text.rows);
+    assert.ok(shown.includes('?'));
+    assert.equal(shown.includes('??'), false);
+    const picture = createMascot({ images: true, creature, now: 0 });
+    picture.setCellAspect(0.5);
+    picture.setStage(2);
+    settle(picture);
+    picture.setContextPct(55);
+    picture.step(26, 'busy', 4_000);
+    const brow = picture.render(26, 4_000);
+    assert.equal(picture.rows, 3);
+    assert.equal(brow.lines.length, 3);
+    assert.equal(pngSize(brow).h, 3 * 34);
+    picture.setContextPct(90);
+    picture.step(26, 'waiting', 5_000);
+    const bang = picture.render(26, 5_000);
+    assert.equal(picture.state.mark, 'bang');
+    assert.equal(picture.rows, 4);
+    assert.equal(pngSize(bang).h, 4 * 34);
+    picture.setContextPct(10);
+    picture.setHeld(true, 0);
+    const annoy = picture.render(26, 9_000);
+    assert.equal(picture.state.heldPhase, 'annoy');
+    assert.equal(picture.rows, 4);
+    assert.equal(annoy.lines.length, picture.rows);
+    picture.setStage(1); // down from adult: shrink wants the fourth row too
+    const shrink = picture.render(26, 10_200);
+    assert.equal(picture.state.mark, 'shrink'); // shrink outranks the ?
+    assert.equal(pngSize(shrink).h, 4 * 34);
+  }
 });
