@@ -125,13 +125,24 @@ test('a second user prompt hears the procedure again', () => {
   assert.equal(takeProcedure(state, 'write the brief'), 'write the brief');
 });
 
-test('slash commands are the rail, the desk and approve', () => {
-  assert.equal(slashCommand('/rail'), 'rail');
-  assert.equal(slashCommand('  /desk now'), 'desk');
+test('slash commands are approve-brief only', () => {
   assert.equal(slashCommand('/approve-brief'), 'approve-brief');
-  assert.equal(slashCommand('session-rail-command: rail'), 'rail');
-  assert.equal(slashCommand('/session-rail:desk'), 'desk');
+  assert.equal(slashCommand('/session-rail:approve-brief'), 'approve-brief');
+  assert.equal(slashCommand('session-rail-command: approve-brief'), 'approve-brief');
+  assert.equal(slashCommand('/rail'), null);
+  assert.equal(slashCommand('  /desk now'), null);
+  assert.equal(slashCommand('session-rail-command: rail'), null);
+  assert.equal(slashCommand('/session-rail:desk'), null);
   assert.equal(slashCommand('please /rail later'), null);
+});
+
+test('a desk or rail prompt is not blocked', () => {
+  const agent = { host: 'grok', tty: '/dev/ttys000', pid: process.pid };
+  const id = `desk-prompt-${process.pid}`;
+  const desk = handle({ hook_event_name: 'UserPromptSubmit', session_id: id, cwd: '/tmp', prompt: '/desk' }, agent);
+  const rail = handle({ hook_event_name: 'UserPromptSubmit', session_id: `${id}-rail`, cwd: '/tmp', prompt: '/rail' }, agent);
+  assert.equal(desk, null);
+  assert.equal(rail, null);
 });
 
 test('a grok session draws GrokNight and a claude session keeps its palette', () => {
